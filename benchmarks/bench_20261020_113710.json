@@ -1,0 +1,90 @@
+{
+  "timestamp": "2026-10-20T11:37:10.165033+00:00",
+  "url": "http://localhost:8000",
+  "scenarios": [
+    {
+      "scenario": "steady",
+      "description": "Steady traffic: 500 events/s with balanced distribution",
+      "target_rate": 500,
+      "batch_size": 20,
+      "planned_duration": 2.0,
+      "actual_duration": 2.0,
+      "total_events_sent": 1000,
+      "accepted_events": 1000,
+      "rate_limited_events": 0,
+      "failed_events": 0,
+      "throughput_events_sec": 499.7,
+      "latencies_ms": {
+        "p50": 3.49,
+        "p95": 3.58,
+        "p99": 3.6,
+        "min": 3.25,
+        "max": 3.6,
+        "avg": 3.49
+      }
+    },
+    {
+      "scenario": "crash_loop",
+      "description": "Crash loop burst: 5,000 events/s with single identical fingerprint",
+      "target_rate": 5000,
+      "batch_size": 50,
+      "planned_duration": 2.0,
+      "actual_duration": 2.0,
+      "total_events_sent": 10000,
+      "accepted_events": 10000,
+      "rate_limited_events": 0,
+      "failed_events": 0,
+      "throughput_events_sec": 4999.35,
+      "latencies_ms": {
+        "p50": 3.45,
+        "p95": 3.52,
+        "p99": 3.57,
+        "min": 3.26,
+        "max": 3.64,
+        "avg": 3.46
+      }
+    },
+    {
+      "scenario": "distinct_burst",
+      "description": "High entropy burst: 3,000 events/s across 1,000 distinct fingerprints",
+      "target_rate": 3000,
+      "batch_size": 50,
+      "planned_duration": 2.0,
+      "actual_duration": 2.0,
+      "total_events_sent": 6000,
+      "accepted_events": 6000,
+      "rate_limited_events": 0,
+      "failed_events": 0,
+      "throughput_events_sec": 2999.15,
+      "latencies_ms": {
+        "p50": 3.49,
+        "p95": 3.54,
+        "p99": 3.66,
+        "min": 3.22,
+        "max": 3.69,
+        "avg": 3.48
+      }
+    },
+    {
+      "scenario": "mixed",
+      "description": "Mixed realistic workload with heartbeats and slow requests",
+      "target_rate": 1000,
+      "batch_size": 20,
+      "planned_duration": 2.0,
+      "actual_duration": 2.0,
+      "total_events_sent": 2000,
+      "accepted_events": 2000,
+      "rate_limited_events": 0,
+      "failed_events": 0,
+      "throughput_events_sec": 999.32,
+      "latencies_ms": {
+        "p50": 3.49,
+        "p95": 3.56,
+        "p99": 3.6,
+        "min": 3.27,
+        "max": 6.01,
+        "avg": 3.51
+      }
+    }
+  ]
+}

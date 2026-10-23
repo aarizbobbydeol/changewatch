@@ -1,0 +1,47 @@
+{
+  "id": "unexplainable",
+  "name": "Unexplainable low-level system signal outside deploy changes",
+  "description": "Transient SIGBUS in unmanaged compiled C-extension thread. Code was not modified in this deploy. AI must honestly say 'not sure' and set confidence to 'low'.",
+  "incident": {
+    "title": "RuntimeError: OS worker thread received unexpected SIGBUS in compiled C extension",
+    "exc_type": "RuntimeError",
+    "where_file": "lib/python3.12/site-packages/grpc/_channel.py",
+    "where_line": 890,
+    "where_function": "_unary_unary",
+    "in_diff": false,
+    "event_count": 2,
+    "commit_sha": "e6f1a2b3c4d57890",
+    "commit_message": "docs: update contributor guidelines and README links",
+    "code_excerpt": "888:     # Compiled native extension wrapper\n889:     with cython_gil_release():\n890:         return native_call(self._channel, method, request)",
+    "diff_files": [
+      {
+        "path": "README.md",
+        "status": "modified",
+        "added_ranges": [[50, 55]],
+        "is_dependency_file": false,
+        "is_config_file": false
+      }
+    ],
+    "recent_events": [
+      {
+        "occurred_at": 1729601000.0,
+        "request_path": "/api/internal/rpc",
+        "stack_trace": "Traceback (most recent call last):\n  File \"lib/python3.12/site-packages/grpc/_channel.py\", line 890, in _unary_unary\n    return native_call(self._channel, method, request)\nRuntimeError: OS worker thread received unexpected SIGBUS in compiled C extension"
+      }
+    ]
+  },
+  "decision_labels": {
+    "is_regression_from_release": 0.10,
+    "is_known_noise": 0.20,
+    "is_transient_infra": 0.85,
+    "error_category": "other",
+    "severity": 1.5
+  },
+  "expected_investigation": {
+    "should_identify_cause": false,
+    "expected_cause_keywords": [],
+    "confidence": "low",
+    "must_have_not_sure_reason": true,
+    "rollback_recommended": false
+  }
+}

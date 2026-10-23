@@ -1,0 +1,47 @@
+{
+  "id": "pagination_off_by_one",
+  "name": "Off-by-one indexing error in pagination slice",
+  "description": "Slice indexing boundary off-by-one causes IndexError when fetching last item on page.",
+  "incident": {
+    "title": "IndexError: list index out of range",
+    "exc_type": "IndexError",
+    "where_file": "server/app/pagination.py",
+    "where_line": 63,
+    "where_function": "paginate_results",
+    "in_diff": true,
+    "event_count": 11,
+    "commit_sha": "a2b3c4d5e6f17890",
+    "commit_message": "Optimize array slicing in pagination helper",
+    "code_excerpt": "61: def paginate_results(items: list, page: int, per_page: int):\n62:     start = page * per_page\n63:     first_item = items[start]\n64:     return items[start:start+per_page]",
+    "diff_files": [
+      {
+        "path": "server/app/pagination.py",
+        "status": "modified",
+        "added_ranges": [[60, 65]],
+        "is_dependency_file": false,
+        "is_config_file": false
+      }
+    ],
+    "recent_events": [
+      {
+        "occurred_at": 1729600600.0,
+        "request_path": "/api/items?page=10",
+        "stack_trace": "Traceback (most recent call last):\n  File \"server/app/pagination.py\", line 63, in paginate_results\n    first_item = items[start]\nIndexError: list index out of range"
+      }
+    ]
+  },
+  "decision_labels": {
+    "is_regression_from_release": 0.92,
+    "is_known_noise": 0.02,
+    "is_transient_infra": 0.01,
+    "error_category": "logic_bug",
+    "severity": 2.5
+  },
+  "expected_investigation": {
+    "should_identify_cause": true,
+    "expected_cause_keywords": ["items", "pagination", "index"],
+    "confidence": "high",
+    "must_have_not_sure_reason": false,
+    "rollback_recommended": false
+  }
+}

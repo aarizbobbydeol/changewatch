@@ -1,0 +1,54 @@
+{
+  "id": "removed_function",
+  "name": "Removed utility function in release",
+  "description": "format_currency removed from app.utils during dead-code cleanup, but still invoked by invoice generation.",
+  "incident": {
+    "title": "AttributeError: module 'app.utils' has no attribute 'format_currency'",
+    "exc_type": "AttributeError",
+    "where_file": "server/app/routes/billing.py",
+    "where_line": 42,
+    "where_function": "render_invoice",
+    "in_diff": true,
+    "event_count": 28,
+    "commit_sha": "b2c3d4e5f6a17890",
+    "commit_message": "Clean up unused formatting utilities in app.utils",
+    "code_excerpt": "40:     amount = invoice.total_cents / 100.0\n41:     from app.utils import format_currency\n42:     formatted = format_currency(amount, currency=invoice.currency)\n43:     return {'formatted_total': formatted}",
+    "diff_files": [
+      {
+        "path": "server/app/utils.py",
+        "status": "modified",
+        "added_ranges": [[10, 20]],
+        "is_dependency_file": false,
+        "is_config_file": false
+      },
+      {
+        "path": "server/app/routes/billing.py",
+        "status": "modified",
+        "added_ranges": [[40, 45]],
+        "is_dependency_file": false,
+        "is_config_file": false
+      }
+    ],
+    "recent_events": [
+      {
+        "occurred_at": 1729600100.0,
+        "request_path": "/api/invoices/123",
+        "stack_trace": "Traceback (most recent call last):\n  File \"server/app/routes/billing.py\", line 42, in render_invoice\n    formatted = format_currency(amount, currency=invoice.currency)\nAttributeError: module 'app.utils' has no attribute 'format_currency'"
+      }
+    ]
+  },
+  "decision_labels": {
+    "is_regression_from_release": 0.98,
+    "is_known_noise": 0.01,
+    "is_transient_infra": 0.01,
+    "error_category": "logic_bug",
+    "severity": 3.5
+  },
+  "expected_investigation": {
+    "should_identify_cause": true,
+    "expected_cause_keywords": ["format_currency", "billing", "removed"],
+    "confidence": "high",
+    "must_have_not_sure_reason": false,
+    "rollback_recommended": true
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "id": "shared_util_bug",
+  "name": "Shared date formatting utility breaking caller assumptions",
+  "description": "Shared date utility parse_iso_date format string changed from hyphen to slash, breaking multiple endpoints.",
+  "incident": {
+    "title": "ValueError: time data '2026-10-22' does not match format '%Y/%m/%d'",
+    "exc_type": "ValueError",
+    "where_file": "server/app/utils/dates.py",
+    "where_line": 18,
+    "where_function": "parse_iso_date",
+    "in_diff": true,
+    "event_count": 45,
+    "commit_sha": "d5e6f1a2b3c47890",
+    "commit_message": "Standardize internal date serialization format",
+    "code_excerpt": "16: def parse_iso_date(val: str) -> datetime:\n17:     # Changed format to match new frontend spec\n18:     return datetime.strptime(val, '%Y/%m/%d')",
+    "diff_files": [
+      {
+        "path": "server/app/utils/dates.py",
+        "status": "modified",
+        "added_ranges": [[15, 20]],
+        "is_dependency_file": false,
+        "is_config_file": false
+      }
+    ],
+    "recent_events": [
+      {
+        "occurred_at": 1729600900.0,
+        "request_path": "/api/reports/daily",
+        "stack_trace": "Traceback (most recent call last):\n  File \"server/app/utils/dates.py\", line 18, in parse_iso_date\n    return datetime.strptime(val, '%Y/%m/%d')\nValueError: time data '2026-10-22' does not match format '%Y/%m/%d'"
+      }
+    ]
+  },
+  "decision_labels": {
+    "is_regression_from_release": 0.98,
+    "is_known_noise": 0.01,
+    "is_transient_infra": 0.01,
+    "error_category": "logic_bug",
+    "severity": 4.0
+  },
+  "expected_investigation": {
+    "should_identify_cause": true,
+    "expected_cause_keywords": ["dates", "strptime", "format"],
+    "confidence": "high",
+    "must_have_not_sure_reason": false,
+    "rollback_recommended": true
+  }
+}

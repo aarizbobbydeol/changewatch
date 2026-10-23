@@ -1,0 +1,47 @@
+{
+  "id": "response_shape_changed",
+  "name": "Third-party response schema shape changed",
+  "description": "External weather provider changed JSON payload structure from list to dictionary.",
+  "incident": {
+    "title": "TypeError: string indices must be integers, not 'str'",
+    "exc_type": "TypeError",
+    "where_file": "server/app/services/weather.py",
+    "where_line": 34,
+    "where_function": "parse_forecast",
+    "in_diff": true,
+    "event_count": 16,
+    "commit_sha": "c4d5e6f1a2b37890",
+    "commit_message": "Update weather client parser for partner API v2",
+    "code_excerpt": "32: def parse_forecast(raw_payload: str):\n33:     data = json.loads(raw_payload)\n34:     return [day['temp'] for day in data['daily']]",
+    "diff_files": [
+      {
+        "path": "server/app/services/weather.py",
+        "status": "modified",
+        "added_ranges": [[30, 36]],
+        "is_dependency_file": false,
+        "is_config_file": false
+      }
+    ],
+    "recent_events": [
+      {
+        "occurred_at": 1729600800.0,
+        "request_path": "/api/weather/daily",
+        "stack_trace": "Traceback (most recent call last):\n  File \"server/app/services/weather.py\", line 34, in parse_forecast\n    return [day['temp'] for day in data['daily']]\nTypeError: string indices must be integers, not 'str'"
+      }
+    ]
+  },
+  "decision_labels": {
+    "is_regression_from_release": 0.85,
+    "is_known_noise": 0.05,
+    "is_transient_infra": 0.05,
+    "error_category": "external_service",
+    "severity": 2.5
+  },
+  "expected_investigation": {
+    "should_identify_cause": true,
+    "expected_cause_keywords": ["data", "weather", "parse_forecast"],
+    "confidence": "high",
+    "must_have_not_sure_reason": false,
+    "rollback_recommended": true
+  }
+}

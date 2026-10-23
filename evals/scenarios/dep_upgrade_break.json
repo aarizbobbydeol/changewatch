@@ -1,0 +1,54 @@
+{
+  "id": "dep_upgrade_break",
+  "name": "Dependency upgrade breaking API change",
+  "description": "Upgraded pydantic from v1 to v2; regex argument in Field was deprecated and raises ValidationError.",
+  "incident": {
+    "title": "ValidationError: 1 validation error for UserModel: regex -> pattern",
+    "exc_type": "ValidationError",
+    "where_file": "server/app/models/user.py",
+    "where_line": 15,
+    "where_function": "<module>",
+    "in_diff": true,
+    "event_count": 35,
+    "commit_sha": "d4e5f6a1b2c37890",
+    "commit_message": "Upgrade pydantic to 2.8.2 and dependencies",
+    "code_excerpt": "13: class UserModel(BaseModel):\n14:     id: int\n15:     username: str = Field(..., regex='^[a-zA-Z0-9_]+$')",
+    "diff_files": [
+      {
+        "path": "requirements.txt",
+        "status": "modified",
+        "added_ranges": [[5, 6]],
+        "is_dependency_file": true,
+        "is_config_file": false
+      },
+      {
+        "path": "server/app/models/user.py",
+        "status": "modified",
+        "added_ranges": [[13, 16]],
+        "is_dependency_file": false,
+        "is_config_file": false
+      }
+    ],
+    "recent_events": [
+      {
+        "occurred_at": 1729600300.0,
+        "request_path": "/api/users",
+        "stack_trace": "Traceback (most recent call last):\n  File \"server/app/models/user.py\", line 15, in <module>\n    username: str = Field(..., regex='^[a-zA-Z0-9_]+$')\nValidationError: 1 validation error for UserModel: regex -> pattern"
+      }
+    ]
+  },
+  "decision_labels": {
+    "is_regression_from_release": 0.94,
+    "is_known_noise": 0.01,
+    "is_transient_infra": 0.01,
+    "error_category": "dependency_or_version",
+    "severity": 4.0
+  },
+  "expected_investigation": {
+    "should_identify_cause": true,
+    "expected_cause_keywords": ["pydantic", "user", "regex"],
+    "confidence": "high",
+    "must_have_not_sure_reason": false,
+    "rollback_recommended": true
+  }
+}

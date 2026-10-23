@@ -1,0 +1,54 @@
+{
+  "id": "config_typo",
+  "name": "Configuration typo key resulting in None",
+  "description": "Typo in configuration key max_connectons in config.yaml leads to TypeError in HTTP pool initialization.",
+  "incident": {
+    "title": "TypeError: 'NoneType' object cannot be interpreted as an integer",
+    "exc_type": "TypeError",
+    "where_file": "server/app/clients/http.py",
+    "where_line": 28,
+    "where_function": "init_pool",
+    "in_diff": true,
+    "event_count": 18,
+    "commit_sha": "f6a1b2c3d4e57890",
+    "commit_message": "Tune HTTP client pooling parameters in config.yaml",
+    "code_excerpt": "26: def init_pool(cfg: dict):\n27:     limit = cfg.get('max_connections')\n28:     return httpx.Limits(max_connections=int(limit))",
+    "diff_files": [
+      {
+        "path": "config.yaml",
+        "status": "modified",
+        "added_ranges": [[15, 20]],
+        "is_dependency_file": false,
+        "is_config_file": true
+      },
+      {
+        "path": "server/app/clients/http.py",
+        "status": "modified",
+        "added_ranges": [[25, 30]],
+        "is_dependency_file": false,
+        "is_config_file": false
+      }
+    ],
+    "recent_events": [
+      {
+        "occurred_at": 1729600500.0,
+        "request_path": "/api/gateway",
+        "stack_trace": "Traceback (most recent call last):\n  File \"server/app/clients/http.py\", line 28, in init_pool\n    return httpx.Limits(max_connections=int(limit))\nTypeError: 'NoneType' object cannot be interpreted as an integer"
+      }
+    ]
+  },
+  "decision_labels": {
+    "is_regression_from_release": 0.88,
+    "is_known_noise": 0.02,
+    "is_transient_infra": 0.05,
+    "error_category": "config_or_env",
+    "severity": 3.0
+  },
+  "expected_investigation": {
+    "should_identify_cause": true,
+    "expected_cause_keywords": ["limit", "http", "config"],
+    "confidence": "high",
+    "must_have_not_sure_reason": false,
+    "rollback_recommended": true
+  }
+}

@@ -1,0 +1,56 @@
+name: "ChangeWatch Deployment Hook"
+description: "Notifies ChangeWatch of production deployments with strict read-only guarantees."
+author: "ChangeWatch"
+
+inputs:
+  changewatch_url:
+    description: "ChangeWatch server URL"
+    required: false
+    default: "https://api.changewatch.io"
+  changewatch_api_key:
+    description: "ChangeWatch Ingest API key"
+    required: true
+  environment:
+    description: "Deployment environment (e.g. prod, staging)"
+    required: false
+    default: "prod"
+  mode:
+    description: "Inspection mode: 'minimal' (diff and metadata only) or 'full' (includes changed files without secrets)"
+    required: false
+    default: "minimal"
+  exclude:
+    description: "Comma-separated globs of paths to exclude"
+    required: false
+    default: "secrets/**,**/*.pem,infra/**,**/.env*"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Notify ChangeWatch Deploy Hook
+      shell: bash
+      continue-on-error: true
+      run: |
+        SHA="${{ github.sha }}"
+        AUTHOR="${{ github.actor }}"
+        MESSAGE=$(git log -1 --pretty=%B "$SHA" 2>/dev/null | head -c 2000 || echo "Deploy $SHA")
+        BEFORE="${{ github.event.before }}"
+
+        EXCLUDE_PATTERNS=':(exclude)*.env* :(exclude)*.pem :(exclude)*.key :(exclude)*id_rsa* :(exclude)secrets/** :(exclude)infra/**'
+        if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+          DIFF=$(git diff "$BEFORE" "$SHA" -- . $EXCLUDE_PATTERNS 2>/dev/null | head -c 20000 || echo "")
+        else
+          DIFF=$(git show "$SHA" -- . $EXCLUDE_PATTERNS 2>/dev/null | head -c 20000 || echo "")
+        fi
+
+        PAYLOAD=$(jq -n \
+          --arg commit_sha "$SHA" \
+          --arg author "$AUTHOR" \
+          --arg message "$MESSAGE" \
+          --arg diff "$DIFF" \
+          --arg environment "${{ inputs.environment }}" \
+          '{commit_sha: $commit_sha, author: $author, message: $message, diff: $diff, environment: $environment}')
+
+        curl -s -f --max-time 10 -X POST "${{ inputs.changewatch_url }}/v1/deploys" \
+          -H "Content-Type: application/json" \
+          -H "X-API-Key: ${{ inputs.changewatch_api_key }}" \
+          -d "$PAYLOAD"

@@ -1,0 +1,47 @@
+{
+  "id": "false_alarm",
+  "name": "Benign external scan probe 404 false alarm",
+  "description": "External vulnerability scanner probing for exposed /.env files. Not a regression from release, noise probability is high.",
+  "incident": {
+    "title": "HTTPNotFound: 404 Not Found for GET /.env",
+    "exc_type": "HTTPNotFound",
+    "where_file": "server/app/routes/static.py",
+    "where_line": 14,
+    "where_function": "catch_all",
+    "in_diff": false,
+    "event_count": 3,
+    "commit_sha": "f1a2b3c4d5e67890",
+    "commit_message": "Fix typo in email notifications footer",
+    "code_excerpt": "12: async def catch_all(request: Request):\n13:     # Return 404 for non-existent static assets\n14:     raise HTTPException(status_code=404, detail='Not Found')",
+    "diff_files": [
+      {
+        "path": "server/app/templates/footer.html",
+        "status": "modified",
+        "added_ranges": [[10, 12]],
+        "is_dependency_file": false,
+        "is_config_file": false
+      }
+    ],
+    "recent_events": [
+      {
+        "occurred_at": 1729601100.0,
+        "request_path": "/.env",
+        "stack_trace": "Traceback (most recent call last):\n  File \"server/app/routes/static.py\", line 14, in catch_all\n    raise HTTPException(status_code=404, detail='Not Found')\nHTTPNotFound: 404 Not Found"
+      }
+    ]
+  },
+  "decision_labels": {
+    "is_regression_from_release": 0.05,
+    "is_known_noise": 0.95,
+    "is_transient_infra": 0.05,
+    "error_category": "other",
+    "severity": 1.0
+  },
+  "expected_investigation": {
+    "should_identify_cause": false,
+    "expected_cause_keywords": [],
+    "confidence": "low",
+    "must_have_not_sure_reason": true,
+    "rollback_recommended": false
+  }
+}

@@ -1,0 +1,27 @@
+version: 1
+effective_from: "2026-01-01T00:00:00Z"
+meters:
+  release_monitored:
+    pricing_mode: "fixed"
+    unit_price_micros: 20000          # $0.02 per release
+    margin_multiplier: 1.000
+    min_unit_price_micros: 0
+    free_units_per_month: 200
+  ai_investigation:
+    pricing_mode: "cost_plus"
+    unit_price_micros: 0
+    margin_multiplier: 1.300          # 30% margin over measured LLM token cost
+    min_unit_price_micros: 1000       # $0.001 floor
+    free_units_per_month: 20
+  ai_investigation_deep:
+    pricing_mode: "cost_plus"
+    unit_price_micros: 0
+    margin_multiplier: 1.300
+    min_unit_price_micros: 5000       # $0.005 floor
+    free_units_per_month: 0
+  stored_events:
+    pricing_mode: "fixed"
+    unit_price_micros: 2              # 2,000 micros ($0.002) per 1,000 rows = 2 micros/row
+    margin_multiplier: 1.000
+    min_unit_price_micros: 0
+    free_units_per_month: 100000      # 100,000 free stored events per month

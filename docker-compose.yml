@@ -1,0 +1,166 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: changewatch-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-changewatch}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changewatch}
+      POSTGRES_DB: ${POSTGRES_DB:-changewatch}
+    # Security: internal services publish no host ports in production
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U changewatch -d changewatch"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: changewatch-redis
+    restart: unless-stopped
+    # Security: require password and enable append-only persistence
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-changewatch_secret_password}", "--appendonly", "yes", "--appendfsync", "everysec"]
+    # Security: internal services publish no host ports in production
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"${REDIS_PASSWORD:-changewatch_secret_password}\" ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: changewatch-api
+    restart: unless-stopped
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://changewatch:changewatch@postgres:5432/changewatch
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-changewatch_secret_password}@redis:6379/0
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-changewatch_secret_password}
+      - DATABASE_SSL=${DATABASE_SSL:-0}
+      - SEED_DEV_PROJECT=${SEED_DEV_PROJECT:-0}
+      - LLM_PROVIDER=${LLM_PROVIDER:-fake}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-claude-3-5-sonnet-20241022}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3}
+      - RATE_LIMIT_PER_MIN=${RATE_LIMIT_PER_MIN:-600}
+      - VERDICT_FIRST_MIN=${VERDICT_FIRST_MIN:-10}
+      - VERDICT_FINAL_MIN=${VERDICT_FINAL_MIN:-30}
+      - API_WORKERS=${API_WORKERS:-auto}
+      - DB_POOL_PER_PROCESS=${DB_POOL_PER_PROCESS:-10}
+      - DECISION_PROVIDER=${DECISION_PROVIDER:-rules}
+      - JEV_API_KEY=${JEV_API_KEY:-}
+      - JEV_BASE_URL=${JEV_BASE_URL:-https://api.typesafe.ai/v1/systemone}
+      - JEV_MODEL=${JEV_MODEL:-jev-2024-10}
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1024M
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: changewatch-worker
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker", "--processes", "auto"]
+    environment:
+      - DATABASE_URL=postgresql://changewatch:changewatch@postgres:5432/changewatch
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-changewatch_secret_password}@redis:6379/0
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-changewatch_secret_password}
+      - DATABASE_SSL=${DATABASE_SSL:-0}
+      - WORKER_PROCESSES=${WORKER_PROCESSES:-auto}
+      - DB_POOL_PER_PROCESS=${DB_POOL_PER_PROCESS:-10}
+      - MAX_MEMORY_MB=${MAX_MEMORY_MB:-512}
+      - BATCH_MAX=${BATCH_MAX:-200}
+      - BATCH_MAX_WAIT_MS=${BATCH_MAX_WAIT_MS:-50}
+      - DECISION_PROVIDER=${DECISION_PROVIDER:-rules}
+      - JEV_API_KEY=${JEV_API_KEY:-}
+      - JEV_BASE_URL=${JEV_BASE_URL:-https://api.typesafe.ai/v1/systemone}
+      - JEV_MODEL=${JEV_MODEL:-jev-2024-10}
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 2048M
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  detector:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: changewatch-detector
+    restart: unless-stopped
+    command: ["python", "-m", "app.detector"]
+    environment:
+      - DATABASE_URL=postgresql://changewatch:changewatch@postgres:5432/changewatch
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-changewatch_secret_password}@redis:6379/0
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-changewatch_secret_password}
+      - DATABASE_SSL=${DATABASE_SSL:-0}
+      - LLM_PROVIDER=${LLM_PROVIDER:-fake}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - DECISION_PROVIDER=${DECISION_PROVIDER:-rules}
+      - JEV_API_KEY=${JEV_API_KEY:-}
+      - JEV_BASE_URL=${JEV_BASE_URL:-https://api.typesafe.ai/v1/systemone}
+      - JEV_MODEL=${JEV_MODEL:-jev-2024-10}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    container_name: changewatch-dashboard
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - API_URL=http://api:8000
+    depends_on:
+      - api
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: changewatch-caddy
+    restart: unless-stopped
+    profiles: ["tls"]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - PUBLIC_HOSTNAME=${PUBLIC_HOSTNAME:-localhost}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - dashboard
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:

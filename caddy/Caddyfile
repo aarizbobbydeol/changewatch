@@ -1,0 +1,32 @@
+# ==============================================================================
+# ChangeWatch Reverse Proxy Caddyfile
+# ==============================================================================
+# Automatic HTTPS with Let's Encrypt (for public domains) or self-signed internal
+# CA (for localhost / 127.0.0.1 / private IPs).
+# ==============================================================================
+
+{$PUBLIC_HOSTNAME:localhost} {
+    # If host is localhost, 127.0.0.1, or private IP, use local internal CA
+    @local {
+        header_regexp host Host ^(localhost|127\.0\.0\.1|::1)$
+    }
+    handle @local {
+        tls internal
+    }
+
+    # API routes & ingest endpoints
+    handle /v1/* {
+        reverse_proxy api:8000
+    }
+    handle /api/* {
+        reverse_proxy api:8000
+    }
+    handle /healthz {
+        reverse_proxy api:8000
+    }
+
+    # Dashboard Web UI
+    handle {
+        reverse_proxy dashboard:3000
+    }
+}

@@ -1,0 +1,156 @@
+"""Background Investigator Worker Process (Milestone 5 Stage C).
+
+Consumes investigation jobs from Redis queue 'investigations', checks budget limits,
+executes read-only AI investigation, and records usage metering.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import signal
+import sys
+import time
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+import asyncpg
+
+from app.config import settings
+from app.db import close_db_pool, get_db_pool, init_db_pool, project_transaction
+from app.investigator.agent import run_investigation
+from app.investigator.schemas import InvestigationOutput
+from app.metering import Meter, can_spend
+from app.outbox import queue_notification
+from app.queue import close_redis, get_redis, init_redis
+
+logger = logging.getLogger("changewatch.investigator.worker")
+
+INVESTIGATIONS_QUEUE = "investigations"
+HEARTBEAT_KEY = "heartbeat:investigator"
+
+
+async def execute_investigation(
+    conn: asyncpg.Connection,
+    project_id: int,
+    incident_id: int,
+    deep_mode: bool = False,
+) -> Optional[InvestigationOutput]:
+    """Execute an investigation job under project RLS, enforcing budget limits."""
+    # 1. Budget check (Safety floor is never paused, but AI investigation is an optional extra)
+    meter = Meter.AI_INVESTIGATION_DEEP if deep_mode else Meter.AI_INVESTIGATION
+    allowed, reason = await can_spend(conn, project_id, meter)
+    if not allowed:
+        logger.info("AI investigation paused for project %d: budget hard limit reached (%s)", project_id, reason)
+        # Record paused status in investigations table
+        now = datetime.now(timezone.utc)
+        paused_res = {
+            "summary": "AI investigation paused: budget limit reached",
+            "what_broke": "Investigation paused",
+            "where": {"file": "unknown", "line": 1, "function": "unknown"},
+            "cause": "Budget hard limit reached for this billing period.",
+            "evidence": [],
+            "suggested_fix": {"description": "Review budget settings or upgrade plan to resume AI investigations.", "rollback_recommended": False},
+            "confidence": "low",
+            "not_sure_reason": f"Budget limit reached ({reason}).",
+        }
+        inv_row = await conn.fetchrow(
+            """
+            INSERT INTO investigations (
+                incident_id, project_id, status, model, started_at, finished_at,
+                steps, result, input_tokens, output_tokens, not_sure_reason
+            )
+            VALUES ($1, $2, 'paused', 'none', $3, $3, '[]', $4, 0, 0, $5)
+            RETURNING id
+            """,
+            incident_id,
+            project_id,
+            now,
+            json.dumps(paused_res),
+            f"Budget limit reached ({reason})",
+        )
+        paused_id = inv_row["id"] if inv_row else 0
+        await queue_notification(
+            conn,
+            project_id=project_id,
+            dedupe_key=f"investigation_paused:{incident_id}:{paused_id}",
+            payload={
+                "type": "investigation_paused",
+                "incident_id": incident_id,
+                "title": "AI investigation paused: budget reached",
+                "body": "AI investigation for this incident was paused because your project's monthly budget hard limit has been reached. Instant alerts, verdicts, and monitoring continue as normal.",
+            },
+        )
+        return None
+
+    # 2. Run investigation
+    return await run_investigation(
+        conn=conn,
+        project_id=project_id,
+        incident_id=incident_id,
+        deep_mode=deep_mode,
+    )
+
+
+async def process_next_investigation(redis_client, timeout: int = 2) -> bool:
+    """Pull one job from Redis queue and process it. Returns True if a job was processed."""
+    try:
+        item = await redis_client.brpop([INVESTIGATIONS_QUEUE], timeout=timeout)
+        if not item:
+            return False
+
+        _, raw_payload = item
+        data = json.loads(raw_payload) if isinstance(raw_payload, str) else json.loads(raw_payload.decode("utf-8"))
+        project_id = int(data["project_id"])
+        incident_id = int(data["incident_id"])
+        deep_mode = bool(data.get("deep_mode", False))
+
+        logger.info("Processing investigation job: project=%d incident=%d deep=%s", project_id, incident_id, deep_mode)
+        async with project_transaction(project_id) as conn:
+            await execute_investigation(conn, project_id, incident_id, deep_mode=deep_mode)
+        return True
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("Error processing investigation job: %s", exc)
+        return False
+
+
+async def run_investigator_worker():
+    """Main investigator worker loop with heartbeats and signal handling."""
+    logger.info("Starting ChangeWatch AI SRE Investigator worker...")
+    await init_db_pool()
+    redis_client = await init_redis()
+
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop_event.set)
+        except NotImplementedError:
+            pass
+
+    try:
+        while not stop_event.is_set():
+            # Update heartbeat
+            try:
+                await redis_client.set(HEARTBEAT_KEY, str(time.time()), ex=60)
+            except Exception as hb_exc:
+                logger.debug("Failed writing investigator heartbeat: %s", hb_exc)
+
+            # Process job
+            await process_next_investigation(redis_client, timeout=2)
+            await asyncio.sleep(0.01)
+    finally:
+        logger.info("Shutting down investigator worker...")
+        await close_redis()
+        await close_db_pool()
+
+
+def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    asyncio.run(run_investigator_worker())
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,47 @@
+{
+  "id": "wrong_env_var",
+  "name": "Missing production environment variable",
+  "description": "Code reads os.environ['STRIPE_WEBHOOK_SECRET'] without default, failing on webhook receipt.",
+  "incident": {
+    "title": "KeyError: 'STRIPE_WEBHOOK_SECRET'",
+    "exc_type": "KeyError",
+    "where_file": "server/app/webhooks/stripe.py",
+    "where_line": 19,
+    "where_function": "verify_signature",
+    "in_diff": true,
+    "event_count": 9,
+    "commit_sha": "c3d4e5f6a1b27890",
+    "commit_message": "Add webhook signature verification for Stripe events",
+    "code_excerpt": "17: def verify_signature(payload: bytes, sig_header: str) -> bool:\n18:     import os\n19:     secret = os.environ['STRIPE_WEBHOOK_SECRET']\n20:     return stripe.Webhook.construct_event(payload, sig_header, secret)",
+    "diff_files": [
+      {
+        "path": "server/app/webhooks/stripe.py",
+        "status": "added",
+        "added_ranges": [[1, 30]],
+        "is_dependency_file": false,
+        "is_config_file": false
+      }
+    ],
+    "recent_events": [
+      {
+        "occurred_at": 1729600200.0,
+        "request_path": "/webhooks/stripe",
+        "stack_trace": "Traceback (most recent call last):\n  File \"server/app/webhooks/stripe.py\", line 19, in verify_signature\n    secret = os.environ['STRIPE_WEBHOOK_SECRET']\nKeyError: 'STRIPE_WEBHOOK_SECRET'"
+      }
+    ]
+  },
+  "decision_labels": {
+    "is_regression_from_release": 0.90,
+    "is_known_noise": 0.05,
+    "is_transient_infra": 0.05,
+    "error_category": "config_or_env",
+    "severity": 3.0
+  },
+  "expected_investigation": {
+    "should_identify_cause": true,
+    "expected_cause_keywords": ["stripe_webhook_secret", "stripe", "environment"],
+    "confidence": "medium",
+    "must_have_not_sure_reason": false,
+    "rollback_recommended": false
+  }
+}

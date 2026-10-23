@@ -1,0 +1,47 @@
+{
+  "id": "timeout_missing",
+  "name": "Missing socket timeout on external integration call",
+  "description": "Custom HTTP client created without timeout parameter causing worker thread hung on partner outage.",
+  "incident": {
+    "title": "ReadTimeout: HTTPSConnectionPool(host='api.partner.com', port=443): Read timed out",
+    "exc_type": "ReadTimeout",
+    "where_file": "server/app/integrations/partner.py",
+    "where_line": 51,
+    "where_function": "call_partner_api",
+    "in_diff": true,
+    "event_count": 8,
+    "commit_sha": "b3c4d5e6f1a27890",
+    "commit_message": "Switch to persistent partner API client session",
+    "code_excerpt": "49: async def call_partner_api(payload: dict):\n50:     async with httpx.AsyncClient(timeout=None) as client:\n51:         resp = await client.post('https://api.partner.com/v1/sync', json=payload)\n52:         return resp.json()",
+    "diff_files": [
+      {
+        "path": "server/app/integrations/partner.py",
+        "status": "modified",
+        "added_ranges": [[48, 54]],
+        "is_dependency_file": false,
+        "is_config_file": false
+      }
+    ],
+    "recent_events": [
+      {
+        "occurred_at": 1729600700.0,
+        "request_path": "/api/partner/sync",
+        "stack_trace": "Traceback (most recent call last):\n  File \"server/app/integrations/partner.py\", line 51, in call_partner_api\n    resp = await client.post('https://api.partner.com/v1/sync', json=payload)\nReadTimeout: HTTPSConnectionPool(host='api.partner.com', port=443): Read timed out"
+      }
+    ]
+  },
+  "decision_labels": {
+    "is_regression_from_release": 0.82,
+    "is_known_noise": 0.05,
+    "is_transient_infra": 0.35,
+    "error_category": "external_service",
+    "severity": 3.0
+  },
+  "expected_investigation": {
+    "should_identify_cause": true,
+    "expected_cause_keywords": ["partner", "timeout", "client"],
+    "confidence": "medium",
+    "must_have_not_sure_reason": false,
+    "rollback_recommended": true
+  }
+}

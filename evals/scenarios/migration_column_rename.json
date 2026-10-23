@@ -1,0 +1,54 @@
+{
+  "id": "migration_column_rename",
+  "name": "Database column renamed without code query update",
+  "description": "Migration renamed column user_email to email, but SQL repository still references user_email.",
+  "incident": {
+    "title": "UndefinedColumn: column \"user_email\" does not exist in table \"users\"",
+    "exc_type": "UndefinedColumn",
+    "where_file": "server/app/db/repositories.py",
+    "where_line": 105,
+    "where_function": "fetch_user_by_email",
+    "in_diff": true,
+    "event_count": 22,
+    "commit_sha": "e5f6a1b2c3d47890",
+    "commit_message": "Migration 020: normalize user column names",
+    "code_excerpt": "103: async def fetch_user_by_email(conn, email: str):\n104:     return await conn.fetchrow(\n105:         'SELECT id, user_email FROM users WHERE user_email = $1',\n106:         email\n107:     )",
+    "diff_files": [
+      {
+        "path": "server/migrations/020_rename_email.sql",
+        "status": "added",
+        "added_ranges": [[1, 5]],
+        "is_dependency_file": false,
+        "is_config_file": false
+      },
+      {
+        "path": "server/app/db/repositories.py",
+        "status": "modified",
+        "added_ranges": [[100, 110]],
+        "is_dependency_file": false,
+        "is_config_file": false
+      }
+    ],
+    "recent_events": [
+      {
+        "occurred_at": 1729600400.0,
+        "request_path": "/api/auth/login",
+        "stack_trace": "Traceback (most recent call last):\n  File \"server/app/db/repositories.py\", line 105, in fetch_user_by_email\n    return await conn.fetchrow('SELECT id, user_email FROM users WHERE user_email = $1', email)\nUndefinedColumn: column \"user_email\" does not exist in table \"users\""
+      }
+    ]
+  },
+  "decision_labels": {
+    "is_regression_from_release": 0.96,
+    "is_known_noise": 0.01,
+    "is_transient_infra": 0.02,
+    "error_category": "database_or_migration",
+    "severity": 4.0
+  },
+  "expected_investigation": {
+    "should_identify_cause": true,
+    "expected_cause_keywords": ["user_email", "repositories", "migration"],
+    "confidence": "high",
+    "must_have_not_sure_reason": false,
+    "rollback_recommended": true
+  }
+}

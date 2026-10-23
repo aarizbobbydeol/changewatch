@@ -1,0 +1,367 @@
+"""Incident Lifecycle and Event-Driven Trigger for ChangeWatch.
+
+Handles:
+- Event-driven incident opening (no polling, p95 < 5s)
+- Fast-path checking against critical routes or event threshold (>=3 in 60s)
+- Resolution of error frame, diff range mapping, and owners
+- Typed decisions triage integration (rules-first, sub-second timeout)
+- Upgrade from 'possible' to 'confirmed' (>=10 events or rollback verdict)
+- Auto-resolution after 30 minutes of silence
+"""
+from __future__ import annotations
+
+import json
+import logging
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
+import asyncpg
+
+from app.config import settings
+from app.decisions import (
+    build_decision_state,
+    decide_with_fallback,
+    get_triage_questions,
+    persist_decisions,
+    Q_REGRESSION,
+    Q_SEVERITY,
+    Q_CATEGORY,
+    Q_OWNER,
+)
+from app.notifiers.incident_alert import dispatch_incident_alert
+from app.sre_prep import (
+    StackFrame,
+    frame_in_diff,
+    innermost_project_frame,
+    parse_stack_trace,
+    resolve_owners,
+)
+
+logger = logging.getLogger("changewatch.incidents")
+
+
+async def check_and_trigger_incident(
+    conn: asyncpg.Connection,
+    project_id: int,
+    deploy_id: int,
+    issue_id: int,
+    payload: Dict[str, Any],
+    occurred_at_dt: datetime,
+) -> Optional[int]:
+    """
+    Event-driven check called immediately after inserting an error event.
+    Target latency: < 50ms for check + dispatch.
+    """
+    # 1. Fetch deploy metadata (deployed_at, commit_sha, author, message, codeowners)
+    dep_row = await conn.fetchrow(
+        """
+        SELECT deployed_at, commit_sha, author, message, codeowners
+        FROM deploys
+        WHERE id = $1 AND project_id = $2
+        """,
+        deploy_id,
+        project_id,
+    )
+    if not dep_row:
+        return None
+
+    deployed_at = dep_row["deployed_at"]
+    if not deployed_at:
+        return None
+
+    # Never open incidents for deploys older than INCIDENT_MAX_DEPLOY_AGE_MIN (default 120m)
+    max_deploy_age_min = getattr(settings, "INCIDENT_MAX_DEPLOY_AGE_MIN", 120)
+    now_dt = datetime.now(timezone.utc)
+    if (now_dt - deployed_at).total_seconds() > (max_deploy_age_min * 60):
+        return None
+
+    # 2. Check issue first_seen: must be after or at deployed_at (new regression)
+    issue_row = await conn.fetchrow(
+        "SELECT title, first_seen, event_count FROM issues WHERE id = $1 AND project_id = $2",
+        issue_id,
+        project_id,
+    )
+    if not issue_row:
+        return None
+
+    first_seen = issue_row["first_seen"]
+    if first_seen and first_seen < deployed_at - timedelta(seconds=10):
+        # Existing issue from an earlier release; not a new regression for this deploy
+        return None
+
+    # 3. Check trigger conditions: critical routes or >= INSTANT_MIN_EVENTS in INSTANT_WINDOW_SEC
+    proj_row = await conn.fetchrow(
+        "SELECT critical_routes FROM projects WHERE id = $1",
+        project_id,
+    )
+    raw_critical = proj_row["critical_routes"] if proj_row else []
+    critical_routes = raw_critical if isinstance(raw_critical, list) else json.loads(raw_critical or "[]")
+
+    request_path = payload.get("request_path") or ""
+    is_critical_route = any(request_path.startswith(prefix) for prefix in critical_routes if prefix)
+
+    min_events = getattr(settings, "INSTANT_MIN_EVENTS", 3)
+    window_sec = getattr(settings, "INSTANT_WINDOW_SEC", 60)
+
+    # Check recent event count in the last window_sec
+    window_start = now_dt - timedelta(seconds=window_sec)
+    recent_cnt_row = await conn.fetchrow(
+        """
+        SELECT COUNT(id) AS cnt
+        FROM events
+        WHERE project_id = $1 AND issue_id = $2 AND occurred_at >= $3
+        """,
+        project_id,
+        issue_id,
+        window_start,
+    )
+    recent_count = int(recent_cnt_row["cnt"]) if recent_cnt_row else 1
+
+    should_open = is_critical_route or (recent_count >= min_events)
+
+    # 4. Check if incident already exists
+    existing = await conn.fetchrow(
+        """
+        SELECT id, status, event_count, first_event_at
+        FROM incidents
+        WHERE deploy_id = $1 AND issue_id = $2 AND project_id = $3
+        """,
+        deploy_id,
+        issue_id,
+        project_id,
+    )
+
+    if existing:
+        inc_id = int(existing["id"])
+        current_status = existing["status"]
+        cur_count = int(existing["event_count"]) + 1
+
+        # Check upgrade condition: possible -> confirmed at >= CONFIRM_MIN_EVENTS (default 10)
+        confirm_min = getattr(settings, "CONFIRM_MIN_EVENTS", 10)
+        if current_status == "possible" and cur_count >= confirm_min:
+            await conn.execute(
+                """
+                UPDATE incidents
+                SET status = 'confirmed', confirmed_at = now(), event_count = $1, last_event_at = $2
+                WHERE id = $3 AND project_id = $4
+                """,
+                cur_count,
+                occurred_at_dt,
+                inc_id,
+                project_id,
+            )
+            logger.info("Upgraded incident %d to CONFIRMED (event_count=%d)", inc_id, cur_count)
+            # Re-dispatch confirmed alert
+            # Fetch details for dispatch
+            inc_full = await conn.fetchrow(
+                "SELECT title, where_file, where_line, where_function, in_diff, owners FROM incidents WHERE id = $1",
+                inc_id,
+            )
+            owners_list = json.loads(inc_full["owners"]) if inc_full and inc_full["owners"] else []
+            first_event_at_ts = existing["first_event_at"].timestamp() if existing["first_event_at"] else None
+
+            await dispatch_incident_alert(
+                conn=conn,
+                project_id=project_id,
+                incident_id=inc_id,
+                status="confirmed",
+                commit_sha=dep_row["commit_sha"],
+                author=dep_row["author"] or "Unknown",
+                message=dep_row["message"] or "",
+                error_title=inc_full["title"] or "Error",
+                event_count=cur_count,
+                where_file=inc_full["where_file"] or "unknown",
+                where_line=inc_full["where_line"] or 0,
+                where_function=inc_full["where_function"] or "unknown",
+                in_diff=bool(inc_full["in_diff"]),
+                raw_owners=owners_list,
+                first_event_at=first_event_at_ts,
+            )
+        else:
+            await conn.execute(
+                "UPDATE incidents SET event_count = event_count + 1, last_event_at = $1 WHERE id = $2",
+                occurred_at_dt,
+                inc_id,
+            )
+        return inc_id
+
+    if not should_open:
+        return None
+
+    # 5. Open new incident
+    raw_trace = payload.get("stack_trace") or ""
+    frames = parse_stack_trace(raw_trace)
+    frame = innermost_project_frame(frames)
+    where_file = frame.file if frame else "unknown"
+    where_line = frame.line if frame else 0
+    where_function = frame.function if frame else "unknown"
+
+    # Fetch deploy files to check in_diff and resolve owners
+    df_rows = await conn.fetch(
+        "SELECT path, status, added_ranges, authors FROM deploy_files WHERE deploy_id = $1 AND project_id = $2",
+        deploy_id,
+        project_id,
+    )
+    deploy_files = []
+    file_authors = []
+    for r in df_rows:
+        ranges = r["added_ranges"]
+        parsed_ranges = ranges if isinstance(ranges, list) else json.loads(ranges or "[]")
+        df_dict = {
+            "path": r["path"],
+            "status": r["status"],
+            "added_ranges": parsed_ranges,
+        }
+        deploy_files.append(df_dict)
+        if where_file.endswith(r["path"]) or r["path"].endswith(where_file):
+            auths = r["authors"]
+            file_authors = auths if isinstance(auths, list) else json.loads(auths or "[]")
+
+    in_diff = frame_in_diff(frame, deploy_files) if frame else False
+    codeowners_content = dep_row["codeowners"]
+    owners = resolve_owners(where_file, codeowners_content, file_authors)
+
+    # 6. Run Typed Decisions Triage (sub-second rules/fake fallback)
+    triage_info: Dict[str, Any] = {}
+    try:
+        decision_state = build_decision_state(
+            error_title=issue_row["title"],
+            exc_type=payload.get("exc_type") or "Error",
+            frames=[{"file": f.file, "line": f.line, "function": f.function} for f in frames],
+            request_path=request_path,
+            event_count=recent_count,
+            in_diff=in_diff,
+            is_critical=is_critical_route,
+            commit_message=dep_row["message"],
+        )
+        triage_questions = get_triage_questions(owner_candidates=owners)
+        t_start = time.monotonic()
+        answers = await decide_with_fallback(decision_state, triage_questions, timeout_ms=800)
+        t_latency = int((time.monotonic() - t_start) * 1000)
+
+        reg_ans = answers.get(Q_REGRESSION)
+        sev_ans = answers.get(Q_SEVERITY)
+        cat_ans = answers.get(Q_CATEGORY)
+
+        triage_info = {
+            "regression_prob": reg_ans.probability if reg_ans else 0.5,
+            "severity": sev_ans.score if sev_ans else 2.0,
+            "category": cat_ans.choice if cat_ans else "logic_bug",
+            "source": reg_ans.source if reg_ans else "rules",
+        }
+    except Exception as exc:
+        logger.warning("Typed decision triage failed (continuing safely): %s", exc)
+        answers = None
+        decision_state = None
+        t_latency = 0
+
+    category_str = triage_info.get("category", "logic_bug")
+
+    # 7. Insert new incident record
+    inc_row = await conn.fetchrow(
+        """
+        INSERT INTO incidents (
+            project_id, deploy_id, issue_id, status, title,
+            where_file, where_line, where_function, in_diff, owners,
+            event_count, created_at, first_event_at, last_event_at, category
+        )
+        VALUES ($1, $2, $3, 'possible', $4, $5, $6, $7, $8, $9, $10, now(), $11, $11, $12)
+        ON CONFLICT (deploy_id, issue_id) DO UPDATE SET
+            event_count = incidents.event_count + 1,
+            last_event_at = EXCLUDED.last_event_at
+        RETURNING id, (xmax = 0) AS is_new
+        """,
+        project_id,
+        deploy_id,
+        issue_id,
+        issue_row["title"],
+        where_file,
+        where_line,
+        where_function,
+        in_diff,
+        json.dumps(owners),
+        recent_count,
+        occurred_at_dt,
+        category_str,
+    )
+    if not inc_row:
+        return None
+
+    incident_id = int(inc_row["id"])
+    is_new = bool(inc_row["is_new"])
+
+    if not is_new:
+        return incident_id
+
+    # 8. Persist decisions if available
+    if answers and decision_state:
+        try:
+            await persist_decisions(
+                conn=conn,
+                project_id=project_id,
+                incident_id=incident_id,
+                state=decision_state,
+                answers=answers,
+                latency_ms=t_latency,
+            )
+        except Exception as exc:
+            logger.warning("Failed persisting decisions for incident %d: %s", incident_id, exc)
+
+    # 9. Dispatch instant alert
+    await dispatch_incident_alert(
+        conn=conn,
+        project_id=project_id,
+        incident_id=incident_id,
+        status="possible",
+        commit_sha=dep_row["commit_sha"],
+        author=dep_row["author"] or "Unknown",
+        message=dep_row["message"] or "",
+        error_title=issue_row["title"],
+        event_count=recent_count,
+        where_file=where_file,
+        where_line=where_line,
+        where_function=where_function,
+        in_diff=in_diff,
+        raw_owners=owners,
+        triage_info=triage_info,
+        first_event_at=occurred_at_dt.timestamp(),
+    )
+
+    # 10. Enqueue AI investigation job
+    try:
+        from app.queue import get_redis
+        redis_client = get_redis()
+        if redis_client:
+            await redis_client.lpush(
+                "investigations",
+                json.dumps({
+                    "project_id": project_id,
+                    "incident_id": incident_id,
+                    "deep_mode": False,
+                }),
+            )
+    except Exception as q_exc:
+        logger.debug("Investigation queue push skipped or unavailable: %s", q_exc)
+
+    return incident_id
+
+
+async def auto_resolve_stale_incidents(conn: asyncpg.Connection, resolve_after_min: int = 30) -> int:
+    """
+    Mark incidents 'resolved' when no events for that issue arrive for resolve_after_min.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=resolve_after_min)
+    result = await conn.execute(
+        """
+        UPDATE incidents
+        SET status = 'resolved', resolved_at = now()
+        WHERE status != 'resolved' AND last_event_at <= $1
+        """,
+        cutoff,
+    )
+    # Result format: "UPDATE N"
+    parts = result.split()
+    count = int(parts[-1]) if len(parts) >= 2 and parts[-1].isdigit() else 0
+    if count > 0:
+        logger.info("Auto-resolved %d incidents inactive for %d min", count, resolve_after_min)
+    return count
