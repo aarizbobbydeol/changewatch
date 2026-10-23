@@ -509,7 +509,11 @@ async def run_detector():
             except Exception as exc:
                 logger.error("Error during detector evaluation cycle: %s", exc, exc_info=True)
 
-            await asyncio.sleep(60)
+            # Sleep in short steps so a shutdown signal is honoured within a second
+            for _ in range(60):
+                if not is_running:
+                    break
+                await asyncio.sleep(1)
     finally:
         logger.info("Detector cleaning up resources")
         if lock_conn is not None:

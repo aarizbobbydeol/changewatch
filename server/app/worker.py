@@ -218,7 +218,7 @@ async def process_single_event(payload: Dict[str, Any]) -> None:
                   stack_trace, stack_trace_enc, request_path, duration_ms, extra, extra_enc
                 )
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
-                ON CONFLICT (project_id, event_id) DO NOTHING
+                ON CONFLICT (project_id, event_id, occurred_at) WHERE event_id IS NOT NULL DO NOTHING
                 """,
                 event_id,
                 issue_id,
@@ -328,6 +328,13 @@ async def check_incident_for_issue(
             return
 
         occurred_at_dt = ev_row["occurred_at"]
+        # Alert latency and time-to-detect are measured from the first event, not the latest
+        first_event_dt = await conn.fetchval(
+            "SELECT min(occurred_at) FROM events WHERE project_id = $1 AND deploy_id = $2 AND issue_id = $3",
+            project_id,
+            deploy_id,
+            issue_id,
+        )
         payload = {
             "request_path": ev_row["request_path"],
             "stack_trace": ev_row["stack_trace"],
@@ -350,6 +357,7 @@ async def check_incident_for_issue(
             issue_id=issue_id,
             payload=payload,
             occurred_at_dt=occurred_at_dt,
+            first_event_dt=first_event_dt,
         )
     except Exception as exc:
         logger.warning(
@@ -360,6 +368,36 @@ async def check_incident_for_issue(
             exc,
         )
 
+
+
+async def _record_batch_sources(
+    conn: asyncpg.Connection,
+    project_id: int,
+    events: List[Dict[str, Any]],
+    is_heartbeat: bool,
+) -> None:
+    """Record source activity once per (environment, app) for the dead-man's switch (Trust Addendum A2)."""
+    from app.sources import record_source_activity
+
+    latest: Dict[Tuple[str, str], datetime] = {}
+    for ev in events:
+        key = (ev.get("environment") or "prod", ev.get("app_name") or "default")
+        if key not in latest or ev["occurred_at_dt"] > latest[key]:
+            latest[key] = ev["occurred_at_dt"]
+    for (environment, app_name), occurred_at_dt in latest.items():
+        try:
+            # Savepoint: a failure here must not abort the batch transaction
+            async with conn.transaction():
+                await record_source_activity(
+                    conn=conn,
+                    project_id=project_id,
+                    environment=environment,
+                    app_name=app_name,
+                    is_heartbeat=is_heartbeat,
+                    occurred_at=occurred_at_dt,
+                )
+        except Exception as exc:
+            logger.debug("Failed recording source activity for batch: %s", exc)
 
 
 async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
@@ -451,9 +489,11 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
                     len(hb_aggregates),
                     len(heartbeats),
                 )
+                await _record_batch_sources(conn, project_id, heartbeats, is_heartbeat=True)
 
             # 2. Process Error & Slow Request Events
             if error_events:
+                await _record_batch_sources(conn, project_id, error_events, is_heartbeat=False)
                 fp_groups: Dict[str, Dict[str, Any]] = {}
                 for ev in error_events:
                     ev_type = ev.get("type", "error")
@@ -626,7 +666,7 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
                           u.stack_trace_enc,
                           u.request_path,
                           u.duration_ms,
-                          NULLIF(u.extra, '')::jsonb,
+                          COALESCE(NULLIF(u.extra, '')::jsonb, '{}'::jsonb),
                           u.extra_enc
                         FROM unnest(
                           $2::text[],
@@ -643,7 +683,7 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
                           event_id, issue_id, deploy_id, occurred_at,
                           stack_trace, stack_trace_enc, request_path, duration_ms, extra, extra_enc
                         )
-                        ON CONFLICT (project_id, event_id) DO NOTHING
+                        ON CONFLICT (project_id, event_id, occurred_at) WHERE event_id IS NOT NULL DO NOTHING
                         """,
                         project_id,
                         event_ids,
@@ -732,6 +772,11 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
                 )
 
 
+def _dump_payload(payload: Dict[str, Any]) -> str:
+    """Serialize an event for re-queueing, dropping values computed during processing."""
+    return json.dumps({k: v for k, v in payload.items() if k != "occurred_at_dt"})
+
+
 async def handle_event_with_retry(payload: Dict[str, Any]) -> None:
     """Handle event with exponential retry and dead-letter queue dispatch."""
     redis = get_redis()
@@ -752,7 +797,7 @@ async def handle_event_with_retry(payload: Dict[str, Any]) -> None:
 
         if tries < MAX_RETRIES:
             # Re-queue for retry
-            await redis.rpush(EVENTS_QUEUE, json.dumps(payload))
+            await redis.rpush(EVENTS_QUEUE, _dump_payload(payload))
         else:
             # Dispatch to dead-letter queue
             logger.critical(
@@ -761,7 +806,7 @@ async def handle_event_with_retry(payload: Dict[str, Any]) -> None:
                 DEAD_LETTER_QUEUE,
                 payload,
             )
-            await redis.rpush(DEAD_LETTER_QUEUE, json.dumps(payload))
+            await redis.rpush(DEAD_LETTER_QUEUE, _dump_payload(payload))
 
 
 async def reap_stuck_processing_events(timeout_sec: Optional[int] = None) -> int:
@@ -812,7 +857,8 @@ async def pull_batch_from_queue(
         # First item with blocking move
         raw_first = None
         if hasattr(redis, "blmove"):
-            raw_first = await redis.blmove(EVENTS_QUEUE, processing_queue, "LEFT", "RIGHT", timeout=timeout_sec)
+            # redis-py signature: blmove(first_list, second_list, timeout, src, dest)
+            raw_first = await redis.blmove(EVENTS_QUEUE, processing_queue, timeout_sec, "LEFT", "RIGHT")
         elif hasattr(redis, "brpoplpush"):
             raw_first = await redis.brpoplpush(EVENTS_QUEUE, processing_queue, timeout=int(timeout_sec))
 
@@ -850,6 +896,9 @@ async def pull_batch_from_queue(
 
     except Exception as exc:
         logger.error("Error pulling batch from queue: %s", exc)
+        # Back off so a persistent queue error cannot spin the CPU and flood the logs.
+        if not batch:
+            await asyncio.sleep(min(timeout_sec, 1.0))
 
     return batch
 
@@ -877,7 +926,7 @@ async def handle_event_batch_with_retry(
             tries = int(payload.get("_tries", 0)) + 1
             payload["_tries"] = tries
             if tries < MAX_RETRIES:
-                await r.rpush(EVENTS_QUEUE, json.dumps(payload))
+                await r.rpush(EVENTS_QUEUE, _dump_payload(payload))
             else:
                 logger.critical(
                     "Event exceeded max retries (%d). Pushing to %s: %s",
@@ -885,7 +934,7 @@ async def handle_event_batch_with_retry(
                     DEAD_LETTER_QUEUE,
                     payload,
                 )
-                await r.rpush(DEAD_LETTER_QUEUE, json.dumps(payload))
+                await r.rpush(DEAD_LETTER_QUEUE, _dump_payload(payload))
 
 
 def check_memory_limit() -> bool:

@@ -1,11 +1,10 @@
 """Autonomous Read-Only Release Investigator Agent (Phase 2 Stage C).
 
-Pre-gathers evidence in parallel, executes agent reasoning with tools or single-shot context,
+Pre-gathers evidence, executes agent reasoning with tools or single-shot context,
 validates structured output, runs verification filters, and posts thread replies.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
@@ -55,7 +54,7 @@ async def pregather_context(
     project_id: int,
     incident_id: int,
 ) -> Dict[str, Any]:
-    """Pre-gather all relevant deploy and incident data in parallel."""
+    """Pre-gather all relevant deploy and incident data."""
     inc_row = await conn.fetchrow(
         """
         SELECT i.*, d.commit_sha, d.author AS commit_author, d.message AS commit_message, d.deployed_at,
@@ -75,36 +74,24 @@ async def pregather_context(
     where_file = inc_row["where_file"] or ""
     where_line = inc_row["where_line"] or 1
 
-    # Parallel pre-gather
-    diff_task = get_diff_files(conn, project_id, deploy_id)
-    deps_task = get_dependency_changes(conn, project_id, deploy_id)
-    cfg_task = get_config_changes(conn, project_id, deploy_id)
-    issues_task = list_new_issues(conn, project_id, deploy_id)
-    rate_task = get_error_rate(conn, project_id, deploy_id)
-    prev_dep_task = get_previous_deploys(conn, project_id, deploy_id, n=3)
-    events_task = get_issue_events(conn, project_id, inc_row["issue_id"], limit=5)
+    # Sequential pre-gather: an asyncpg connection runs one query at a time, and this
+    # connection carries the project's RLS context, so the reads cannot share it in parallel.
+    diff_files = await get_diff_files(conn, project_id, deploy_id)
+    dep_changes = await get_dependency_changes(conn, project_id, deploy_id)
+    cfg_changes = await get_config_changes(conn, project_id, deploy_id)
+    new_issues = await list_new_issues(conn, project_id, deploy_id)
+    error_rate = await get_error_rate(conn, project_id, deploy_id)
+    prev_deploys = await get_previous_deploys(conn, project_id, deploy_id, n=3)
+    events = await get_issue_events(conn, project_id, inc_row["issue_id"], limit=5)
 
     # Context file excerpt (±30 lines around error frame)
-    code_task = get_file_at_commit(
+    code_excerpt = await get_file_at_commit(
         conn,
         project_id,
         deploy_id,
         where_file,
         start_line=max(1, where_line - 30),
         end_line=where_line + 30,
-    )
-
-    diff_files, dep_changes, cfg_changes, new_issues, error_rate, prev_deploys, events, code_excerpt = (
-        await asyncio.gather(
-            diff_task,
-            deps_task,
-            cfg_task,
-            issues_task,
-            rate_task,
-            prev_dep_task,
-            events_task,
-            code_task,
-        )
     )
 
     return {

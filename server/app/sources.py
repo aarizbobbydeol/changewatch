@@ -165,7 +165,7 @@ async def check_dead_mans_switch(
         SELECT id, project_id, environment, app_name, status, last_heartbeat_at,
                typical_gap_sec, expected_hours, silence_alerts
         FROM sources
-        WHERE updated_at >= $1 - INTERVAL '24 hours'
+        WHERE updated_at >= $1::timestamptz - INTERVAL '24 hours'
           AND silence_alerts = true
           AND status != 'silent'
         """,

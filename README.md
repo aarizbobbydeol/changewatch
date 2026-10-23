@@ -94,6 +94,8 @@ flowchart LR
         W["Worker<br/><sub>fingerprint · dedupe</sub>"]
         DB[("Postgres 16<br/><sub>RLS · partitions</sub>")]
         D["Detector<br/><sub>verdict engine</sub>"]
+        INV["Investigator<br/><sub>AI root cause</sub>"]
+        N["Notifier<br/><sub>outbox · every 1s</sub>"]
         LLM["LLM<br/><sub>Claude / Ollama</sub>"]
         DASH["Dashboard<br/><sub>Next.js</sub>"]
     end
@@ -104,8 +106,12 @@ flowchart LR
     APP -- "errors · slow requests<br/>traffic heartbeats" --> API
     API --> Q --> W --> DB
     D -- "every 60s" --> DB
-    D -- "watch / rollback" --> LLM
-    D -- "outbox" --> SLACK
+    Q -- "investigation jobs" --> INV
+    INV --> LLM
+    INV --> DB
+    W -- "instant alert" --> DB
+    DB -- "outbox" --> N
+    N --> SLACK
     DASH -- "read key" --> API
 ```
 
@@ -174,7 +180,7 @@ Every threshold can be tuned with environment variables (see [Configuration](#%E
 git clone https://github.com/aarizbobbydeol/changewatch.git && cd changewatch
 cp .env.example .env            # add ANTHROPIC_API_KEY, or set LLM_PROVIDER=ollama
 sed -i.bak "s/^MASTER_KEY=$/MASTER_KEY=$(openssl rand -hex 32)/" .env   # encryption key: back it up!
-docker compose up -d            # postgres · redis · api · worker · detector · dashboard
+docker compose up -d            # postgres · redis · api · worker · detector · investigator · notifier · dashboard
 docker compose exec api python -m app.cli create-project "my-app" \
   --slack-webhook "https://hooks.slack.com/services/..."
 ```

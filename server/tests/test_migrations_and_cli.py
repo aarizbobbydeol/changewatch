@@ -69,6 +69,7 @@ async def test_migration_runner_idempotent():
             {"version": "014_sources_and_system_alerts.sql"},
             {"version": "015_investigations.sql"},
             {"version": "016_calm_and_trust.sql"},
+            {"version": "017_reconcile_stub_tables.sql"},
         ],
         [],  # unhashed projects
 

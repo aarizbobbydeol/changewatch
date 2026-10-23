@@ -40,6 +40,10 @@ services:
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
     ports:
       - "8000:8000"
+    # All settings from .env reach the app; the explicit entries below win over it.
+    env_file:
+      - path: .env
+        required: false
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-changewatch}:${POSTGRES_PASSWORD:-changewatch}@postgres:5432/${POSTGRES_DB:-changewatch}
       - MASTER_KEY=${MASTER_KEY:?MASTER_KEY is not set - generate one with openssl rand -hex 32 and add it to .env}
@@ -80,6 +84,10 @@ services:
     container_name: changewatch-worker
     restart: unless-stopped
     command: ["python", "-m", "app.worker", "--processes", "auto"]
+    # All settings from .env reach the app; the explicit entries below win over it.
+    env_file:
+      - path: .env
+        required: false
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-changewatch}:${POSTGRES_PASSWORD:-changewatch}@postgres:5432/${POSTGRES_DB:-changewatch}
       - MASTER_KEY=${MASTER_KEY:?MASTER_KEY is not set - generate one with openssl rand -hex 32 and add it to .env}
@@ -114,6 +122,10 @@ services:
     container_name: changewatch-detector
     restart: unless-stopped
     command: ["python", "-m", "app.detector"]
+    # All settings from .env reach the app; the explicit entries below win over it.
+    env_file:
+      - path: .env
+        required: false
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-changewatch}:${POSTGRES_PASSWORD:-changewatch}@postgres:5432/${POSTGRES_DB:-changewatch}
       - MASTER_KEY=${MASTER_KEY:?MASTER_KEY is not set - generate one with openssl rand -hex 32 and add it to .env}
@@ -128,6 +140,77 @@ services:
       - JEV_API_KEY=${JEV_API_KEY:-}
       - JEV_BASE_URL=${JEV_BASE_URL:-https://api.typesafe.ai/v1/systemone}
       - JEV_MODEL=${JEV_MODEL:-jev-2024-10}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  investigator:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: changewatch-investigator
+    restart: unless-stopped
+    command: ["python", "-m", "app.investigator.worker"]
+    # All settings from .env reach the app; the explicit entries below win over it.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-changewatch}:${POSTGRES_PASSWORD:-changewatch}@postgres:5432/${POSTGRES_DB:-changewatch}
+      - MASTER_KEY=${MASTER_KEY:?MASTER_KEY is not set - generate one with openssl rand -hex 32 and add it to .env}
+      - MASTER_KEY_PREVIOUS=${MASTER_KEY_PREVIOUS:-}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-changewatch_secret_password}@redis:6379/0
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-changewatch_secret_password}
+      - DATABASE_SSL=${DATABASE_SSL:-0}
+      - LLM_PROVIDER=${LLM_PROVIDER:-fake}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-claude-3-5-sonnet-20241022}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3}
+      - DECISION_PROVIDER=${DECISION_PROVIDER:-rules}
+      - JEV_API_KEY=${JEV_API_KEY:-}
+      - JEV_BASE_URL=${JEV_BASE_URL:-https://api.typesafe.ai/v1/systemone}
+      - JEV_MODEL=${JEV_MODEL:-jev-2024-10}
+      - CODE_MODE=${CODE_MODE:-stored}
+      - GITHUB_READ_TOKEN=${GITHUB_READ_TOKEN:-}
+      - PUBLIC_HOSTNAME=${PUBLIC_HOSTNAME:-localhost}
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  notifier:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: changewatch-notifier
+    restart: unless-stopped
+    command: ["python", "-m", "app.notifier"]
+    # All settings from .env reach the app; the explicit entries below win over it.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-changewatch}:${POSTGRES_PASSWORD:-changewatch}@postgres:5432/${POSTGRES_DB:-changewatch}
+      - MASTER_KEY=${MASTER_KEY:?MASTER_KEY is not set - generate one with openssl rand -hex 32 and add it to .env}
+      - MASTER_KEY_PREVIOUS=${MASTER_KEY_PREVIOUS:-}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-changewatch_secret_password}@redis:6379/0
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-changewatch_secret_password}
+      - DATABASE_SSL=${DATABASE_SSL:-0}
+      - PUBLIC_HOSTNAME=${PUBLIC_HOSTNAME:-localhost}
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
     depends_on:
       postgres:
         condition: service_healthy

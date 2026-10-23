@@ -255,6 +255,7 @@ async def dispatch_incident_alert(
             project_id=project_id,
             dedupe_key=dedupe_key,
             payload=payload,
+            fan_out=False,  # channels were just checked: there are none
         )
         return True
 

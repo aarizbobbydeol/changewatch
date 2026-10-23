@@ -212,7 +212,7 @@ async def run_watchdog_checks(
                     COUNT(*) FILTER (WHERE status = 'delivered') AS delivered,
                     COUNT(*) FILTER (WHERE status = 'failed') AS failed
                 FROM outbox
-                WHERE created_at >= $1 - INTERVAL '15 minutes'
+                WHERE created_at >= $1::timestamptz - INTERVAL '15 minutes'
                 """,
                 current_time,
             )

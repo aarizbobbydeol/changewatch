@@ -95,8 +95,7 @@ async def run_migrations(pool: asyncpg.Pool) -> List[str]:
                 """
                 INSERT INTO projects (name, api_key, ingest_key_hash, ingest_key_prefix, read_key_hash, read_key_prefix)
                 VALUES ('my-test-app', 'cw_test_key_123', $1, 'cw_test_key_12...', $2, 'cw_read_test_1...')
-                ON CONFLICT (api_key) DO UPDATE SET
-                  ingest_key_hash = EXCLUDED.ingest_key_hash,
+                ON CONFLICT (ingest_key_hash) WHERE ingest_key_hash IS NOT NULL DO UPDATE SET
                   read_key_hash = EXCLUDED.read_key_hash;
                 """,
                 dev_ingest_hash,

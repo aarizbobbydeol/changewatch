@@ -15,8 +15,34 @@ CREATE TABLE IF NOT EXISTS investigations (
   input_tokens INT NOT NULL DEFAULT 0,
   output_tokens INT NOT NULL DEFAULT 0,
   cached_from INT REFERENCES investigations(id) ON DELETE SET NULL,
-  cost_micros INT NOT NULL DEFAULT 0
+  cost_micros INT NOT NULL DEFAULT 0,
+  not_sure_reason TEXT                        -- why confidence is low (or why the run was paused)
 );
+
+-- Migration 006 already created an early, deploy-based placeholder `investigations`
+-- table, so on every real database the CREATE above is a no-op. Upgrade that table
+-- in place so the columns used by the investigator exist.
+ALTER TABLE investigations ADD COLUMN IF NOT EXISTS incident_id INT REFERENCES incidents(id) ON DELETE CASCADE;
+ALTER TABLE investigations ADD COLUMN IF NOT EXISTS model TEXT;
+ALTER TABLE investigations ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE investigations ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ;
+ALTER TABLE investigations ADD COLUMN IF NOT EXISTS steps JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE investigations ADD COLUMN IF NOT EXISTS result JSONB;
+ALTER TABLE investigations ADD COLUMN IF NOT EXISTS result_enc BYTEA;
+ALTER TABLE investigations ADD COLUMN IF NOT EXISTS input_tokens INT NOT NULL DEFAULT 0;
+ALTER TABLE investigations ADD COLUMN IF NOT EXISTS output_tokens INT NOT NULL DEFAULT 0;
+ALTER TABLE investigations ADD COLUMN IF NOT EXISTS cached_from INT REFERENCES investigations(id) ON DELETE SET NULL;
+ALTER TABLE investigations ADD COLUMN IF NOT EXISTS cost_micros INT NOT NULL DEFAULT 0;
+ALTER TABLE investigations ADD COLUMN IF NOT EXISTS not_sure_reason TEXT;
+ALTER TABLE investigations ALTER COLUMN status SET DEFAULT 'running';
+DO $$
+BEGIN
+  -- The placeholder required a deploy; investigations are keyed by incident now.
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_name = 'investigations' AND column_name = 'deploy_id') THEN
+    ALTER TABLE investigations ALTER COLUMN deploy_id DROP NOT NULL;
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS investigations_incident ON investigations (incident_id);
 CREATE INDEX IF NOT EXISTS investigations_proj_time ON investigations (project_id, started_at);

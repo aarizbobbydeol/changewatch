@@ -11,6 +11,8 @@ flowchart LR
     API --> P[("Postgres 16")]
     W["Worker"] --> P
     D["Detector"] --> P
+    I["Investigator"] --> P
+    N["Notifier"] --> P
 ```
 
 ## 1. Server requirements
@@ -88,7 +90,9 @@ docker compose --profile tls up -d
 | **redis** | Redis 7 with AOF persistence for the reliable ingest queue |
 | **api** | FastAPI: ingest, read APIs, action-link receivers |
 | **worker** | Multi-process fingerprinting and event processing |
-| **detector** | 10 / 30 min release verdicts, spike detection, watchdog |
+| **detector** | 10 / 30 min release verdicts, spike detection, dead-man's switch, fallback alert delivery |
+| **investigator** | AI root-cause investigations for new incidents (uses `LLM_PROVIDER`) |
+| **notifier** | Sends queued alerts every second to Slack, Discord, Teams, email and webhooks |
 | **dashboard** | Next.js web UI |
 | **caddy** | Reverse proxy that requests and renews the TLS certificate |
 

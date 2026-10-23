@@ -47,6 +47,7 @@ async def check_and_trigger_incident(
     issue_id: int,
     payload: Dict[str, Any],
     occurred_at_dt: datetime,
+    first_event_dt: Optional[datetime] = None,
 ) -> Optional[int]:
     """
     Event-driven check called immediately after inserting an error event.
@@ -265,7 +266,7 @@ async def check_and_trigger_incident(
             where_file, where_line, where_function, in_diff, owners,
             event_count, created_at, first_event_at, last_event_at, category
         )
-        VALUES ($1, $2, $3, 'possible', $4, $5, $6, $7, $8, $9, $10, now(), $11, $11, $12)
+        VALUES ($1, $2, $3, 'possible', $4, $5, $6, $7, $8, $9, $10, now(), $11, $12, $13)
         ON CONFLICT (deploy_id, issue_id) DO UPDATE SET
             event_count = incidents.event_count + 1,
             last_event_at = EXCLUDED.last_event_at
@@ -281,6 +282,7 @@ async def check_and_trigger_incident(
         in_diff,
         json.dumps(owners),
         recent_count,
+        first_event_dt or occurred_at_dt,
         occurred_at_dt,
         category_str,
     )
@@ -324,7 +326,7 @@ async def check_and_trigger_incident(
         in_diff=in_diff,
         raw_owners=owners,
         triage_info=triage_info,
-        first_event_at=occurred_at_dt.timestamp(),
+        first_event_at=(first_event_dt or occurred_at_dt).timestamp(),
     )
 
     # 10. Enqueue AI investigation job

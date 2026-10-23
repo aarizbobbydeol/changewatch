@@ -22,7 +22,7 @@ You are working on **ChangeWatch**, an open-source, self-hosted release monitor 
 - Python 3.12, FastAPI, asyncpg (no ORM, no Alembic). SQL migrations live in `server/sql/migrations/001…016` and apply automatically on API startup.
 - Postgres 16 (events table partitioned by time) and Redis 7 (AOF).
 - Next.js 14 dashboard.
-- Docker Compose services: `postgres`, `redis`, `api`, `worker`, `detector`, `dashboard`, plus `caddy` (automatic TLS) under `--profile tls`.
+- Docker Compose services: `postgres`, `redis`, `api`, `worker`, `detector`, `investigator`, `notifier`, `dashboard`, plus `caddy` (automatic TLS) under `--profile tls`. App services load `.env` (`env_file`), so every setting in `config.py` reaches them.
 
 ## 3. Repository layout
 
@@ -37,10 +37,11 @@ server/app/
   detector.py          verdict engine (10 / 30 min checkpoints), runs every 60 s
   incident_manager.py  instant incident alerts, triggered from the worker
   watchdog.py          dead-man's switch (SILENT_AFTER_MIN)
-  outbox.py            exactly-once alert delivery
+  outbox.py            exactly-once alert delivery (FOR UPDATE SKIP LOCKED), routed per channel; fans out to every enabled channel
+  notifier.py          sends the outbox every second (detector is the 60 s fallback)
   notifiers/           Slack, Discord, Teams, email, signed webhooks
   decisions/           rules / jev / fake providers, verifier, catalog
-  investigator/        AI root cause: agent, read-only SELECT tools
+  investigator/        AI root cause: agent, read-only SELECT tools; worker.py consumes the `investigations` queue (reliable: processing list, 3 retries, dead letter)
   trust/               calm alerting, action links, feedback, Brier calibration, digest, secret guard
   analytics/           metrics.py (pure functions) and /v1/analytics router
   metering.py, billing.py   micro-USD usage metering and budgets
@@ -111,6 +112,8 @@ Other CLI subcommands: `list-projects`, `generate-master-key`, `rotate-master-ke
 
 - Without a master key, the worker and API log a warning and store events and deploys **without** their stack trace, extra data or diff. Compose now prevents that by requiring `MASTER_KEY`, but a non-Docker setup without `MASTER_KEY` still drops them.
 - The SDK ships ASGI middleware only.
-- "Sub-5 s instant alerts" is the design: the worker triggers incident alerts inline. No benchmark measures it yet.
+- Instant alerts: measured 1.9 s from first error to delivery in Discord/webhook in a local end-to-end run; not yet benchmarked under burst load. `incidents.first_alert_ms` measures time to queue (delivery adds up to ~1 s).
+- Row-level security is not effective under the default Docker setup: the official Postgres image makes `POSTGRES_USER` a superuser, and superusers bypass RLS. Tenant isolation currently relies on the app's own `project_id` filters.
+- Diffs, stack traces and event extras are stored both encrypted and in plaintext columns; file contents and CODEOWNERS are plaintext.
 
 More detail: [README](../README.md), [SELF_HOSTING](SELF_HOSTING.md), [SECURITY_MODEL](SECURITY_MODEL.md), [VERIFICATION](VERIFICATION.md), [DECISIONS](../DECISIONS.md).

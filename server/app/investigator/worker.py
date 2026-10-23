@@ -26,6 +26,9 @@ from app.queue import close_redis, get_redis, init_redis
 logger = logging.getLogger("changewatch.investigator.worker")
 
 INVESTIGATIONS_QUEUE = "investigations"
+INVESTIGATIONS_PROCESSING = "investigations:processing"
+INVESTIGATIONS_DEAD = "investigations:dead"
+MAX_INVESTIGATION_TRIES = 3
 HEARTBEAT_KEY = "heartbeat:investigator"
 
 
@@ -92,14 +95,19 @@ async def execute_investigation(
 
 
 async def process_next_investigation(redis_client, timeout: int = 2) -> bool:
-    """Pull one job from Redis queue and process it. Returns True if a job was processed."""
-    try:
-        item = await redis_client.brpop([INVESTIGATIONS_QUEUE], timeout=timeout)
-        if not item:
-            return False
+    """Pull one job from Redis queue and process it. Returns True if a job was processed.
 
-        _, raw_payload = item
-        data = json.loads(raw_payload) if isinstance(raw_payload, str) else json.loads(raw_payload.decode("utf-8"))
+    Jobs are moved to a processing list and removed only after they finish, so a crash
+    never loses one; failures are retried MAX_INVESTIGATION_TRIES times, then dead-lettered.
+    """
+    # incident_manager LPUSHes jobs, so the oldest job is on the right
+    raw_payload = await redis_client.blmove(INVESTIGATIONS_QUEUE, INVESTIGATIONS_PROCESSING, timeout, "RIGHT", "LEFT")
+    if not raw_payload:
+        return False
+
+    data: Dict[str, Any] = {}
+    try:
+        data = json.loads(raw_payload)
         project_id = int(data["project_id"])
         incident_id = int(data["incident_id"])
         deep_mode = bool(data.get("deep_mode", False))
@@ -107,12 +115,30 @@ async def process_next_investigation(redis_client, timeout: int = 2) -> bool:
         logger.info("Processing investigation job: project=%d incident=%d deep=%s", project_id, incident_id, deep_mode)
         async with project_transaction(project_id) as conn:
             await execute_investigation(conn, project_id, incident_id, deep_mode=deep_mode)
+        await redis_client.lrem(INVESTIGATIONS_PROCESSING, 1, raw_payload)
         return True
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        logger.warning("Error processing investigation job: %s", exc)
+        tries = int(data.get("_tries", 0)) + 1 if isinstance(data, dict) else MAX_INVESTIGATION_TRIES
+        logger.error("Investigation job failed (attempt %d/%d): %s", tries, MAX_INVESTIGATION_TRIES, exc, exc_info=True)
+        target = INVESTIGATIONS_QUEUE if tries < MAX_INVESTIGATION_TRIES else INVESTIGATIONS_DEAD
+        retry_payload = json.dumps({**data, "_tries": tries}) if isinstance(data, dict) and data else raw_payload
+        async with redis_client.pipeline(transaction=True) as pipe:
+            pipe.lrem(INVESTIGATIONS_PROCESSING, 1, raw_payload)
+            pipe.lpush(target, retry_payload)
+            await pipe.execute()
         return False
+
+
+async def requeue_interrupted_investigations(redis_client) -> int:
+    """On startup, return jobs left in the processing list by a crashed run (single investigator)."""
+    moved = 0
+    while await redis_client.rpoplpush(INVESTIGATIONS_PROCESSING, INVESTIGATIONS_QUEUE):
+        moved += 1
+    if moved:
+        logger.warning("Requeued %d interrupted investigation job(s)", moved)
+    return moved
 
 
 async def run_investigator_worker():
@@ -131,6 +157,7 @@ async def run_investigator_worker():
             pass
 
     try:
+        await requeue_interrupted_investigations(redis_client)
         while not stop_event.is_set():
             # Update heartbeat
             try:
@@ -139,7 +166,14 @@ async def run_investigator_worker():
                 logger.debug("Failed writing investigator heartbeat: %s", hb_exc)
 
             # Process job
-            await process_next_investigation(redis_client, timeout=2)
+            try:
+                await process_next_investigation(redis_client, timeout=2)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # Redis unavailable: back off instead of spinning
+                logger.warning("Investigator queue unavailable: %s", exc)
+                await asyncio.sleep(2)
             await asyncio.sleep(0.01)
     finally:
         logger.info("Shutting down investigator worker...")
