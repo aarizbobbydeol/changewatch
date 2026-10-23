@@ -43,8 +43,13 @@ Edit `/opt/changewatch/.env`:
 # Caddy provisions a Let's Encrypt certificate for this host
 PUBLIC_HOSTNAME=changewatch.yourdomain.com
 
-# Strong random secret (openssl rand -hex 32)
-REDIS_PASSWORD=change_me
+# Encryption master key (required). Generate once and BACK IT UP:
+# losing it makes stored stack traces and diffs unreadable.
+MASTER_KEY=<openssl rand -hex 32>
+
+# Strong random secrets (openssl rand -hex 32: hex is safe inside URLs)
+POSTGRES_PASSWORD=<openssl rand -hex 32>
+REDIS_PASSWORD=<openssl rand -hex 32>
 
 # AI root cause: anthropic, ollama, or fake
 LLM_PROVIDER=anthropic
@@ -58,8 +63,18 @@ DECISION_PROVIDER=rules
 TELEMETRY_ENABLED=0
 ```
 
-> [!WARNING]
-> Don't change `POSTGRES_PASSWORD` yet. The `api`, `worker` and `detector` services in `docker-compose.yml` hardcode `changewatch:changewatch` in `DATABASE_URL`, so a different password locks them out of the database. Keep Postgres off the public internet: open only ports 80 and 443 in your firewall.
+Quick way to fill in all three secrets:
+
+```bash
+for v in MASTER_KEY POSTGRES_PASSWORD REDIS_PASSWORD; do
+  sed -i "/^$v=/d" .env && echo "$v=$(openssl rand -hex 32)" >> .env
+done
+```
+
+> [!IMPORTANT]
+> - `docker compose` refuses to start until `MASTER_KEY` is set.
+> - Set `POSTGRES_PASSWORD` **before the first** `docker compose up`. Postgres only reads it when it creates its data volume. To change it later, run `ALTER USER` inside Postgres, then update `.env`.
+> - Keep Postgres off the public internet: open only ports 80 and 443 in your firewall.
 
 ## 4. Start the stack with HTTPS
 

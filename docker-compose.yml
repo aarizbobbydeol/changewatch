@@ -11,7 +11,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U changewatch -d changewatch"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -41,7 +41,9 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://changewatch:changewatch@postgres:5432/changewatch
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-changewatch}:${POSTGRES_PASSWORD:-changewatch}@postgres:5432/${POSTGRES_DB:-changewatch}
+      - MASTER_KEY=${MASTER_KEY:?MASTER_KEY is not set - generate one with openssl rand -hex 32 and add it to .env}
+      - MASTER_KEY_PREVIOUS=${MASTER_KEY_PREVIOUS:-}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-changewatch_secret_password}@redis:6379/0
       - REDIS_PASSWORD=${REDIS_PASSWORD:-changewatch_secret_password}
       - DATABASE_SSL=${DATABASE_SSL:-0}
@@ -79,7 +81,9 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "app.worker", "--processes", "auto"]
     environment:
-      - DATABASE_URL=postgresql://changewatch:changewatch@postgres:5432/changewatch
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-changewatch}:${POSTGRES_PASSWORD:-changewatch}@postgres:5432/${POSTGRES_DB:-changewatch}
+      - MASTER_KEY=${MASTER_KEY:?MASTER_KEY is not set - generate one with openssl rand -hex 32 and add it to .env}
+      - MASTER_KEY_PREVIOUS=${MASTER_KEY_PREVIOUS:-}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-changewatch_secret_password}@redis:6379/0
       - REDIS_PASSWORD=${REDIS_PASSWORD:-changewatch_secret_password}
       - DATABASE_SSL=${DATABASE_SSL:-0}
@@ -111,7 +115,9 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "app.detector"]
     environment:
-      - DATABASE_URL=postgresql://changewatch:changewatch@postgres:5432/changewatch
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-changewatch}:${POSTGRES_PASSWORD:-changewatch}@postgres:5432/${POSTGRES_DB:-changewatch}
+      - MASTER_KEY=${MASTER_KEY:?MASTER_KEY is not set - generate one with openssl rand -hex 32 and add it to .env}
+      - MASTER_KEY_PREVIOUS=${MASTER_KEY_PREVIOUS:-}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-changewatch_secret_password}@redis:6379/0
       - REDIS_PASSWORD=${REDIS_PASSWORD:-changewatch_secret_password}
       - DATABASE_SSL=${DATABASE_SSL:-0}

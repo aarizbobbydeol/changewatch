@@ -173,6 +173,7 @@ Every threshold can be tuned with environment variables (see [Configuration](#%E
 ```bash
 git clone https://github.com/aarizbobbydeol/changewatch.git && cd changewatch
 cp .env.example .env            # add ANTHROPIC_API_KEY, or set LLM_PROVIDER=ollama
+sed -i.bak "s/^MASTER_KEY=$/MASTER_KEY=$(openssl rand -hex 32)/" .env   # encryption key: back it up!
 docker compose up -d            # postgres · redis · api · worker · detector · dashboard
 docker compose exec api python -m app.cli create-project "my-app" \
   --slack-webhook "https://hooks.slack.com/services/..."
@@ -318,7 +319,10 @@ See [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md) and run the audit script 
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATABASE_URL` | `postgresql://...` | PostgreSQL 16 connection URL |
+| `MASTER_KEY` | **required** | 256-bit encryption key (`openssl rand -hex 32`). Compose refuses to start without it. Back it up. |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `changewatch` | Postgres credentials. Compose builds every service's `DATABASE_URL` from them. |
+| `REDIS_PASSWORD` | `changewatch_secret_password` | Redis password |
+| `DATABASE_URL` | `postgresql://...` | PostgreSQL 16 connection URL (local development without Docker) |
 | `REDIS_URL` | `redis://...` | Redis 7 connection URL |
 | `LLM_PROVIDER` | `anthropic` | `anthropic`, `ollama`, or `fake` |
 | `ANTHROPIC_API_KEY` | `""` | API key for Anthropic Claude |

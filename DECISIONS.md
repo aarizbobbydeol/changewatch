@@ -753,3 +753,14 @@ This document records key decisions made during development to ensure transparen
 
 
 
+
+### 64. Docker Compose: Postgres credentials and required MASTER_KEY
+- **Problem:**
+  1. `api`, `worker` and `detector` hardcoded `postgresql://changewatch:changewatch@...` while the `postgres` service read `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB`. Setting a real password locked every service out of the database. The healthcheck also hardcoded the user and database.
+  2. `MASTER_KEY` was never passed to any container. Field encryption (`app.crypto.encrypt`) raised `MasterKeyMissingError`, which the worker and deploy hook catch and log, so stack traces, event extras and deploy diffs were silently not stored. With `SEED_DEV_PROJECT=1` they were instead encrypted with the fixed dev key `0x01 * 32`.
+- **Decision:**
+  - Build every service's `DATABASE_URL` from `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` (defaults unchanged: `changewatch`). The healthcheck uses the container's own env (`$${POSTGRES_USER}`).
+  - Pass `MASTER_KEY` with `${MASTER_KEY:?...}` so `docker compose` refuses to start without it, rather than losing data quietly ("never lose data silently"). Also pass `MASTER_KEY_PREVIOUS` for `rotate-master-key`.
+  - `MASTER_KEY_FILE` is not wired into compose (it would need a mounted secret file). Use `MASTER_KEY`.
+  - Recommend `openssl rand -hex 32` for all secrets: hex is accepted by `_parse_key` and is safe inside connection URLs.
+- **Verification:** A compose interpolation check confirms the missing key is rejected with a clear message, the defaults are unchanged, and custom credentials reach `postgres`, `api`, `worker`, `detector` and the healthcheck consistently. An app-level check confirms that an `openssl rand -hex 32` key round-trips a data key and that a missing key raises. Full suite: 288 passed, 2 skipped. `docker compose up` itself was not run: Docker is not installed on the build machine.
