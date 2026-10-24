@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 from app.auth import get_project_id_by_api_key
-from app.db import project_transaction
+from app.db import TENANT_SCOPE_SQL, project_transaction
 from app.main import app
 
 
@@ -173,5 +173,5 @@ async def test_rls_sql_isolation_unit():
             assert conn == mock_conn
 
         mock_conn.execute.assert_called_once_with(
-            "SELECT set_config('app.project_id', $1, true)", "99"
+            TENANT_SCOPE_SQL, "99"
         )

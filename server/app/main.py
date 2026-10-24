@@ -1231,11 +1231,13 @@ async def update_project_settings(
 
 
 @app.get("/v1/export", tags=["Audit & Compliance"])
-
 async def export_project_data(
     project_id: int = Depends(require_read_project_id),
+    _admin: bool = Depends(require_admin_key),
 ) -> Dict[str, Any]:
     """Export all project data (deploys, issues, events, traffic) for audit and portability.
+
+    Needs the project's read key (X-API-Key, says which project) and the admin key (X-Admin-Key).
 
     Decrypted application-level columns are returned in plaintext for the authenticated project.
     """
@@ -1357,8 +1359,12 @@ async def export_project_data(
 @app.delete("/v1/project-data", tags=["Audit & Compliance"])
 async def purge_project_data(
     project_id: int = Depends(require_read_project_id),
+    _admin: bool = Depends(require_admin_key),
 ) -> Dict[str, Any]:
     """Purge all telemetry, events, deploys, issues, and outbox rows for the authenticated project.
+
+    Needs the project's read key (X-API-Key, says which project) and the admin key (X-Admin-Key):
+    the read key alone, which the dashboard and testers hold, can only read.
 
     The project shell and credentials remain intact; all historical activity and code data is deleted.
     """

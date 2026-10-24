@@ -176,15 +176,14 @@ async def test_verdict_becomes_no_data_when_source_is_silent():
         "environment": "prod",
     }
 
-    # is_source_silent returns True
-    mock_conn._source_silent = True
-
-    verdict, reasons, is_final, is_flagged = await evaluate_deploy(
-        conn=mock_conn,
-        project_id=1,
-        deploy=deploy,
-        now_dt=now_dt,
-    )
+    # The app's source has gone silent
+    with patch("app.sources.is_source_silent", new=AsyncMock(return_value=True)):
+        verdict, reasons, is_final, is_flagged = await evaluate_deploy(
+            conn=mock_conn,
+            project_id=1,
+            deploy=deploy,
+            now_dt=now_dt,
+        )
 
     assert verdict == "no_data"
     assert any("Source is silent" in r for r in reasons)

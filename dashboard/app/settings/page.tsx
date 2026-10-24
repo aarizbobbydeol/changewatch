@@ -93,7 +93,9 @@ export default function SettingsPage() {
         <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
           <h2 className="font-semibold mb-1">Dashboard access</h2>
           <p className="text-sm text-slate-400 mb-4">
-            Saved in this browser only and used by every page. Use your project&apos;s read key (<code>cw_read_…</code>); it can only read.
+            Saved in this browser only and used by every page. Use your project&apos;s read key (<code>cw_read_…</code>). It sees
+            this project only and cannot send events, export or delete data; it can acknowledge and mute incidents,
+            start investigations, and change this project&apos;s settings and budget.
           </p>
           <form onSubmit={save} className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] items-end">
             <label className="text-xs text-slate-400">

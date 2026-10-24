@@ -21,7 +21,14 @@ DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'changewatch_tenant') THEN
     IF NOT pg_has_role(current_user, 'changewatch_tenant', 'MEMBER') THEN
-      EXECUTE format('GRANT changewatch_tenant TO %I', current_user);
+      BEGIN
+        EXECUTE format('GRANT changewatch_tenant TO %I', current_user);
+      EXCEPTION WHEN insufficient_privilege THEN
+        -- Roles are cluster-wide: another database's owner may have created this one. Without
+        -- membership the app keeps its own role; FORCE ROW LEVEL SECURITY still applies to a
+        -- non-superuser owner.
+        RAISE NOTICE 'Cannot join role changewatch_tenant: %', SQLERRM;
+      END;
     END IF;
     GRANT USAGE ON SCHEMA public TO changewatch_tenant;
     GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO changewatch_tenant;

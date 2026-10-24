@@ -855,12 +855,12 @@ PYTHONPATH=server python -m app.cli cleanup-retention --days 30 --code-days 7
 ### 3. Data Portability & Audit: Export & Purge Endpoints
 1. **Export Project Data:**
    ```bash
-   curl -s -H "X-API-Key: cw_read_your_key" "http://localhost:8000/v1/export" | jq .
+   curl -s -H "X-API-Key: cw_read_your_key" -H "X-Admin-Key: $ADMIN_API_KEY" "http://localhost:8000/v1/export" | jq .
    ```
    Returns full project metadata, deploys, issues, events, and traffic. Sensitive columns (`diff`, `stack_trace`, `extra`) are decrypted in-memory for the authenticated tenant.
 2. **Purge Project Data:**
    ```bash
-   curl -s -X DELETE -H "X-API-Key: cw_read_your_key" "http://localhost:8000/v1/project-data" | jq .
+   curl -s -X DELETE -H "X-API-Key: cw_read_your_key" -H "X-Admin-Key: $ADMIN_API_KEY" "http://localhost:8000/v1/project-data" | jq .
    ```
    Purges all project events, traffic, issues, and deploys while leaving tenant credentials intact.
 

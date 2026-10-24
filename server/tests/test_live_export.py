@@ -7,7 +7,7 @@ import pytest
 import redis.asyncio as aioredis
 from httpx import ASGITransport, AsyncClient
 
-from app.auth import require_read_project_id
+from app.auth import require_admin_key, require_read_project_id
 from app.config import settings
 from app.db import close_db_pool, init_db_pool
 from app.main import app
@@ -35,6 +35,7 @@ async def test_live_export_returns_decrypted_events_and_issue_counts():
     await init_db_pool()
     await init_redis()
     app.dependency_overrides[require_read_project_id] = lambda: 1
+    app.dependency_overrides[require_admin_key] = lambda: True
     try:
         run = uuid.uuid4().hex[:10]
         trace = f'File "app/export_{run}.py", line 9, in g\n  raise KeyError'
@@ -66,6 +67,7 @@ async def test_live_export_returns_decrypted_events_and_issue_counts():
         assert {"deploys", "traffic", "project"} <= data.keys()
     finally:
         app.dependency_overrides.pop(require_read_project_id, None)
+        app.dependency_overrides.pop(require_admin_key, None)
         await close_db_pool()
         await close_redis()
 
@@ -85,6 +87,7 @@ async def test_live_analytics_csv_export_every_metric(metric, header):
 
     await init_db_pool()
     app.dependency_overrides[require_read_project_id] = lambda: 1
+    app.dependency_overrides[require_admin_key] = lambda: True
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get(f"/v1/analytics/export.csv?metric={metric}&period=30&env=prod")
@@ -94,6 +97,7 @@ async def test_live_analytics_csv_export_every_metric(metric, header):
         assert unknown.status_code == 422
     finally:
         app.dependency_overrides.pop(require_read_project_id, None)
+        app.dependency_overrides.pop(require_admin_key, None)
         await close_db_pool()
 
 
@@ -104,10 +108,12 @@ async def test_live_incident_timeline_unknown_id_is_404():
 
     await init_db_pool()
     app.dependency_overrides[require_read_project_id] = lambda: 1
+    app.dependency_overrides[require_admin_key] = lambda: True
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/incidents/2000000000/timeline")
         assert resp.status_code == 404
     finally:
         app.dependency_overrides.pop(require_read_project_id, None)
+        app.dependency_overrides.pop(require_admin_key, None)
         await close_db_pool()

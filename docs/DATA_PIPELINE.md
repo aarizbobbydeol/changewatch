@@ -51,7 +51,7 @@ flowchart LR
 | **Queue** | Redis `events` | Reliable queue: a worker moves items to its own `events:processing:<worker>` list (`BLMOVE`), removes them only after the database commit, and a reaper returns items left by a crashed worker. A batch that fails is retried per event up to 3 times, then moved to `events:dead`. |
 | **Transform** | `server/app/worker.py` | Per project, in one database transaction: **claim** each `event_id` in `ingest_dedupe` and skip events already claimed; **scrub** message, stack trace, path and `extra` again (any HTTP client can send events, not only the SDK); **fingerprint** (exception type + normalized stack trace, or the message when there is no trace; the path for slow requests) and upsert the issue; **match** the deploy (by `release`, else the latest deploy before the event in that environment); **storm control** keeps at most `STORE_FULL_PER_MIN` (20) full rows per error per minute while counts stay exact; **encrypt** stack traces and `extra` (AES-256-GCM, per-project key). |
 | **Load** | Postgres | `issues.event_count`, `events` (weekly partitions, encrypted columns), `event_rollups` (count per issue, deploy and minute), `traffic` (requests and errors per minute), `sources` (last seen per service). Every table has forced row-level security, and tenant work runs as a role that cannot bypass it. |
-| **ELT outputs** | detector, API | The detector turns traffic and rollups into verdicts (`safe` / `watch` / `rollback` / `no_data`), incidents and alerts. `/v1/analytics/*` and the dashboard read the same tables. The weekly digest summarises them. `GET /v1/export` returns all of a project's data as JSON (decrypted); `GET /v1/usage/export.csv` returns usage. |
+| **ELT outputs** | detector, API | The detector turns traffic and rollups into verdicts (`safe` / `watch` / `rollback` / `no_data`), incidents and alerts. `/v1/analytics/*` and the dashboard read the same tables. The weekly digest summarises them. `GET /v1/export` (admin key plus the project's read key) returns all of a project's data as JSON (decrypted); `GET /v1/usage/export.csv` returns usage. |
 | **Retention** | detector, hourly | Event partitions older than `RETENTION_DAYS` (30) are dropped; code (diffs, files, CODEOWNERS) after `CODE_RETENTION_DAYS` (7); the dedupe ledger after `DEDUPE_WINDOW_HOURS` (24). |
 
 ## Guarantees
@@ -69,7 +69,7 @@ flowchart LR
 ```bash
 DATABASE_URL=postgresql://changewatch:PASSWORD@localhost:5432/changewatch \
   python scripts/verify_pipeline.py --api http://localhost:8000 \
-  --ingest-key cw_ingest_... --read-key cw_read_...
+  --ingest-key cw_ingest_... --read-key cw_read_... --admin-key "$ADMIN_API_KEY"
 ```
 
 It needs `asyncpg` (installed with the server requirements) and prints one line per check:

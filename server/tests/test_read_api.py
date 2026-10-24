@@ -7,6 +7,7 @@ import pytest
 from app.auth import hash_api_key
 from app.cache import api_key_cache
 from app.main import app
+from app.db import TENANT_SCOPE_SQL
 
 
 def build_mock_pool(mock_conn: AsyncMock):
@@ -697,7 +698,7 @@ async def test_read_endpoints_filtering_and_rls_sql(auth_keys):
             )
             assert r1.status_code == 200
             # Confirm RLS set_config was called with project_id = 1
-            mock_conn.execute.assert_called_with("SELECT set_config('app.project_id', $1, true)", "1")
+            mock_conn.execute.assert_called_with(TENANT_SCOPE_SQL, "1")
             # Confirm fetch query received project_id 1 and 'staging' filter
             fetch_call_args = mock_conn.fetch.call_args[0]
             assert fetch_call_args[1] == 1  # project_id

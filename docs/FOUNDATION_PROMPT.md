@@ -11,7 +11,7 @@ You are working on **ChangeWatch**, an open-source, self-hosted release monitor 
 1. **Zero event loss.** Ingest goes through a reliable Redis queue: workers `BLMOVE`/`RPOPLPUSH` from `events` into a per-worker `events:processing:{worker_id}` list, and a reaper returns stuck items. Events are idempotent on `event_id`. Alerts go through a durable `outbox` table and are delivered exactly once.
 2. **Tenant isolation in the database.** Postgres row-level security is `ENABLE`d and `FORCE`d. Policies check `project_id = current_setting('app.project_id')::int`. `project_transaction` / `read_project_transaction` run as the restricted role `changewatch_tenant` (migration 018, `SET LOCAL ROLE`) whenever the connected user is a superuser or has BYPASSRLS; cross-project system jobs use `get_connection()` with the owner role.
 3. **Encryption.** Each project has an AES-256-GCM data key wrapped by a master key (`MASTER_KEY`, required; `docker-compose.yml` refuses to start without it). Diffs, CODEOWNERS, file contents, stack traces, extras, investigation results/steps, the project Slack webhook and channel configs are stored only in `*_enc` columns (`crypto.encrypt_or_keep` / `decrypt_or_plain`); `app.cli encrypt-existing` converts legacy plaintext. Keys rotate from the CLI with `MASTER_KEY_PREVIOUS`.
-4. **Separate key roles.** The ingest key (`cw_ingest_…`) can only write. The read key (`cw_read_…`) can only read. Only SHA-256 hashes are stored. `cw_test_key_123` is a dev-only seed (`SEED_DEV_PROJECT=1`).
+4. **Separate key roles.** The ingest key (`cw_ingest_…`) can only send events and deploys. The read key (`cw_read_…`) is the dashboard's key: it reads one project and can take team actions (acknowledge, mute, feedback, investigate) and change that project's settings and budget. Export and purge also need the admin key (`ADMIN_API_KEY`). Only SHA-256 hashes are stored. `cw_test_key_123` is a dev-only seed (`SEED_DEV_PROJECT=1`).
 5. **Never write to customer repos.** `github_client.ReadOnlyGitHubClient` raises on any non-GET request. `scripts/security_check.py` uses Python `ast` to scan the codebase for mutating calls. The GitHub Action is `contents: read` and `continue-on-error: true`.
 6. **Deterministic by default.** `DECISION_PROVIDER=rules` needs no hosted API. `jev` (TypeSafe Jev) and `fake` are optional. A silent source is `no_data`, never `safe`.
 7. **Safe SDK.** Pure standard library. It never raises into the host app, never blocks, is fork-safe, and has a circuit breaker and a kill switch (`CHANGEWATCH_DISABLED=1`). Measured: p95 added latency is 0.002–0.006 ms (budget < 1 ms) and peak memory is 0.08 MB.
@@ -71,7 +71,7 @@ collector/             opt-in telemetry collector
 | Auth | Endpoints |
 |---|---|
 | Ingest key | `POST /v1/deploys`, `POST /v1/events` |
-| Read key | `GET /v1/verdict`, `/api/deploys`, `/api/issues[/{id}]`, `/api/timeline`, `/api/incidents[/{id}][/timeline]`, `POST /api/incidents/{id}/actions,feedback,investigate`, `/api/mutes`, `/api/settings`, `/v1/analytics/*`, `/v1/usage*`, `/v1/budget`, `/v1/trust/summary`, `/v1/digest/preview`, `/v1/export`, `DELETE /v1/project-data` |
+| Read key | `GET /v1/verdict`, `/api/deploys`, `/api/issues[/{id}]`, `/api/timeline`, `/api/incidents[/{id}][/timeline]`, `POST /api/incidents/{id}/actions,feedback,investigate`, `/api/mutes`, `/api/settings`, `/v1/analytics/*`, `/v1/usage*`, `/v1/budget`, `/v1/trust/summary`, `/v1/digest/preview`; with the admin key also `/v1/export` and `DELETE /v1/project-data` |
 | Other | `GET /healthz`, `GET /v1/auth/verify`, `GET /a/{token}` (signed action links), `POST /v1/integrations/slack/interactions`, `/v1/telemetry/*`, `/v1/owner/stats`, `/v1/admin/margin`, `/v1/status` |
 
 Keys go in the `X-API-Key` header.
@@ -119,8 +119,6 @@ Other CLI subcommands: `list-projects`, `generate-master-key`, `rotate-master-ke
 ## 8. Known gaps
 
 - Alerts do not yet include the signed one-click action links (`/a/<token>` works; nothing generates links for messages).
-- `GET /v1/export` and `DELETE /v1/project-data` accept the dashboard read key; the brief puts them behind the admin key.
-- `sources.is_source_silent` imports `unittest.mock` to detect test doubles (test code in production code).
 
 - Without a master key, the worker and API log a warning and store events and deploys **without** their stack trace, extra data or diff. Compose now prevents that by requiring `MASTER_KEY`, but a non-Docker setup without `MASTER_KEY` still drops them.
 - The SDK ships ASGI middleware only.

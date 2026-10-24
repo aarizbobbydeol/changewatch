@@ -28,7 +28,7 @@ ChangeWatch is designed for developer teams who care about security, transparenc
    - Automatic secret scrubbing redacts API keys, cloud tokens, and passwords. It runs in the SDK before sending and again in the worker before anything is fingerprinted or stored, because any HTTP client can call the ingest API.
    - Configurable PII scrubbing (`SCRUB_PII=1`) redacts emails, IPv4/IPv6 addresses, JWT tokens, and card numbers.
    - Automated retention pruning removes code diffs after `CODE_RETENTION_DAYS` (default 7 days) and events after `RETENTION_DAYS` (default 30 days).
-   - Customers can export (`GET /v1/export`) or purge (`DELETE /v1/project-data`) their data at any time under tenant-isolated API keys.
+   - The install owner can export (`GET /v1/export`) or purge (`DELETE /v1/project-data`) a project's data at any time with the admin key plus that project's read key; the read key alone cannot.
 
 ---
 
@@ -104,7 +104,8 @@ ChangeWatch splits credentials into two distinct permission scopes:
 | Key Role | Prefix | Permissions | Intended For |
 |---|---|---|---|
 | **Ingest Key** | `cw_ingest_...` | `POST /v1/events`<br>`POST /v1/deploys`<br>`POST /v1/heartbeat` | Python SDK, GitHub Actions CI/CD |
-| **Read Key** | `cw_read_...` | `GET /v1/verdict`<br>`GET /api/*`<br>`GET /v1/export`<br>`DELETE /v1/project-data` | Web Dashboard, SRE Audit Scripts |
+| **Read Key** | `cw_read_...` | `GET /v1/verdict`, `GET /api/*`, `/v1/analytics/*`<br>Team actions: acknowledge, mute, feedback, investigate<br>This project's settings and budget | Web Dashboard, SRE Audit Scripts |
+| **Admin Key** | `ADMIN_API_KEY` (install-wide) | Owner pages (`/v1/owner/stats`, `/v1/admin/margin`)<br>With a project's read key: `GET /v1/export`, `DELETE /v1/project-data` | Install owner only |
 
 - **Storage:** Keys are hashed with SHA-256 before storage; plaintext keys are never stored in the database.
 - **Verification:** Role checks and key matching are verified in constant time (`hmac.compare_digest`).

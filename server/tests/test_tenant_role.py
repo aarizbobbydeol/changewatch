@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import app.db as db
+from app.db import TENANT_SCOPE_SQL
 
 
 def _mock_pool(row):
@@ -32,7 +33,7 @@ async def test_superuser_switches_to_tenant_role_after_setting_project(monkeypat
         pass
 
     calls = [c.args for c in conn.execute.call_args_list]
-    assert calls[0] == ("SELECT set_config('app.project_id', $1, true)", "7")
+    assert calls[0] == (TENANT_SCOPE_SQL, "7")
     assert calls[1] == ("SET LOCAL ROLE changewatch_tenant",)
 
 

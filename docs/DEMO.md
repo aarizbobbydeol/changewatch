@@ -52,7 +52,7 @@ Set up a server with HTTPS first: [SELF_HOSTING.md](SELF_HOSTING.md) covers a sm
    docker compose --profile tls --profile demo up -d
    ```
 
-3. Share the dashboard address and the demo project's **read key**. The read key can only read that project, so testers cannot change anything or see other projects. Never share the ingest key, the admin key or `MASTER_KEY`.
+3. Share the dashboard address and the demo project's **read key**. It sees only the demo project and cannot send events, export or delete data. It can still acknowledge and mute incidents, start AI investigations, and change the project's settings and budget, so share it with people you trust, and for a public demo use `LLM_PROVIDER=fake` (or `ollama`) so investigations cost nothing. Never share the ingest key, the admin key or `MASTER_KEY`.
 
 Use a server that holds only demo data. Testers who connect their own app should get their own project (`create-project`), which row-level security keeps separate.
 

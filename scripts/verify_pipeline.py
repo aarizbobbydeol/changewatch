@@ -6,11 +6,11 @@ Sends a known batch through the public ingest API, then checks every stage in Po
   load      issue.event_count == events accepted; stack traces stored encrypted only
   ELT       sum(event_rollups.count) == issue.event_count; heartbeat requests land in traffic
   exactly-once  re-sending the same batch (an SDK retry) changes nothing
-  export    GET /v1/export matches the database, stack traces decrypted (with --read-key)
+  export    GET /v1/export matches the database, stack traces decrypted (with --read-key and --admin-key)
 
 Usage:
   DATABASE_URL=postgresql://... python scripts/verify_pipeline.py \\
-      --api http://localhost:8000 --ingest-key cw_ingest_... [--read-key cw_read_...] [--events 30]
+      --api http://localhost:8000 --ingest-key cw_ingest_... [--read-key cw_read_... --admin-key ...] [--events 30]
 Exit code 0 when every check passes.
 """
 from __future__ import annotations
@@ -38,8 +38,9 @@ def post_events(api: str, key: str, events: list) -> dict:
         return json.loads(resp.read())
 
 
-def get_json(api: str, path: str, key: str) -> dict:
-    req = urllib.request.Request(f"{api.rstrip('/')}{path}", headers={"X-API-Key": key})
+def get_json(api: str, path: str, key: str, admin_key: str = "") -> dict:
+    headers = {"X-API-Key": key, **({"X-Admin-Key": admin_key} if admin_key else {})}
+    req = urllib.request.Request(f"{api.rstrip('/')}{path}", headers=headers)
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read())
 
@@ -109,7 +110,9 @@ async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--api", default=os.getenv("CHANGEWATCH_API", "http://localhost:8000"))
     parser.add_argument("--ingest-key", default=os.getenv("CHANGEWATCH_INGEST_KEY"), required=os.getenv("CHANGEWATCH_INGEST_KEY") is None)
-    parser.add_argument("--read-key", default=os.getenv("CHANGEWATCH_READ_KEY"), help="also check GET /v1/export")
+    parser.add_argument("--read-key", default=os.getenv("CHANGEWATCH_READ_KEY"),
+                        help="with --admin-key, also check GET /v1/export")
+    parser.add_argument("--admin-key", default=os.getenv("CHANGEWATCH_ADMIN_KEY"), help="ADMIN_API_KEY of the server")
     parser.add_argument("--events", type=int, default=30, help="error events to send (default 30)")
     parser.add_argument("--store-full-per-min", type=int, default=int(os.getenv("STORE_FULL_PER_MIN", "20")))
     args = parser.parse_args()
@@ -156,8 +159,8 @@ async def main() -> int:
         check(again["rollup_sum"] == snap["rollup_sum"], f"exactly-once: rollups unchanged after re-send ({again['rollup_sum']})")
         check(traffic_retry == traffic_after, f"exactly-once: traffic unchanged after re-send (+{traffic_retry - traffic_after})")
 
-        if args.read_key:
-            export = get_json(args.api, "/v1/export", args.read_key)
+        if args.read_key and args.admin_key:
+            export = get_json(args.api, "/v1/export", args.read_key, args.admin_key)
             issue = next((i for i in export["issues"] if i["id"] == snap["issue_id"]), None)
             check(bool(issue) and issue["event_count"] == again["event_count"],
                   f"export: issue event_count {issue and issue['event_count']} == database {again['event_count']}")

@@ -13,6 +13,13 @@ _read_db_pool: Optional[asyncpg.Pool] = None
 TENANT_ROLE = "changewatch_tenant"
 _switch_to_tenant_role = False
 
+# Connections start in system scope: system jobs (detector, outbox, retention, escalations) read
+# every project, which row-level security otherwise blocks when the database user is not a
+# superuser (managed Postgres). Tenant transactions turn it off; migration 022 adds the policy.
+SYSTEM_SCOPE_SETTINGS = {"app.system_scope": "all"}
+# Within a tenant transaction: this project only, and no system scope
+TENANT_SCOPE_SQL = "SELECT set_config('app.project_id', $1, true), set_config('app.system_scope', '', true)"
+
 
 async def detect_tenant_role(pool: asyncpg.Pool) -> bool:
     """Decide whether tenant transactions must run as the restricted role.
@@ -67,6 +74,7 @@ async def init_db_pool(
         "dsn": database_url,
         "min_size": min_size,
         "max_size": pool_max,
+        "server_settings": dict(SYSTEM_SCOPE_SETTINGS),
     }
     if settings.DATABASE_SSL:
         write_kwargs["ssl"] = "require"
@@ -77,7 +85,7 @@ async def init_db_pool(
         "dsn": database_url,
         "min_size": min_size,
         "max_size": pool_max,
-        "server_settings": {"statement_timeout": "5000ms"},
+        "server_settings": {"statement_timeout": "5000ms", **SYSTEM_SCOPE_SETTINGS},
     }
     if settings.DATABASE_SSL:
         read_kwargs["ssl"] = "require"
@@ -156,8 +164,8 @@ async def project_transaction(project_id: int) -> AsyncGenerator[asyncpg.Connect
     pool = get_db_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            # Parameterized equivalent of SET LOCAL app.project_id = ...
-            await conn.execute("SELECT set_config('app.project_id', $1, true)", str(project_id))
+            # Parameterized equivalent of SET LOCAL app.project_id = ... (and leave system scope)
+            await conn.execute(TENANT_SCOPE_SQL, str(project_id))
             await _enforce_rls(conn)
             yield conn
 
@@ -171,6 +179,6 @@ async def read_project_transaction(project_id: int) -> AsyncGenerator[asyncpg.Co
     pool = get_read_db_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("SELECT set_config('app.project_id', $1, true)", str(project_id))
+            await conn.execute(TENANT_SCOPE_SQL, str(project_id))
             await _enforce_rls(conn)
             yield conn

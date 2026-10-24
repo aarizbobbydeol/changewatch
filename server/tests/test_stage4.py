@@ -5,6 +5,13 @@ from app.analysis import dispatch_verdict_alert, format_slack_blocks, generate_l
 from app.detector import calculate_p95, evaluate_deploy
 
 
+@pytest.fixture(autouse=True)
+def source_not_silent():
+    """These verdict tests mock the queries for traffic and errors; the app's source is reporting."""
+    with patch("app.sources.is_source_silent", new=AsyncMock(return_value=False)):
+        yield
+
+
 def test_p95_calculation():
     samples = list(range(1, 101))
     p95 = calculate_p95(samples)

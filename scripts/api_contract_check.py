@@ -36,6 +36,8 @@ CHANGES_DATA = {
 }
 SAMPLES = {"sha": "deadbeefcafe", "metric": "overview", "meter": "ai_investigation", "token": "not-a-real-token"}
 NOT_FOUND_OK = {("GET", "/v1/verdict")}  # the sample sha has no deploy
+# Admin endpoints that act on one project: the read key says which project
+ADMIN_WITH_PROJECT = {("GET", "/v1/export"), ("DELETE", "/v1/project-data")}
 MISSING_ID = 2_000_000_000
 
 
@@ -163,7 +165,13 @@ def main() -> int:
             if needs_admin:
                 status, _ = req(read)
                 r.expect(status in (401, 403), f"{name}: read key on admin endpoint -> expected 401/403, got {status}")
-                if args.admin_key:
+                if args.admin_key and (method, path) in ADMIN_WITH_PROJECT:
+                    status, _ = call(api, method, target, None, params, headers={"X-Admin-Key": args.admin_key})
+                    r.expect(status == 401, f"{name}: admin key without a project key -> expected 401, got {status}")
+                    if (method, path) not in CHANGES_DATA:
+                        status, _ = call(api, method, target, read, params, headers={"X-Admin-Key": args.admin_key})
+                        r.expect(status == 200, f"{name}: read key + admin key -> expected 200, got {status}")
+                elif args.admin_key:
                     status, _ = call(api, method, target, None, params, headers={"X-Admin-Key": args.admin_key})
                     r.expect(status == 200, f"{name}: admin key -> expected 200, got {status}")
                 continue

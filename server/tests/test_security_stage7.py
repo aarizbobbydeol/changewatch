@@ -14,6 +14,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.auth import hash_api_key
+from app.config import settings
 from app.main import app
 from app.pii import scrub_pii
 from app.retention import cleanup_old_records
@@ -117,7 +118,7 @@ async def test_retention_cleans_up_code_diffs_older_than_cutoff():
 
 
 @pytest.mark.asyncio
-async def test_export_endpoint_requires_read_key_and_returns_data(auth_keys):
+async def test_export_endpoint_requires_read_and_admin_keys_and_returns_data(auth_keys):
     """Verify GET /v1/export returns decrypted project export with read key."""
     mock_conn = AsyncMock()
     async def mock_fetchrow(query, *args):
@@ -147,7 +148,8 @@ async def test_export_endpoint_requires_read_key_and_returns_data(auth_keys):
     mock_pool = build_mock_pool(mock_conn)
 
     with patch("app.auth.get_redis", return_value=None), \
-         patch("app.db.get_db_pool", return_value=mock_pool):
+         patch("app.db.get_db_pool", return_value=mock_pool), \
+         patch.object(settings, "ADMIN_API_KEY", "admin-key-for-tests"):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             # 1. No key -> 401
@@ -158,8 +160,14 @@ async def test_export_endpoint_requires_read_key_and_returns_data(auth_keys):
             resp_403 = await client.get("/v1/export", headers={"X-API-Key": auth_keys["ingest_key"]})
             assert resp_403.status_code == 403
 
-            # 3. Read key -> 200 with data
-            resp = await client.get("/v1/export", headers={"X-API-Key": auth_keys["read_key"]})
+            # 3. The read key alone (the dashboard's, maybe shared with testers) -> 401
+            resp_read_only = await client.get("/v1/export", headers={"X-API-Key": auth_keys["read_key"]})
+            assert resp_read_only.status_code == 401
+
+            # 4. Read key (which project) + admin key -> 200 with data
+            resp = await client.get(
+                "/v1/export", headers={"X-API-Key": auth_keys["read_key"], "X-Admin-Key": "admin-key-for-tests"}
+            )
             assert resp.status_code == 200
             data = resp.json()
             assert data["project"]["name"] == "acme-prod"
@@ -170,7 +178,7 @@ async def test_export_endpoint_requires_read_key_and_returns_data(auth_keys):
 
 
 @pytest.mark.asyncio
-async def test_purge_endpoint_requires_read_key_and_deletes_project_data(auth_keys):
+async def test_purge_endpoint_requires_read_and_admin_keys_and_deletes_project_data(auth_keys):
     """Verify DELETE /v1/project-data purges records within project transaction."""
     mock_conn = AsyncMock()
     mock_conn.fetchrow.return_value = {
@@ -194,15 +202,22 @@ async def test_purge_endpoint_requires_read_key_and_deletes_project_data(auth_ke
     mock_pool = build_mock_pool(mock_conn)
 
     with patch("app.auth.get_redis", return_value=None), \
-         patch("app.db.get_db_pool", return_value=mock_pool):
+         patch("app.db.get_db_pool", return_value=mock_pool), \
+         patch.object(settings, "ADMIN_API_KEY", "admin-key-for-tests"):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             # Ingest key -> 403
             resp_403 = await client.delete("/v1/project-data", headers={"X-API-Key": auth_keys["ingest_key"]})
             assert resp_403.status_code == 403
 
-            # Read key -> 200
-            resp = await client.delete("/v1/project-data", headers={"X-API-Key": auth_keys["read_key"]})
+            # The read key alone can only read: no purge
+            resp_read_only = await client.delete("/v1/project-data", headers={"X-API-Key": auth_keys["read_key"]})
+            assert resp_read_only.status_code == 401
+
+            # Read key (which project) + admin key -> 200
+            resp = await client.delete(
+                "/v1/project-data", headers={"X-API-Key": auth_keys["read_key"], "X-Admin-Key": "admin-key-for-tests"}
+            )
             assert resp.status_code == 200
             res = resp.json()
             assert res["status"] == "purged"

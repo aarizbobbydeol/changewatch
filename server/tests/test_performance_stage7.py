@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.db import (
+    TENANT_SCOPE_SQL,
     close_db_pool,
     get_db_pool,
     get_read_db_pool,
@@ -145,7 +146,7 @@ async def test_read_project_transaction_enforces_rls_on_read_pool():
     with patch("app.db.get_read_db_pool", return_value=mock_read_pool):
         async with read_project_transaction(project_id=42) as conn:
             assert conn is mock_conn
-            mock_conn.execute.assert_called_with("SELECT set_config('app.project_id', $1, true)", "42")
+            mock_conn.execute.assert_called_with(TENANT_SCOPE_SQL, "42")
 
 
 # -----------------------------------------------------------------------------

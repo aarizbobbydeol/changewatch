@@ -263,12 +263,6 @@ async def is_source_silent(
     Check if any source for this project and environment is currently silent.
     Silence is never safe: if True, release verdict must be 'no_data'.
     """
-    from unittest.mock import AsyncMock
-    if "_source_silent" in getattr(conn, "__dict__", {}):
-        return bool(conn.__dict__["_source_silent"])
-    if isinstance(conn, AsyncMock):
-        return False
-
     val = await conn.fetchval(
         """
         SELECT 1
