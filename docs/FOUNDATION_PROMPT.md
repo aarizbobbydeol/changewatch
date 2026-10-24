@@ -9,7 +9,7 @@ You are working on **ChangeWatch**, an open-source, self-hosted release monitor 
 ## 1. Non-negotiable principles
 
 1. **Zero event loss.** Ingest goes through a reliable Redis queue: workers `BLMOVE`/`RPOPLPUSH` from `events` into a per-worker `events:processing:{worker_id}` list, and a reaper returns stuck items. Events are idempotent on `event_id`. Alerts go through a durable `outbox` table and are delivered exactly once.
-2. **Tenant isolation in the database.** Postgres row-level security is `ENABLE`d and `FORCE`d. Policies check `project_id = current_setting('app.project_id')::int`.
+2. **Tenant isolation in the database.** Postgres row-level security is `ENABLE`d and `FORCE`d. Policies check `project_id = current_setting('app.project_id')::int`. `project_transaction` / `read_project_transaction` run as the restricted role `changewatch_tenant` (migration 018, `SET LOCAL ROLE`) whenever the connected user is a superuser or has BYPASSRLS; cross-project system jobs use `get_connection()` with the owner role.
 3. **Encryption.** Each project has an AES-256-GCM data key wrapped by a master key (`MASTER_KEY`, required; `docker-compose.yml` refuses to start without it). Diffs, CODEOWNERS, file contents, stack traces, extras, investigation results/steps, the project Slack webhook and channel configs are stored only in `*_enc` columns (`crypto.encrypt_or_keep` / `decrypt_or_plain`); `app.cli encrypt-existing` converts legacy plaintext. Keys rotate from the CLI with `MASTER_KEY_PREVIOUS`.
 4. **Separate key roles.** The ingest key (`cw_ingest_…`) can only write. The read key (`cw_read_…`) can only read. Only SHA-256 hashes are stored. `cw_test_key_123` is a dev-only seed (`SEED_DEV_PROJECT=1`).
 5. **Never write to customer repos.** `github_client.ReadOnlyGitHubClient` raises on any non-GET request. `scripts/security_check.py` uses Python `ast` to scan the codebase for mutating calls. The GitHub Action is `contents: read` and `continue-on-error: true`.
@@ -71,7 +71,7 @@ collector/             opt-in telemetry collector
 
 Keys go in the `X-API-Key` header.
 
-## 5. Verdict rules (`server/app/detector.py`, evaluated in order)
+## 5. Verdict rules (`deploy_analysis.first_verdict` / `final_verdict` keep what each checkpoint announced) (`server/app/detector.py`, evaluated in order)
 
 1. **`no_data`**: the source is silent, or there is no traffic or events since the deploy.
 2. **`rollback`**: ≥ 20 events from new issues, **or** error rate ≥ 5× baseline with ≥ 30 errors, **or** absolute error rate ≥ 25% with ≥ 10 requests.
@@ -114,6 +114,5 @@ Other CLI subcommands: `list-projects`, `generate-master-key`, `rotate-master-ke
 - The SDK ships ASGI middleware only.
 - Instant alerts: measured 1.9 s from first error to delivery in Discord/webhook in a local end-to-end run; not yet benchmarked under burst load. `incidents.first_alert_ms` measures time to queue (delivery adds up to ~1 s).
 - Outbox payloads (alert text: error title, file path, AI summary) and `deploy_analysis.likely_cause` are stored as plaintext.
-- Row-level security is not effective under the default Docker setup: the official Postgres image makes `POSTGRES_USER` a superuser, and superusers bypass RLS. Tenant isolation currently relies on the app's own `project_id` filters.
 
 More detail: [README](../README.md), [SELF_HOSTING](SELF_HOSTING.md), [SECURITY_MODEL](SECURITY_MODEL.md), [VERIFICATION](VERIFICATION.md), [DECISIONS](../DECISIONS.md).

@@ -20,6 +20,16 @@ from app.cache import api_key_cache, deploy_lookup_cache, issue_lookup_cache, co
 
 
 @pytest.fixture(autouse=True)
+def reset_tenant_role_flag():
+    """detect_tenant_role sets a process-wide flag; keep it from leaking between tests."""
+    import app.db
+
+    app.db._switch_to_tenant_role = False
+    yield
+    app.db._switch_to_tenant_role = False
+
+
+@pytest.fixture(autouse=True)
 def reset_in_memory_caches():
     api_key_cache.clear()
     deploy_lookup_cache.clear()

@@ -38,10 +38,11 @@ async def generate_weekly_digest(
     # 1. Fetch deploys in the last 7 days
     deploy_rows = await conn.fetch(
         """
-        SELECT id, commit_sha, environment, deployed_at, first_verdict, final_verdict
-        FROM deploys
-        WHERE project_id = $1 AND environment = $2 AND deployed_at >= $3
-        ORDER BY deployed_at ASC
+        SELECT d.id, d.commit_sha, d.environment, d.deployed_at, a.first_verdict, a.final_verdict
+        FROM deploys d
+        LEFT JOIN deploy_analysis a ON a.deploy_id = d.id
+        WHERE d.project_id = $1 AND d.environment = $2 AND d.deployed_at >= $3
+        ORDER BY d.deployed_at ASC
         """,
         project_id,
         environment,

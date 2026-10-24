@@ -308,12 +308,31 @@ async def process_active_deploys_once() -> int:
             )
 
             # Alert Checkpoints
+            age_min = (now_dt - dep["deployed_at"]).total_seconds() / 60.0
+
+            # Remember the verdict announced at each checkpoint (set once, never overwritten)
+            first_verdict = None
+            if age_min >= settings.VERDICT_FIRST_MIN:
+                first_verdict = await conn.fetchval(
+                    """
+                    UPDATE deploy_analysis SET first_verdict = COALESCE(first_verdict, $2)
+                    WHERE deploy_id = $1 RETURNING first_verdict
+                    """,
+                    deploy_id,
+                    verdict,
+                )
+            if is_final:
+                await conn.execute(
+                    "UPDATE deploy_analysis SET final_verdict = COALESCE(final_verdict, $2) WHERE deploy_id = $1",
+                    deploy_id,
+                    verdict,
+                )
+
             # Checkpoint 1: First check
             first_alert_exists = await conn.fetchval(
                 "SELECT 1 FROM alerts WHERE deploy_id = $1 AND kind = 'verdict_first'",
                 deploy_id,
             )
-            age_min = (now_dt - dep["deployed_at"]).total_seconds() / 60.0
 
             if not first_alert_exists and age_min >= settings.VERDICT_FIRST_MIN:
                 # Send first check notification
@@ -338,8 +357,9 @@ async def process_active_deploys_once() -> int:
                 deploy_id,
             )
             if is_final and not final_alert_exists:
-                # Addendum C4: post only if verdict changed from first check
-                if prev_verdict and prev_verdict != verdict:
+                # Addendum C4: post only if verdict changed from the one announced at the first check
+                baseline_verdict = first_verdict or prev_verdict
+                if baseline_verdict and baseline_verdict != verdict:
                     await dispatch_verdict_alert(
                         conn=conn,
                         project_id=project_id,

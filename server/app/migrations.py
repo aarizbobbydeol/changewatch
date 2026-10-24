@@ -102,4 +102,9 @@ async def run_migrations(pool: asyncpg.Pool) -> List[str]:
                 dev_read_hash,
             )
 
+    if applied_now:
+        # Migration 018 may have just created the restricted tenant role
+        from app.db import detect_tenant_role
+
+        await detect_tenant_role(pool)
     return applied_now

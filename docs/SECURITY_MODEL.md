@@ -36,6 +36,9 @@ ChangeWatch is designed for developer teams who care about security, transparenc
 
 Security requires honesty about boundaries and failure modes:
 
+### Tenant Isolation (Row-Level Security)
+Every table with a `project_id` has row-level security enabled **and forced**. Superusers and roles with `BYPASSRLS` ignore RLS, and the official Postgres Docker image makes `POSTGRES_USER` a superuser, so every tenant-scoped transaction switches to the restricted role `changewatch_tenant` (no login, no superuser, no RLS bypass; created by migration 018). Postgres then refuses cross-tenant reads and writes even if application code forgets a `project_id` filter. Cross-project system jobs (detector, retention, outbox delivery) keep the owner role. If the role cannot be created (no `CREATEROLE`) while the app user bypasses RLS, the app logs a warning at startup.
+
 ### What Encryption at Rest Protects Against
 - **Physical disk theft:** A decommissioned or stolen physical drive cannot reveal customer code, stack traces, or webhook secrets.
 - **Backup leaks:** Backups, snapshots, and raw SQL dumps of the database contain only AES-256-GCM ciphertexts. Without the `MASTER_KEY`, data cannot be decrypted.

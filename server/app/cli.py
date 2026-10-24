@@ -48,6 +48,16 @@ def _mask_url(url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}/******" if parsed.netloc else "******"
 
 
+async def migrate_cmd() -> None:
+    """Apply pending migrations; the API also does this on startup."""
+    pool = await init_db_pool()
+    try:
+        applied = await run_migrations(pool)
+        print(f"Applied {len(applied)} migration(s)" + (f": {', '.join(applied)}" if applied else " (database up to date)"))
+    finally:
+        await close_db_pool()
+
+
 async def create_project_cmd(name: str, slack_webhook: Optional[str] = None):
     """Create a new project, generate data encryption key, and print hashed keys once."""
     pool = await init_db_pool()
@@ -569,6 +579,9 @@ def main():
     # Subcommand: list-projects
     subparsers.add_parser("list-projects", help="List all projects")
 
+    # Subcommand: migrate
+    subparsers.add_parser("migrate", help="Apply pending database migrations (and the dev seed if SEED_DEV_PROJECT=1)")
+
     # Subcommand: generate-master-key
     subparsers.add_parser("generate-master-key", help="Generate a new 256-bit AES-GCM master key")
 
@@ -657,6 +670,8 @@ def main():
 
     if args.command == "create-project":
         asyncio.run(create_project_cmd(args.name, args.slack_webhook))
+    elif args.command == "migrate":
+        asyncio.run(migrate_cmd())
     elif args.command == "list-projects":
         asyncio.run(list_projects_cmd())
     elif args.command == "generate-master-key":

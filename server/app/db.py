@@ -10,6 +10,42 @@ logger = logging.getLogger(__name__)
 _db_pool: Optional[asyncpg.Pool] = None
 _read_db_pool: Optional[asyncpg.Pool] = None
 
+TENANT_ROLE = "changewatch_tenant"
+_switch_to_tenant_role = False
+
+
+async def detect_tenant_role(pool: asyncpg.Pool) -> bool:
+    """Decide whether tenant transactions must run as the restricted role.
+
+    Superusers and BYPASSRLS roles ignore row-level security, so for them tenant work runs
+    as `changewatch_tenant` (created by migration 018). Called when pools start and again
+    after migrations, since the role may only exist once 018 has run.
+    """
+    global _switch_to_tenant_role
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT (r.rolsuper OR r.rolbypassrls) AS bypasses_rls,
+                       EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)
+                         AND pg_has_role(current_user, $1, 'MEMBER') AS can_switch
+                FROM pg_roles r WHERE r.rolname = current_user
+                """,
+                TENANT_ROLE,
+            )
+    except Exception as exc:
+        logger.warning("Could not check row-level security role: %s", exc)
+        return _switch_to_tenant_role
+    bypasses = bool(row and row["bypasses_rls"])
+    _switch_to_tenant_role = bypasses and bool(row["can_switch"])
+    if bypasses and not _switch_to_tenant_role:
+        logger.warning(
+            "Database user bypasses row-level security and role %s is unavailable; "
+            "tenant isolation relies on application filters only",
+            TENANT_ROLE,
+        )
+    return _switch_to_tenant_role
+
 
 async def init_db_pool(
     dsn: Optional[str] = None,
@@ -51,6 +87,7 @@ async def init_db_pool(
         logger.warning("Could not initialize dedicated read pool (%s), falling back to primary pool", exc)
         _read_db_pool = None
 
+    await detect_tenant_role(_db_pool)
     return _db_pool
 
 
@@ -103,17 +140,25 @@ async def get_connection() -> AsyncGenerator[asyncpg.Connection, None]:
         yield conn
 
 
+async def _enforce_rls(conn: asyncpg.Connection) -> None:
+    """Inside a project transaction, drop to the restricted tenant role when needed (see detect_tenant_role)."""
+    if _switch_to_tenant_role:
+        await conn.execute(f"SET LOCAL ROLE {TENANT_ROLE}")
+
+
 @asynccontextmanager
 async def project_transaction(project_id: int) -> AsyncGenerator[asyncpg.Connection, None]:
     """
     Acquire a connection from the primary write pool and execute within a transaction where
-    `SET LOCAL app.project_id = ...` is enforced for Row Level Security (RLS).
+    `SET LOCAL app.project_id = ...` is enforced for Row Level Security (RLS), as a role
+    that cannot bypass RLS (see _enforce_rls).
     """
     pool = get_db_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
             # Parameterized equivalent of SET LOCAL app.project_id = ...
             await conn.execute("SELECT set_config('app.project_id', $1, true)", str(project_id))
+            await _enforce_rls(conn)
             yield conn
 
 
@@ -127,4 +172,5 @@ async def read_project_transaction(project_id: int) -> AsyncGenerator[asyncpg.Co
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.project_id', $1, true)", str(project_id))
+            await _enforce_rls(conn)
             yield conn
