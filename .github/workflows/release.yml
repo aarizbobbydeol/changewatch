@@ -1,0 +1,86 @@
+name: Release
+
+# Push a version tag (git tag v0.1.0 && git push origin v0.1.0) to publish images and a release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Full CI must pass first
+    uses: ./.github/workflows/ci.yml
+
+  images:
+    name: Publish ${{ matrix.image }} image
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - image: server
+            dockerfile: server/Dockerfile
+          - image: dashboard
+            dockerfile: dashboard/Dockerfile
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up QEMU (arm64 builds)
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image names and tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/changewatch-${{ matrix.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Dashboard only: the /api and /v1 proxy target is fixed at build time
+          build-args: API_URL=http://api:8000
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  release:
+    name: GitHub Release
+    needs: images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the release with generated notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "ChangeWatch ${{ github.ref_name }}" \
+            --generate-notes \
+            --notes "Images: ghcr.io/${{ github.repository_owner }}/changewatch-server:${GITHUB_REF_NAME#v} and ghcr.io/${{ github.repository_owner }}/changewatch-dashboard:${GITHUB_REF_NAME#v}. Use them with docker-compose.release.yml (see docs/SELF_HOSTING.md)."

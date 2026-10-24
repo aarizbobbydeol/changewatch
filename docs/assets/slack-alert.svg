@@ -14,9 +14,9 @@
   <circle cx="42" cy="80" r="9" fill="none" stroke="#ffffff" stroke-width="2.5"/>
   <circle cx="42" cy="80" r="2.5" fill="#ffffff"/>
   <text x="72" y="76" font-size="14" font-weight="700" fill="#1e293b">ChangeWatch</text>
-  <rect x="164" y="64" width="30" height="16" rx="3" fill="#e2e8f0"/>
-  <text x="179" y="76" font-size="10" font-weight="700" fill="#475569" text-anchor="middle">APP</text>
-  <text x="204" y="76" font-size="12" fill="#64748b">11:27 PM</text>
+  <rect x="180" y="64" width="30" height="16" rx="3" fill="#e2e8f0"/>
+  <text x="195" y="76" font-size="10" font-weight="700" fill="#475569" text-anchor="middle">APP</text>
+  <text x="220" y="76" font-size="12" fill="#64748b">11:27 PM</text>
 
   <!-- Alert card -->
   <rect x="72" y="88" width="664" height="196" rx="8" fill="#ffffff" stroke="#e2e8f0"/>
