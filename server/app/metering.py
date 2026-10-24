@@ -27,6 +27,7 @@ class Meter(str, Enum):
     AI_INVESTIGATION = "ai_investigation"
     AI_INVESTIGATION_DEEP = "ai_investigation_deep"
     STORED_EVENTS = "stored_events"
+    DECISION_CALL = "decision_call"  # hosted typed-decision provider (Jev) calls only
 
     # Reserved names per spec Section A
     CODE_REVIEW_PR = "code_review_pr"

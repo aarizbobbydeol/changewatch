@@ -416,13 +416,16 @@ async def process_active_deploys_once() -> int:
 
         processed_count += 1
 
-    # Auto-resolve stale incidents inactive for 30 minutes
-    try:
-        from app.incident_manager import auto_resolve_stale_incidents
-        async with get_connection() as aconn:
-            await auto_resolve_stale_incidents(aconn, resolve_after_min=30)
-    except Exception as exc:
-        logger.warning("Auto-resolve check failed: %s", exc)
+    # Calm auto-resolve (only while traffic flows) and escalation, each telling the team.
+    # Separate try blocks: one failing must not silently disable the other.
+    from app.jobs import run_auto_resolve, run_escalations
+
+    for job_name, job in (("Auto-resolve", run_auto_resolve), ("Escalation", run_escalations)):
+        try:
+            async with get_connection() as jconn:
+                await job(jconn)
+        except Exception as exc:
+            logger.warning("%s check failed: %s", job_name, exc)
 
     # Deliver pending outbox notifications
     await deliver_outbox_batch()
@@ -547,6 +550,15 @@ async def run_detector():
                 break
             except Exception as exc:
                 logger.error("Error during detector evaluation cycle: %s", exc, exc_info=True)
+
+            # Hourly maintenance (partitions, retention) and the weekly digest
+            if has_lock:
+                try:
+                    from app.jobs import run_maintenance, send_weekly_digests
+                    await run_maintenance(pool)
+                    await send_weekly_digests(pool)
+                except Exception as exc:
+                    logger.warning("Scheduled jobs failed: %s", exc)
 
             # Watchdog runs every cycle, even when deploy processing failed (e.g. database down)
             try:

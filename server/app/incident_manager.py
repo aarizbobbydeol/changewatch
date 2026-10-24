@@ -48,6 +48,35 @@ def _same_file(frame_path: str, repo_path: str) -> bool:
     return frame_path == repo_path or frame_path.endswith("/" + repo_path)
 
 
+async def meter_decision_call(
+    conn: asyncpg.Connection, project_id: int, incident_id: int, answers: Dict[str, Any]
+) -> bool:
+    """Meter one hosted decision call (brief §11 `decision_call`); rules answers are free.
+
+    Runs in a savepoint and swallows errors: metering must never roll back or delay the
+    instant alert that follows (safety floor).
+    """
+    if not any(getattr(ans, "source", "rules") == "jev" for ans in answers.values()):
+        return False
+    try:
+        from app.metering import Meter, record_usage
+
+        async with conn.transaction():
+            await record_usage(
+                conn,
+                project_id=project_id,
+                meter=Meter.DECISION_CALL,
+                units=1,
+                ref_type="incident",
+                ref_id=incident_id,
+                idempotency_key=f"decision_call:incident:{incident_id}",
+            )
+        return True
+    except Exception as exc:
+        logger.warning("Failed metering decision call for incident %d: %s", incident_id, exc)
+        return False
+
+
 async def check_and_trigger_incident(
     conn: asyncpg.Connection,
     project_id: int,
@@ -235,6 +264,10 @@ async def check_and_trigger_incident(
         project_id, "deploys", "codeowners", dep_row.get("codeowners_enc"), dep_row.get("codeowners")
     )
     owners = resolve_owners(repo_path or where_file, codeowners_content, file_authors)
+    if repo_path:
+        # Store the repo path, not the server path: alerts read "app/billing.py:42", hotspots group
+        # by repo directory, and the investigator's exact-path file lookups find the file
+        where_file = repo_path
 
     # 6. Run Typed Decisions Triage (sub-second rules/fake fallback)
     triage_info: Dict[str, Any] = {}
@@ -322,6 +355,8 @@ async def check_and_trigger_incident(
             )
         except Exception as exc:
             logger.warning("Failed persisting decisions for incident %d: %s", incident_id, exc)
+
+        await meter_decision_call(conn, project_id, incident_id, answers)
 
     # 9. Dispatch instant alert
     await dispatch_incident_alert(

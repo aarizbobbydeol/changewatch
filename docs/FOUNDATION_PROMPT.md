@@ -35,7 +35,8 @@ server/app/
   queue.py, worker.py  reliable queue, batched multi-process worker, reaper
   fingerprint.py       issue grouping
   detector.py          verdict engine (10 / 30 min checkpoints), runs every 60 s
-  incident_manager.py  instant incident alerts, triggered from the worker
+  incident_manager.py  instant incident alerts, triggered from the worker; stores the repo-relative path (app/billing.py) when the frame matches a deploy file
+  jobs.py              detector-leader jobs: calm auto-resolve + escalation (each notifies), hourly partitions (next 4 weeks) + retention (events, diffs, CODEOWNERS, files), weekly digest (DIGEST_DAY/HOUR/TIMEZONE, deduped per ISO week)
   watchdog.py          component checks (db, queue, workers, detector, notifier, outbox, disk)
   system_alerts.py     operator alerts: run the watchdog every minute (detector + notifier), one active alert per component (migration 020), "recovered" on clear, sent straight to SYSTEM_ALERT_WEBHOOK_URL; failed team alerts reported there too
   outbox.py            exactly-once alert delivery (FOR UPDATE SKIP LOCKED), routed per channel; fans out to every enabled channel
@@ -110,6 +111,10 @@ docker compose exec api python -m app.cli add-channel <id> discord --config '{"w
 Other CLI subcommands: `list-projects`, `generate-master-key`, `rotate-master-key`, `rotate-project-key`, `delete-project`, `price-book`, `publish`, `price-lock`, `list-channels`, `add-member`, `list-members`.
 
 ## 8. Known gaps
+
+- Alerts do not yet include the signed one-click action links (`/a/<token>` works; nothing generates links for messages).
+- `GET /v1/export` and `DELETE /v1/project-data` accept the dashboard read key; the brief puts them behind the admin key.
+- `sources.is_source_silent` imports `unittest.mock` to detect test doubles (test code in production code).
 
 - Without a master key, the worker and API log a warning and store events and deploys **without** their stack trace, extra data or diff. Compose now prevents that by requiring `MASTER_KEY`, but a non-Docker setup without `MASTER_KEY` still drops them.
 - The SDK ships ASGI middleware only.

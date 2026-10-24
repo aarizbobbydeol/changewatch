@@ -135,17 +135,24 @@ class WebhookNotifier:
         if not url:
             raise ValueError("Generic webhook configuration missing url")
 
+        # Sign and send the exact same bytes, so receivers can verify the body they get
+        body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         secret = config.get("secret")
         if secret:
-            import hmac
             import hashlib
-            data = json.dumps(payload)
-            sig = hmac.new(secret.encode("utf-8"), data.encode("utf-8"), hashlib.sha256).hexdigest()
+            import hmac
+            import time
+
+            # Timestamp is part of the signed message so receivers can reject replays
+            # (verify: HMAC-SHA256(secret, f"{timestamp}.{body}") and |now - timestamp| <= 300 s)
+            timestamp = str(int(time.time()))
+            sig = hmac.new(secret.encode("utf-8"), timestamp.encode("ascii") + b"." + body, hashlib.sha256).hexdigest()
+            headers["X-ChangeWatch-Timestamp"] = timestamp
             headers["X-ChangeWatch-Signature"] = f"sha256={sig}"
 
         async with httpx.AsyncClient(timeout=10.0) as client:
-            res = await client.post(url, headers=headers, json=payload)
+            res = await client.post(url, headers=headers, content=body)
             res.raise_for_status()
             return "webhook_delivered"
 
@@ -173,11 +180,30 @@ class EmailNotifier:
         msg["From"] = sender
         msg["To"] = ", ".join(recipients)
 
+        # smtp_tls: "auto" (default: STARTTLS when offered), "starttls" (required), "ssl" (implicit TLS), "none"
+        tls_mode = str(config.get("smtp_tls", "auto")).lower()
+        user = config.get("smtp_user")
+        pw = config.get("smtp_password")
+
         def _send():
-            with smtplib.SMTP(host, port, timeout=10.0) as server:
-                user = config.get("smtp_user")
-                pw = config.get("smtp_password")
+            import ssl
+
+            context = ssl.create_default_context()
+            smtp_cls = smtplib.SMTP_SSL if tls_mode == "ssl" else smtplib.SMTP
+            kwargs = {"context": context} if tls_mode == "ssl" else {}
+            with smtp_cls(host, port, timeout=10.0, **kwargs) as server:
+                encrypted = tls_mode == "ssl"
+                if not encrypted and tls_mode in ("auto", "starttls"):
+                    server.ehlo()
+                    if server.has_extn("starttls"):
+                        server.starttls(context=context)
+                        server.ehlo()
+                        encrypted = True
+                    elif tls_mode == "starttls":
+                        raise RuntimeError("SMTP server does not offer STARTTLS (smtp_tls=starttls)")
                 if user and pw:
+                    if not encrypted:
+                        raise RuntimeError("Refusing to send the SMTP password over an unencrypted connection")
                     server.login(user, pw)
                 server.sendmail(sender, recipients, msg.as_string())
 

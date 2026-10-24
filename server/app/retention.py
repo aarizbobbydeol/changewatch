@@ -138,14 +138,15 @@ async def _cleanup_with_conn(
         result["partitions_dropped"] = len(dropped_partitions)
         result["dropped_partition_names"] = dropped_partitions
 
-    # Clean up code content (deploys diff and deploy_files) older than code_cutoff if specified
+    # Clean up code content (deploy diffs, CODEOWNERS and deploy_files) older than code_cutoff if specified
     if code_cutoff is not None:
         code_cleaned = 0
         diff_status = await conn.execute(
             """
             UPDATE deploys
-            SET diff = NULL, diff_enc = NULL
-            WHERE deployed_at < $1 AND (diff IS NOT NULL OR diff_enc IS NOT NULL)
+            SET diff = NULL, diff_enc = NULL, codeowners = NULL, codeowners_enc = NULL
+            WHERE deployed_at < $1
+              AND (diff IS NOT NULL OR diff_enc IS NOT NULL OR codeowners IS NOT NULL OR codeowners_enc IS NOT NULL)
             """,
             code_cutoff,
         )

@@ -2,6 +2,8 @@ import asyncio
 import calendar
 import hashlib
 import json
+from html import escape as html_escape
+from urllib.parse import parse_qs
 import logging
 import math
 import sys
@@ -1876,7 +1878,7 @@ async def signed_action_landing(token: str = Path(...)):
     valid, payload, err = verify_signed_action_token(token)
     if not valid or not payload:
         return HTMLResponse(
-            content=f"<html><body><h2>Invalid Action Link</h2><p>{err}</p></body></html>",
+            content=f"<html><body><h2>Invalid Action Link</h2><p>{html_escape(err)}</p></body></html>",
             status_code=400,
         )
 
@@ -1891,11 +1893,11 @@ button {{ background: #2563eb; color: white; padding: 10px 20px; border: none; b
 </style></head>
 <body>
 <h2>Confirm Action</h2>
-<p>You are about to mark incident <strong>#{inc_id}</strong> as <strong>{action.upper()}</strong>.</p>
-<form method="POST" action="/a/{token}">
+<p>You are about to mark incident <strong>#{inc_id}</strong> as <strong>{html_escape(action.upper())}</strong>.</p>
+<form method="POST" action="/a/{html_escape(token)}">
   <label for="actor">Who are you?</label><br>
   <input type="text" id="actor" name="actor" placeholder="Your name or handle" style="padding: 8px; width: 100%; margin: 8px 0 16px;"><br>
-  <button type="submit">Confirm {action.title()}</button>
+  <button type="submit">Confirm {html_escape(action.title())}</button>
 </form>
 </body>
 </html>"""
@@ -1919,9 +1921,9 @@ async def execute_signed_action(
 
     actor = "signed_link"
     try:
-        form = await request.form()
+        form = parse_qs((await request.body()).decode("utf-8", errors="replace"))
         if form.get("actor"):
-            actor = str(form["actor"])
+            actor = form["actor"][0][:100]
     except Exception:
         pass
 
@@ -1948,13 +1950,17 @@ async def slack_interactions_webhook(request: Request):
     timestamp = request.headers.get("X-Slack-Request-Timestamp")
     signature = request.headers.get("X-Slack-Signature")
 
-    # Verify signature if secret configured
-    if settings.SLACK_SIGNING_SECRET:
-        if not verify_slack_signature(body_bytes, timestamp, signature):
-            raise HTTPException(status_code=403, detail="Invalid Slack request signature")
+    # Without a signing secret anyone could post "resolve:<incident>:<project>" for any tenant,
+    # so the endpoint only exists once Slack interactivity is configured
+    if not settings.SLACK_SIGNING_SECRET:
+        raise HTTPException(status_code=404, detail="Slack interactivity is not configured")
+    if not verify_slack_signature(body_bytes, timestamp, signature):
+        raise HTTPException(status_code=403, detail="Invalid Slack request signature")
 
-    form = await request.form()
-    payload_raw = form.get("payload")
+    # Slack posts application/x-www-form-urlencoded; parse the already-verified body with the
+    # standard library (request.form() would need the python-multipart package)
+    form = parse_qs(body_bytes.decode("utf-8", errors="replace"))
+    payload_raw = (form.get("payload") or [None])[0]
     if not payload_raw:
         raise HTTPException(status_code=400, detail="Missing payload parameter")
 

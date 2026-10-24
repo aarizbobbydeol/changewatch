@@ -163,8 +163,17 @@ async def execute_incident_action(
 # ---------------------------------------------------------------------------
 
 def _get_link_secret() -> bytes:
-    sec = getattr(settings, "LINK_SIGNING_SECRET", None) or getattr(settings, "MASTER_KEY", "changewatch-link-default-secret")
-    return sec.encode("utf-8")
+    """HMAC key for action links: LINK_SIGNING_SECRET, else a key derived from MASTER_KEY.
+
+    The master key is never used directly (key separation), and there is no built-in
+    fallback secret: anyone could forge links with a value published in the source code.
+    """
+    if settings.LINK_SIGNING_SECRET:
+        return settings.LINK_SIGNING_SECRET.encode("utf-8")
+    from app.crypto import get_master_key_bytes
+
+    master = get_master_key_bytes()  # raises MasterKeyMissingError when unconfigured
+    return hmac.new(master, b"changewatch.action-links.v1", hashlib.sha256).digest()
 
 
 def generate_signed_action_token(
@@ -228,7 +237,7 @@ def verify_slack_signature(
     signing_secret: Optional[str] = None,
 ) -> bool:
     """Verify Slack webhook signature (v0=...) with replay protection (5-minute window)."""
-    secret = signing_secret or getattr(settings, "SLACK_SIGNING_SECRET", "")
+    secret = signing_secret or settings.SLACK_SIGNING_SECRET
     if not secret or not timestamp or not signature:
         return False
 

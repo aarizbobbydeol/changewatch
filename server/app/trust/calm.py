@@ -144,6 +144,8 @@ async def run_escalation_checks(
           AND status IN ('confirmed', 'critical')
           AND escalated_count < 2
           AND created_at <= $1
+          -- each further level waits a full ESCALATE_AFTER_MIN after the previous one
+          AND (escalated_count = 0 OR last_escalated_at <= $1)
         ORDER BY created_at ASC
         LIMIT 50
         """,
@@ -223,7 +225,7 @@ async def run_calm_auto_resolve(
         env = r["environment"] or "prod"
 
         # Check silence: if app is silent, silence is NEVER safe, so do not auto-resolve!
-        silent = await is_source_silent(conn, proj_id, env, now_dt=current)
+        silent = await is_source_silent(conn, proj_id, env)
         if silent:
             logger.info("Skipping auto-resolve for incident #%d: source is silent", inc_id)
             continue

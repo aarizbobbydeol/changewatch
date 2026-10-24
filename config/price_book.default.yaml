@@ -25,3 +25,9 @@ meters:
     margin_multiplier: 1.000
     min_unit_price_micros: 0
     free_units_per_month: 100000      # 100,000 free stored events per month
+  decision_call:
+    pricing_mode: "cost_plus"         # placeholder until the hosted provider's real cost is measured
+    unit_price_micros: 0
+    margin_multiplier: 1.300
+    min_unit_price_micros: 0
+    free_units_per_month: 1000        # rules provider calls are never metered

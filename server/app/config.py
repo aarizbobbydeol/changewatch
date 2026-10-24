@@ -95,7 +95,8 @@ class Settings(BaseModel):
 
     # Retention Settings (Stage 6 & Security Stage 7)
     RETENTION_DAYS: int = Field(
-        default_factory=lambda: int(os.getenv("RETENTION_DAYS", "30"))
+        # EVENT_RETENTION_DAYS is the brief's name for the same setting
+        default_factory=lambda: int(os.getenv("RETENTION_DAYS") or os.getenv("EVENT_RETENTION_DAYS") or "30")
     )
     CODE_RETENTION_DAYS: int = Field(
         default_factory=lambda: int(os.getenv("CODE_RETENTION_DAYS", "7"))
@@ -213,6 +214,24 @@ class Settings(BaseModel):
     )
     # Operator fallback channel for system alerts (Slack, Discord or Teams incoming webhook).
     # Sent directly, not through the outbox, so it still works when delivery itself is broken.
+    # Signed one-click action links (/a/<token>); derived from MASTER_KEY when unset
+    LINK_SIGNING_SECRET: str = Field(
+        default_factory=lambda: os.getenv("LINK_SIGNING_SECRET", "")
+    )
+    # Slack app signing secret; the Slack interactions endpoint is disabled until it is set
+    SLACK_SIGNING_SECRET: str = Field(
+        default_factory=lambda: os.getenv("SLACK_SIGNING_SECRET", "")
+    )
+    # Weekly digest schedule (brief §19): day of week, hour (0-23), IANA timezone
+    DIGEST_DAY: str = Field(
+        default_factory=lambda: os.getenv("DIGEST_DAY", "mon").strip().lower()[:3]
+    )
+    DIGEST_HOUR: int = Field(
+        default_factory=lambda: int(os.getenv("DIGEST_HOUR", "9"))
+    )
+    DIGEST_TIMEZONE: str = Field(
+        default_factory=lambda: os.getenv("DIGEST_TIMEZONE", "UTC")
+    )
     SYSTEM_ALERT_WEBHOOK_URL: str = Field(
         default_factory=lambda: os.getenv("SYSTEM_ALERT_WEBHOOK_URL", "")
     )
