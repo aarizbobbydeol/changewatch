@@ -16,6 +16,7 @@ import asyncpg
 
 from app.crypto import decrypt_or_plain
 from app.config import settings
+from app.scrub import scrub_text
 
 logger = logging.getLogger("changewatch.investigator.tools")
 
@@ -87,19 +88,19 @@ async def get_file_at_commit(
     # Ephemeral or missing fallback: if GITHUB_READ_TOKEN configured
     if content is None and settings.GITHUB_READ_TOKEN:
         try:
-            from app.github_client import get_file_content_readonly
+            from app.github_client import ReadOnlyGitHubClient
             dep_row = await conn.fetchrow(
-                "SELECT commit_sha FROM deploys WHERE id = $1 AND project_id = $2",
+                "SELECT commit_sha, repository FROM deploys WHERE id = $1 AND project_id = $2",
                 deploy_id,
                 project_id,
             )
-            if dep_row and dep_row["commit_sha"]:
-                content = await get_file_content_readonly(
-                    commit_sha=dep_row["commit_sha"],
-                    file_path=path,
-                )
+            if dep_row and dep_row["commit_sha"] and dep_row["repository"]:
+                owner, repo = dep_row["repository"].split("/", 1)
+                client = ReadOnlyGitHubClient(token=settings.GITHUB_READ_TOKEN)
+                raw = await client.get_file_content(owner, repo, path, ref=dep_row["commit_sha"])
+                content = scrub_text(raw[:20000])
         except Exception as exc:
-            logger.debug("GitHub fallback read failed for %s: %s", path, exc)
+            logger.info("GitHub read of %s failed: %s", path, type(exc).__name__)
 
     if content is None:
         return {"path": path, "available": False, "lines": [], "content": None}

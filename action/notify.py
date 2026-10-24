@@ -105,6 +105,8 @@ def main() -> int:
         "diff": full_diff[:MAX_DIFF],
         "files": [],
     }
+    if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", os.environ.get("GITHUB_REPOSITORY", "")):
+        payload["repository"] = os.environ["GITHUB_REPOSITORY"]  # lets ephemeral mode read files
     for f in files:
         item = {"path": f["path"][:1000], "status": f["status"], "added_ranges": f["added_ranges"], "authors": [author][:1]}
         if mode == "full" and f["status"] != "deleted":

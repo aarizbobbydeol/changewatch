@@ -23,6 +23,8 @@ class DeployCreate(BaseModel):
     environment: str = Field(default="prod", max_length=50)
     codeowners: Optional[str] = Field(None, max_length=25000)
     files: Optional[List[DeployFileItem]] = Field(default_factory=list)
+    # "owner/name" on GitHub: lets the investigator read a file at this commit in ephemeral mode
+    repository: Optional[str] = Field(None, max_length=200, pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
 

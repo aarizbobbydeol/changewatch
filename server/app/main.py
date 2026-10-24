@@ -304,8 +304,9 @@ async def create_deploy(
     async with project_transaction(project_id) as conn:
         row = await conn.fetchrow(
             """
-            INSERT INTO deploys (project_id, commit_sha, author, message, diff, diff_enc, environment, codeowners, codeowners_enc)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            INSERT INTO deploys (project_id, commit_sha, author, message, diff, diff_enc, environment,
+                                 codeowners, codeowners_enc, repository)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING id
             """,
             project_id,
@@ -317,6 +318,7 @@ async def create_deploy(
             payload.environment,
             codeowners,
             codeowners_enc,
+            payload.repository,
         )
         deploy_id = int(row["id"])
 

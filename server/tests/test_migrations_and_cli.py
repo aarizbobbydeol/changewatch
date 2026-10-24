@@ -76,6 +76,7 @@ async def test_migration_runner_idempotent():
             {"version": "021_ingest_dedupe.sql"},
             {"version": "022_system_scope_policy.sql"},
             {"version": "023_environment_and_event_type.sql"},
+            {"version": "024_deploy_repository.sql"},
         ],
         [],  # unhashed projects
 
