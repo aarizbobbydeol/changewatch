@@ -231,6 +231,32 @@ services:
     depends_on:
       - api
 
+  # Optional demo traffic: a pretend shop that deploys and sometimes ships a bug (docs/DEMO.md).
+  # Start it with: docker compose --profile demo up -d demo
+  demo:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: changewatch-demo
+    restart: unless-stopped
+    profiles: ["demo"]
+    command: ["python", "-m", "app.demo"]
+    environment:
+      - DEMO_API_URL=http://api:8000
+      - DEMO_INGEST_KEY=${DEMO_INGEST_KEY:-}
+      - DEMO_DEPLOY_EVERY_MIN=${DEMO_DEPLOY_EVERY_MIN:-30}
+      - DEMO_REQUESTS_PER_MIN=${DEMO_REQUESTS_PER_MIN:-450}
+      - DEMO_FIRST_BAD_AFTER_MIN=${DEMO_FIRST_BAD_AFTER_MIN:-5}
+      - DEMO_FIX_AFTER_MIN=${DEMO_FIX_AFTER_MIN:-10}
+      - DEMO_HISTORY_MIN=${DEMO_HISTORY_MIN:-30}
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+    depends_on:
+      - api
+
   caddy:
     image: caddy:2-alpine
     container_name: changewatch-caddy

@@ -49,8 +49,12 @@ async def evaluate_deploy(
     if await is_source_silent(conn, project_id, source_env):
         return "no_data", ["Source is silent (dead-man's switch triggered)"], is_final, False
 
-    # 30-minute analysis window after deploy (capped at now)
+    # 30-minute analysis window after deploy, capped at now and at the next deploy to the same
+    # environment: errors after that belong to the next deploy, not this one
     window_after_end = min(now_dt, deployed_at + timedelta(minutes=30))
+    next_deployed_at = deploy["next_deployed_at"] if "next_deployed_at" in deploy else None
+    if next_deployed_at:
+        window_after_end = min(window_after_end, next_deployed_at)
     window_before_start = deployed_at - timedelta(minutes=30)
 
     # 1. Traffic metrics from traffic table
@@ -128,13 +132,14 @@ async def evaluate_deploy(
         SELECT i.id, COUNT(e.id) AS ev_count
         FROM issues i
         JOIN events e ON e.issue_id = i.id
-        WHERE i.project_id = $1 AND i.first_seen >= $2
-          AND (e.deploy_id = $3 OR e.occurred_at >= $2)
+        WHERE i.project_id = $1 AND i.first_seen >= $2 AND i.first_seen <= $4
+          AND (e.deploy_id = $3 OR (e.occurred_at >= $2 AND e.occurred_at <= $4))
         GROUP BY i.id
         """,
         project_id,
         deployed_at,
         deploy_id,
+        window_after_end,
     )
     new_issues_count = len(new_issues)
     new_issue_events = sum(int(r["ev_count"]) for r in new_issues)
@@ -250,7 +255,10 @@ async def process_active_deploys_once() -> int:
     async with get_connection() as conn:
         deploys = await conn.fetch(
             """
-            SELECT d.id, d.project_id, d.commit_sha, d.author, d.message, d.environment, d.deployed_at
+            SELECT d.id, d.project_id, d.commit_sha, d.author, d.message, d.environment, d.deployed_at,
+                   (SELECT min(n.deployed_at) FROM deploys n
+                    WHERE n.project_id = d.project_id AND n.environment = d.environment
+                      AND n.deployed_at > d.deployed_at) AS next_deployed_at
             FROM deploys d
             WHERE d.deployed_at >= $1
             ORDER BY d.deployed_at DESC

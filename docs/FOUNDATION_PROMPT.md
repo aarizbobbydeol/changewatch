@@ -101,12 +101,14 @@ Install: `pip install "git+https://github.com/aarizbobbydeol/changewatch.git#sub
 ## 7. Commands
 
 ```bash
-.venv/bin/pytest server/tests sdk/tests            # 288 passed, 2 skipped (need live Postgres/Redis)
+.venv/bin/pytest server/tests sdk/tests            # all pass; live tests skip without Postgres/Redis
 .venv/bin/python -m evals.run --provider fake      # 12/12, determinism 5/5
 .venv/bin/python scripts/security_check.py         # 12/12
 .venv/bin/python scripts/chaos.py                  # 0 lost events, 0 duplicate alerts
 docker compose up -d                               # full stack
 docker compose --profile tls up -d                 # + Caddy HTTPS (PUBLIC_HOSTNAME)
+docker compose --profile demo up -d demo           # demo traffic (DEMO_INGEST_KEY, docs/DEMO.md)
+python scripts/verify_pipeline.py --help           # live pipeline check (docs/DATA_PIPELINE.md)
 docker compose exec api python -m app.cli create-project "name" --slack-webhook URL
 docker compose exec api python -m app.cli add-channel <id> discord --config '{"webhook_url": "..."}'
 ```

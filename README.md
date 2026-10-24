@@ -26,7 +26,8 @@
   <a href="docs/SELF_HOSTING.md">Self-hosting</a> ·
   <a href="#-privacy--security">Privacy</a> ·
   <a href="docs/VERIFICATION.md">Verification guide</a> ·
-  <a href="docs/DATA_PIPELINE.md">Data pipeline</a>
+  <a href="docs/DATA_PIPELINE.md">Data pipeline</a> ·
+  <a href="docs/DEMO.md">Demo</a>
 </p>
 
 ---

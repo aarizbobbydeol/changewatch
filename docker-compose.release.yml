@@ -15,5 +15,7 @@ services:
     image: *server-image
   notifier:
     image: *server-image
+  demo:
+    image: *server-image
   dashboard:
     image: ghcr.io/aarizbobbydeol/changewatch-dashboard:${CHANGEWATCH_VERSION:-latest}

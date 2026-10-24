@@ -122,6 +122,8 @@ Check it's live:
 curl -s https://changewatch.yourdomain.com/healthz
 ```
 
+> Want something to show before any real app is connected? [DEMO.md](DEMO.md) runs a pretend shop that deploys and ships a bug every few deploys (`docker compose --profile demo up -d`).
+
 ## 5. Onboard a team
 
 Each team gets its own project, isolated with Postgres row-level security and its own encrypted data key.
