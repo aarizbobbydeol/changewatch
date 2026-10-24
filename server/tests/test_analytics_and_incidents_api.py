@@ -282,32 +282,6 @@ async def test_analytics_overview_unbuilt_features():
 
 
 @pytest.mark.asyncio
-async def test_analytics_operations_unbuilt_features_not_enabled():
-    mock_conn = AsyncMock()
-    mock_conn.fetch.return_value = []
-    mock_conn.fetchrow.side_effect = [
-        # ingest stats
-        {"received": 100, "stored": 90, "counted_only": 10, "dropped_rate_limit": 0, "dropped_backpressure": 0, "dropped_invalid": 0},
-        # outbox stats
-        {"delivered": 5, "failed": 0, "pending": 0},
-    ]
-    mock_pool = build_mock_pool(mock_conn)
-
-    with patch("app.db.get_read_db_pool", return_value=mock_pool):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/v1/analytics/operations", headers={"X-API-Key": "cw_read_test_key"})
-
-    assert resp.status_code == 200
-    ops = resp.json()
-    # Features not built yet show 'Not enabled'
-    assert ops["ai_investigations"]["formatted"] == "Not enabled"
-    assert ops["calibration"]["formatted"] == "Not enabled"
-    assert ops["ingest_stats"]["received"] == 100
-
-
-@pytest.mark.asyncio
 async def test_analytics_csv_export():
     mock_conn = AsyncMock()
     mock_conn.fetch.side_effect = [

@@ -9,6 +9,7 @@ import json
 import logging
 import math
 from dataclasses import dataclass
+from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
@@ -147,17 +148,23 @@ def calculate_llm_cost_micros(
     if provider in ("ollama", "fake") or input_tokens <= 0 and output_tokens <= 0:
         return 0
 
+    # Prices are parsed as exact decimals: no float arithmetic on money
     try:
-        rates_map = json.loads(settings.LLM_PRICES_JSON)
+        rates_map = json.loads(settings.LLM_PRICES_JSON, parse_float=Decimal)
     except Exception:
         rates_map = {}
 
-    model_rates = rates_map.get(model, {"input": 3.0, "output": 15.0})  # default to Sonnet
-    input_rate = float(model_rates.get("input", 3.0))
-    output_rate = float(model_rates.get("output", 15.0))
+    model_rates = rates_map.get(model)
+    if not model_rates:
+        # Unknown model: charge the highest configured rate rather than guess low, and say so
+        known = [r for r in rates_map.values() if isinstance(r, dict)]
+        model_rates = max(known, key=lambda r: Decimal(r.get("output", 0)), default={"input": 4, "output": 20})
+        logger.warning("No price for model %s in LLM_PRICES_JSON; using the highest configured rate", model)
+    input_rate = Decimal(model_rates.get("input", 0))
+    output_rate = Decimal(model_rates.get("output", 0))
 
     # Cost = ceil(input_tokens * input_rate + output_tokens * output_rate)
-    total_micros = math.ceil(input_tokens * input_rate + output_tokens * output_rate)
+    total_micros = math.ceil(Decimal(input_tokens) * input_rate + Decimal(output_tokens) * output_rate)
     return max(0, int(total_micros))
 
 
@@ -195,8 +202,8 @@ def calculate_billed_micros(
         if our_cost_micros <= 0:
             return (0, free_units_applied, billable_units)
 
-        # Apply cost-plus markup with ceil rounding
-        marked_up = math.ceil(our_cost_micros * entry.margin_multiplier)
+        # Apply cost-plus markup with ceil rounding, in exact decimals (100 * 1.1 must be 110, not 111)
+        marked_up = math.ceil(Decimal(our_cost_micros) * Decimal(str(entry.margin_multiplier)))
         floor = entry.min_unit_price_micros * billable_units
         billed = max(marked_up, floor)
         return (max(0, int(billed)), free_units_applied, billable_units)
@@ -764,7 +771,7 @@ async def check_and_notify_budget_thresholds(
         "spent_micros": spent,
         "limit_micros": effective_limit,
         "message": f"ChangeWatch Budget Warning: Project {project_id} reached {crossed_threshold}% of spend limit (${spent / 1e6:.2f} / ${effective_limit / 1e6:.2f})",
-        "change_budget_url": f"https://{settings.PUBLIC_HOSTNAME}/usage",
+        "change_budget_url": settings.dashboard_link("/usage"),
     }
 
     try:

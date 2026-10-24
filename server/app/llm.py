@@ -1,10 +1,13 @@
 import logging
-from typing import Optional, Protocol
+from typing import Optional, Protocol, Tuple
 import httpx
 from app.config import settings
 from app.scrub import scrub_text
 
 logger = logging.getLogger(__name__)
+
+# Model families Anthropic no longer serves (Claude 3.x and earlier)
+RETIRED_MODEL_PREFIXES = ("claude-instant", "claude-1", "claude-2", "claude-3-")
 
 
 class LLMClient(Protocol):
@@ -15,25 +18,48 @@ class LLMClient(Protocol):
 class AnthropicClient:
     """Anthropic Claude LLM provider implementation."""
 
-    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
+    # Server-side refusal fallback: a policy decline is retried on Anthropic's recommended model
+    FALLBACK_BETA = "server-side-fallback-2026-07-01"
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
+        effort: Optional[str] = None,
+        timeout: float = 45.0,
+        http_client: Optional[object] = None,
+    ):
         import anthropic
-        self.api_key = api_key or settings.ANTHROPIC_API_KEY
-        self.model = model or settings.LLM_MODEL
-        self.client = anthropic.AsyncAnthropic(api_key=self.api_key, timeout=30.0)
+        key = api_key or settings.ANTHROPIC_API_KEY
+        self.model = model or settings.LLM_MODEL_FAST
+        self.effort = effort or settings.LLM_EFFORT_FAST
+        # Pass the key only when it is set: the SDK uses a passed credential as the only one
+        self.client = anthropic.AsyncAnthropic(api_key=key or None, timeout=timeout, http_client=http_client)
+        self.last_usage: Optional[Tuple[int, int]] = None
 
     async def complete(self, system: str, prompt: str, max_tokens: int) -> str:
         clean_system = scrub_text(system)
         clean_prompt = scrub_text(prompt)
 
-        response = await self.client.messages.create(
+        # Thinking is always on for current models and counts toward max_tokens, so callers pass room for it
+        response = await self.client.beta.messages.create(
             model=self.model,
             max_tokens=max_tokens,
             system=clean_system,
             messages=[{"role": "user", "content": clean_prompt}],
+            output_config={"effort": self.effort},
+            betas=[self.FALLBACK_BETA],
+            fallbacks="default",
         )
-        if response.content and len(response.content) > 0:
-            return response.content[0].text
-        return ""
+        self.last_usage = (response.usage.input_tokens, response.usage.output_tokens)
+        if response.stop_reason == "refusal":
+            category = response.stop_details.category if response.stop_details else None
+            logger.warning("Claude declined the request (category: %s); no AI text this time", category)
+            return ""
+        if response.stop_reason == "max_tokens":
+            logger.warning("Claude reached max_tokens=%d; the answer may be cut off", max_tokens)
+        # The content can hold thinking and fallback blocks before the text
+        return "".join(block.text for block in response.content if block.type == "text")
 
 
 class OllamaClient:
@@ -42,6 +68,7 @@ class OllamaClient:
     def __init__(self, base_url: Optional[str] = None, model: Optional[str] = None):
         self.base_url = (base_url or settings.OLLAMA_BASE_URL).rstrip("/")
         self.model = model or settings.OLLAMA_MODEL
+        self.last_usage: Optional[Tuple[int, int]] = None
 
         import urllib.parse
         parsed = urllib.parse.urlparse(self.base_url)
@@ -73,6 +100,7 @@ class OllamaClient:
             resp = await client.post(url, json=payload)
             resp.raise_for_status()
             data = resp.json()
+            self.last_usage = (int(data.get("prompt_eval_count") or 0), int(data.get("eval_count") or 0))
             return data.get("message", {}).get("content", "")
 
 
@@ -93,14 +121,16 @@ class FakeClient:
         return self.canned_answer
 
 
-def get_llm_client() -> LLMClient:
-    """Factory to retrieve configured LLM provider instance."""
+def get_llm_client(deep: bool = False) -> LLMClient:
+    """Factory to retrieve configured LLM provider instance; `deep` selects the stronger model."""
     provider = settings.LLM_PROVIDER.lower().strip()
     if settings.DRY_RUN_LLM or provider == "fake":
         return FakeClient()
     elif provider == "ollama":
         return OllamaClient()
     elif provider == "anthropic":
+        if deep:
+            return AnthropicClient(model=settings.LLM_MODEL_DEEP, effort=settings.LLM_EFFORT_DEEP, timeout=120.0)
         return AnthropicClient()
     else:
         logger.warning(
@@ -124,7 +154,17 @@ def log_llm_privacy_notice():
         )
     elif provider == "anthropic":
         logger.info(
-            "LLM Provider: anthropic (cloud API active, scrubbed diffs and stack traces are sent to the Anthropic API)"
+            "LLM Provider: anthropic (cloud API active, scrubbed diffs and stack traces are sent to the Anthropic API; "
+            "models %s and %s for Dig deeper)",
+            settings.LLM_MODEL_FAST,
+            settings.LLM_MODEL_DEEP,
         )
+        for model in {settings.LLM_MODEL_FAST, settings.LLM_MODEL_DEEP}:
+            if model.startswith(RETIRED_MODEL_PREFIXES):
+                logger.warning(
+                    "LLM model %s has been retired by Anthropic, so AI investigations will fail. "
+                    "Set LLM_MODEL_FAST / LLM_MODEL_DEEP (for example claude-sonnet-5-5 / claude-opus-5-5).",
+                    model,
+                )
     else:
         logger.info("LLM Provider: %s", provider)

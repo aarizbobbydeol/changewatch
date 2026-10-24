@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
-import { loadAdminKey, loadEndpoint, saveAdminKey, saveEndpoint } from "../../lib/session";
+import { apiUrl, loadAdminKey, loadEndpoint, saveAdminKey, saveEndpoint } from "../../lib/session";
 import NavLinks from "../../components/NavLinks";
 
 interface MeterMargin {
@@ -47,16 +47,8 @@ export default function OwnerMarginPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [marginData, setMarginData] = useState<MarginResponse | null>(null);
 
-  useEffect(() => {
-    const savedAdminKey = loadAdminKey();
-    const savedEndpoint =
-      loadEndpoint();
-    setAdminKey(savedAdminKey);
-    setEndpoint(savedEndpoint);
-  }, []);
-
-  const fetchMargin = async () => {
-    if (!adminKey) {
+  const fetchMargin = async (key: string = adminKey, ep: string = endpoint) => {
+    if (!key) {
       setLoading(false);
       return;
     }
@@ -65,13 +57,16 @@ export default function OwnerMarginPage() {
     setErrorMsg(null);
 
     try {
-      const res = await fetch(`${endpoint.replace(/\/$/, "")}/v1/admin/margin`, {
-        headers: { "X-Admin-Key": adminKey.trim() },
+      const res = await fetch(apiUrl(ep, "/v1/admin/margin"), {
+        headers: { "X-Admin-Key": key.trim() },
       });
 
       if (!res.ok) {
+        if (res.status === 401) {
+          throw new Error("Admin key not accepted.");
+        }
         if (res.status === 403) {
-          throw new Error("Admin access denied: invalid or missing X-Admin-Key");
+          throw new Error("Admin endpoints are off: set ADMIN_API_KEY on the server.");
         }
         throw new Error(`Admin Margin API error (${res.status}): ${await res.text()}`);
       }
@@ -86,10 +81,16 @@ export default function OwnerMarginPage() {
   };
 
   useEffect(() => {
-    if (adminKey && endpoint) {
-      fetchMargin();
+    // Saved keys live in localStorage, which exists only in the browser. Load once with the
+    // saved key (an empty endpoint means the dashboard's own address); typing waits for Connect.
+    const savedAdminKey = loadAdminKey();
+    const savedEndpoint = loadEndpoint();
+    setAdminKey(savedAdminKey);
+    setEndpoint(savedEndpoint);
+    if (savedAdminKey) {
+      fetchMargin(savedAdminKey, savedEndpoint);
     }
-  }, [adminKey, endpoint]);
+  }, []);
 
   const handleConnect = (e: React.FormEvent) => {
     e.preventDefault();

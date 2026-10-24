@@ -27,7 +27,10 @@ from app.analytics.metrics import (
     compute_tool_uptime,
 )
 from app.auth import require_read_project_id
+from app.config import settings
 from app.db import read_project_transaction
+from app.ingest_stats import dropped_totals
+from app.queue import get_redis
 
 logger = logging.getLogger("changewatch.analytics")
 
@@ -294,27 +297,24 @@ async def get_operations(
         incidents = [dict(r) for r in inc_rows]
         alert_speed = compute_alert_speed(incidents).to_dict()
 
-        # Ingest stats from ingest_stats_daily
-        ingest_row = await conn.fetchrow(
-            """
-            SELECT COALESCE(SUM(received), 0)::bigint AS received,
-                   COALESCE(SUM(stored), 0)::bigint AS stored,
-                   COALESCE(SUM(counted_only), 0)::bigint AS counted_only,
-                   COALESCE(SUM(dropped_rate_limit), 0)::bigint AS dropped_rate_limit,
-                   COALESCE(SUM(dropped_backpressure), 0)::bigint AS dropped_backpressure,
-                   COALESCE(SUM(dropped_invalid), 0)::bigint AS dropped_invalid
-            FROM ingest_stats_daily
-            WHERE project_id = $1 AND day >= $2::date AND day <= $3::date
-            """,
+        # Error and slow-request events received, from the exact per-minute rollups; full rows stored
+        received = await conn.fetchval(
+            "SELECT COALESCE(SUM(count), 0)::bigint FROM event_rollups WHERE project_id = $1 AND bucket >= $2 AND bucket <= $3",
             project_id,
-            start_dt.date(),
-            end_dt.date(),
+            start_dt,
+            end_dt,
+        )
+        stored = await conn.fetchval(
+            "SELECT COUNT(*)::bigint FROM events WHERE project_id = $1 AND occurred_at >= $2 AND occurred_at <= $3",
+            project_id,
+            start_dt,
+            end_dt,
         )
 
-        # Outbox notifications delivered
+        # Notifications (the outbox marks delivered rows 'sent')
         outbox_row = await conn.fetchrow(
             """
-            SELECT COUNT(id) FILTER (WHERE status = 'delivered')::int AS delivered,
+            SELECT COUNT(id) FILTER (WHERE status = 'sent')::int AS delivered,
                    COUNT(id) FILTER (WHERE status = 'failed')::int AS failed,
                    COUNT(id) FILTER (WHERE status = 'pending')::int AS pending
             FROM outbox
@@ -325,41 +325,93 @@ async def get_operations(
             end_dt,
         )
 
-    ingest_stats = {
-        "received": ingest_row["received"] if ingest_row else 0,
-        "stored": ingest_row["stored"] if ingest_row else 0,
-        "counted_only": ingest_row["counted_only"] if ingest_row else 0,
-        "dropped": (
-            (ingest_row["dropped_rate_limit"] or 0)
-            + (ingest_row["dropped_backpressure"] or 0)
-            + (ingest_row["dropped_invalid"] or 0)
-        ) if ingest_row else 0,
-    }
+        source_row = await conn.fetchrow(
+            """
+            SELECT COUNT(*) FILTER (WHERE status = 'active')::int AS active,
+                   COUNT(*) FILTER (WHERE status = 'silent')::int AS silent,
+                   COUNT(*)::int AS total
+            FROM sources WHERE project_id = $1
+            """,
+            project_id,
+        )
 
-    deliv = outbox_row["delivered"] if outbox_row else 0
-    fail = outbox_row["failed"] if outbox_row else 0
-    total_out = deliv + fail
-    delivery_pct = round((deliv / total_out) * 100.0, 1) if total_out > 0 else 100.0
+        inv_row = await conn.fetchrow(
+            """
+            SELECT COUNT(*) FILTER (WHERE status IN ('done', 'partial'))::int AS done,
+                   COUNT(*) FILTER (WHERE status = 'failed')::int AS failed
+            FROM investigations
+            WHERE project_id = $1 AND started_at >= $2 AND started_at <= $3
+            """,
+            project_id,
+            start_dt,
+            end_dt,
+        )
+
+        from app.trust.calibration import compute_decision_calibration
+        calibration = await compute_decision_calibration(conn, project_id)
+
+    try:
+        redis = get_redis()
+    except Exception:
+        redis = None
+    dropped = await dropped_totals(redis, project_id, start_dt.date(), end_dt.date())
+
+    deliv, fail, pending = outbox_row["delivered"], outbox_row["failed"], outbox_row["pending"]
+    attempted = deliv + fail
+    if attempted:
+        delivery_formatted = f"{round(deliv * 100 / attempted, 1)}% ({deliv} of {attempted})"
+    else:
+        delivery_formatted = "No notifications yet"
+
+    active, silent, total_sources = source_row["active"], source_row["silent"], source_row["total"]
+    if total_sources == 0:
+        sources_formatted = "No data received yet"
+    elif silent:
+        sources_formatted = f"{silent} silent"
+    else:
+        sources_formatted = "Data flowing"
+
+    done, inv_failed = inv_row["done"], inv_row["failed"]
+    provider = settings.LLM_PROVIDER.lower().strip()
+    if done or inv_failed:
+        inv_formatted = f"{done} done, {inv_failed} failed"
+    else:
+        inv_formatted = "No investigations yet"
 
     return {
         "alert_speed": alert_speed,
-        "ingest_stats": ingest_stats,
+        "ingest_stats": {
+            "received": int(received or 0),
+            "stored": int(stored or 0),
+            "counted_only": max(0, int(received or 0) - int(stored or 0)),
+            "rate_limited": dropped["rate_limit"],
+            "dropped_backpressure": dropped["backpressure"],
+            "note": "Error and slow-request events; storm control stores some as counts only. Rate-limited "
+                    "batches are retried by the SDK.",
+        },
         "notifications": {
             "delivered": deliv,
             "failed": fail,
-            "pending": outbox_row["pending"] if outbox_row else 0,
-            "delivery_rate_percent": delivery_pct,
+            "pending": pending,
+            "delivery_rate_percent": round(deliv * 100 / attempted, 1) if attempted else None,
+            "formatted": delivery_formatted,
         },
-        # Features not built yet show 'Not enabled' per spec rules
+        "sources": {
+            "active_count": active,
+            "silent_count": silent,
+            "total": total_sources,
+            "formatted": sources_formatted,
+        },
         "ai_investigations": {
-            "status": "not_enabled",
-            "formatted": "Not enabled",
-            "note": "AI investigator arrives in Milestone M5.",
+            "status": "enabled",
+            "provider": provider,
+            "done": done,
+            "failed": inv_failed,
+            "formatted": inv_formatted,
         },
         "calibration": {
-            "status": "not_enabled",
-            "formatted": "Not enabled",
-            "note": "Trust calibration arrives in Milestone M6.",
+            "status": calibration.get("status", "ok"),
+            "formatted": calibration.get("headline", ""),
         },
     }
 

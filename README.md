@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/badge/self--hosted-docker%20compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
   <img src="https://img.shields.io/badge/telemetry-off%20by%20default-success" alt="Telemetry off by default">
   <br>
-  <img src="https://img.shields.io/badge/tests-288%20passed-brightgreen" alt="288 tests passed">
+  <img src="https://img.shields.io/badge/tests-358%20passed-brightgreen" alt="358 tests passed">
   <img src="https://img.shields.io/badge/AI%20SRE%20evals-12%2F12-brightgreen" alt="12/12 evals">
   <img src="https://img.shields.io/badge/security%20audit-12%2F12-brightgreen" alt="12/12 security checks">
 </p>
@@ -342,7 +342,7 @@ See [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md) and run the audit script 
 | `REDIS_URL` | `redis://...` | Redis 7 connection URL |
 | `LLM_PROVIDER` | `anthropic` | `anthropic`, `ollama`, or `fake` |
 | `ANTHROPIC_API_KEY` | `""` | API key for Anthropic Claude |
-| `LLM_MODEL` | `claude-3-5-sonnet-20241022` | Anthropic model name |
+| `LLM_MODEL_FAST` / `LLM_MODEL_DEEP` | `claude-sonnet-5-5` / `claude-opus-5-5` | Anthropic models for automatic investigations and for "Dig deeper" (`LLM_MODEL` is still read as the fast model) |
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | Ollama HTTP endpoint |
 | `OLLAMA_MODEL` | `llama3` | Ollama model tag |
 | `RATE_LIMIT_PER_MIN` | `600` | Max ingest events per minute per API key |

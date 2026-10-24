@@ -248,7 +248,6 @@ async def test_get_system_status_api_endpoint():
     ]
     mock_conn.fetchrow.side_effect = [
         {"delivered": 5, "failed": 0},  # outbox 15m
-        {"total_dropped": 12},           # ingest_stats_daily dropped
     ]
     mock_conn.fetch.return_value = [
         {
@@ -269,6 +268,8 @@ async def test_get_system_status_api_endpoint():
     mock_redis.llen.return_value = 3
     mock_redis.keys.return_value = [b"heartbeat:worker:1"]
     mock_redis.get.return_value = str(datetime.now(timezone.utc).timestamp() - 10)
+    # Dropped events are counted per project and day in Redis (30 days x 2 reasons)
+    mock_redis.mget.return_value = [b"12"] + [None] * 59
 
     with patch("app.db.get_read_db_pool", return_value=mock_pool), \
          patch("app.main.get_redis", return_value=mock_redis):

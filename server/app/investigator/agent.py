@@ -192,7 +192,7 @@ async def run_investigation(
     user_prompt = build_investigation_prompt(context)
 
     # 3. Agent Execution with LLM
-    llm = get_llm_client()
+    llm = get_llm_client(deep=deep_mode)
     raw_response = ""
     steps = [{"step": "pregather", "duration_ms": 100}]
 
@@ -201,13 +201,17 @@ async def run_investigation(
         raw_response = await llm.complete(
             system=SYSTEM_PROMPT,
             prompt=user_prompt,
-            max_tokens=1500 if deep_mode else 1000,
+            # Room for the model's thinking as well as the JSON answer
+            max_tokens=16000 if deep_mode else 8000,
         )
     except Exception as exc:
         logger.warning("LLM call failed during investigation: %s", exc)
 
     llm_duration_ms = int((time.monotonic() - t0) * 1000)
     steps.append({"step": "llm_complete", "duration_ms": llm_duration_ms})
+    # Real token counts from the provider (none for the fake provider)
+    usage = getattr(llm, "last_usage", None)
+    input_tokens, output_tokens = usage if isinstance(usage, tuple) and len(usage) == 2 else (0, 0)
 
     # 4. Parse and validate JSON output
     parsed_output: Optional[InvestigationOutput] = None
@@ -302,8 +306,8 @@ async def run_investigation(
         steps_enc,
         result_plain,
         result_enc,
-        500,
-        250,
+        input_tokens,
+        output_tokens,
     )
     inv_id = int(inv_row["id"])
 
@@ -316,8 +320,8 @@ async def run_investigation(
             investigation_id=inv_id,
             status="done",
             is_deep=deep_mode,
-            input_tokens=500,
-            output_tokens=250,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             model=getattr(llm, "model", None),
             provider=settings.LLM_PROVIDER,
         )

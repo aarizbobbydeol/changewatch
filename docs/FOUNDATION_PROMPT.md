@@ -21,7 +21,7 @@ You are working on **ChangeWatch**, an open-source, self-hosted release monitor 
 
 - Python 3.12, FastAPI, asyncpg (no ORM, no Alembic). SQL migrations live in `server/sql/migrations/001…021` and apply automatically on API startup (or with `python -m app.cli migrate`).
 - Postgres 16 (events table partitioned by time) and Redis 7 (AOF).
-- Next.js 14 dashboard.
+- Next.js 16 (React 19) dashboard, Node 24; ESLint 9 flat config (`eslint.config.mjs`).
 - Docker Compose services: `postgres`, `redis`, `api`, `worker`, `detector`, `investigator`, `notifier`, `dashboard`, plus `caddy` (automatic TLS) under `--profile tls`. App services load `.env` (`env_file`), so every setting in `config.py` reaches them.
 
 ## 3. Repository layout

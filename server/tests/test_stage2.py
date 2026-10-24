@@ -127,6 +127,7 @@ async def test_ingest_events_rate_limit_exceeded():
     mock_redis.get.return_value = "1"
 
     with patch("app.auth.get_redis", return_value=mock_redis), \
+         patch("app.main.get_redis", return_value=mock_redis), \
          patch("app.main.check_rate_limit", new_callable=AsyncMock) as mock_rl:
         mock_rl.return_value = (False, 605, 600)  # Rate limit exceeded
 
@@ -149,6 +150,10 @@ async def test_ingest_events_rate_limit_exceeded():
             )
             assert resp.status_code == 429
             assert "Rate limit exceeded" in resp.json()["detail"]
+            # Limits are per minute: the client is told when to retry
+            assert 1 <= int(resp.headers["retry-after"]) <= 60
+            # The rejected event is counted for the project's operations panel
+            assert any(c.args[0].endswith(":rate_limit") and c.args[1] == 1 for c in mock_redis.incrby.call_args_list)
 
 
 @pytest.mark.asyncio

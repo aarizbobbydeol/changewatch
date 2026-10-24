@@ -37,9 +37,20 @@ class Settings(BaseModel):
     ANTHROPIC_API_KEY: str = Field(
         default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", "")
     )
-    LLM_MODEL: str = Field(
-        default_factory=lambda: os.getenv("LLM_MODEL", "claude-3-5-sonnet-20241022")
+    # Fast model for automatic investigations and deploy summaries; the deep model is for "Dig deeper".
+    # LLM_MODEL is the older name for the fast model and is still read.
+    LLM_MODEL_FAST: str = Field(
+        default_factory=lambda: os.getenv("LLM_MODEL_FAST") or os.getenv("LLM_MODEL") or "claude-sonnet-5-5"
     )
+    LLM_MODEL_DEEP: str = Field(
+        default_factory=lambda: os.getenv("LLM_MODEL_DEEP") or "claude-opus-5-5"
+    )
+    LLM_MODEL: str = Field(
+        default_factory=lambda: os.getenv("LLM_MODEL_FAST") or os.getenv("LLM_MODEL") or "claude-sonnet-5-5"
+    )
+    # Reasoning effort (low, medium, high, xhigh, max): higher is more thorough, slower and costlier
+    LLM_EFFORT_FAST: str = Field(default_factory=lambda: os.getenv("LLM_EFFORT_FAST", "medium"))
+    LLM_EFFORT_DEEP: str = Field(default_factory=lambda: os.getenv("LLM_EFFORT_DEEP", "high"))
     OLLAMA_BASE_URL: str = Field(
         default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
     )
@@ -137,6 +148,16 @@ class Settings(BaseModel):
     PUBLIC_HOSTNAME: str = Field(
         default_factory=lambda: os.getenv("PUBLIC_HOSTNAME", "localhost")
     )
+    # Where people open the dashboard, for links in alerts. Empty: https://PUBLIC_HOSTNAME
+    # (the Caddy tls profile), or http://localhost:3000 when PUBLIC_HOSTNAME is local.
+    DASHBOARD_URL: str = Field(default_factory=lambda: os.getenv("DASHBOARD_URL", ""))
+
+    def dashboard_link(self, path: str = "") -> str:
+        base = self.DASHBOARD_URL.strip().rstrip("/")
+        if not base:
+            host = self.PUBLIC_HOSTNAME.strip()
+            base = "http://localhost:3000" if host in ("", "localhost", "127.0.0.1", "::1") else f"https://{host}"
+        return base + path
 
     # Performance & Concurrency Settings (Performance Addendum Section 1 & 6)
     WORKER_PROCESSES: str = Field(
@@ -175,7 +196,9 @@ class Settings(BaseModel):
     LLM_PRICES_JSON: str = Field(
         default_factory=lambda: os.getenv(
             "LLM_PRICES_JSON",
-            '{"claude-3-haiku-20240307": {"input": 0.25, "output": 1.25}, "claude-3-5-sonnet-20241022": {"input": 3.0, "output": 15.0}}',
+            # USD per million tokens (Claude Haiku 5.5: prompts up to 100K tokens)
+            '{"claude-sonnet-5-5": {"input": 2.0, "output": 10.0}, "claude-opus-5-5": {"input": 4.0, "output": 20.0}, '
+            '"claude-haiku-5-5": {"input": 0.1, "output": 0.5}}',
         )
     )
     FREE_CREDIT_MICROS: int = Field(

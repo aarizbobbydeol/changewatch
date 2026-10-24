@@ -24,6 +24,10 @@
     handle /healthz {
         reverse_proxy api:8000
     }
+    # Signed one-click action links from alerts
+    handle /a/* {
+        reverse_proxy api:8000
+    }
 
     # Dashboard Web UI
     handle {

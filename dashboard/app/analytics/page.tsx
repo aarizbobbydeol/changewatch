@@ -373,33 +373,35 @@ export default function AnalyticsDashboardPage() {
             <div className="bg-slate-950/60 p-3 rounded-lg border border-slate-800">
               <span className="text-slate-500 block mb-1">Alert Speed Target</span>
               <span className="text-sm font-bold text-white">
-                {operations?.alert_speed?.formatted || "< 5.0s"}
+                {operations?.alert_speed?.formatted || "—"}
               </span>
               <span className="text-[10px] text-slate-500 block mt-1">median & p95</span>
             </div>
 
             <div className="bg-slate-950/60 p-3 rounded-lg border border-slate-800">
               <span className="text-slate-500 block mb-1">Customer App Sources</span>
-              <span className="text-sm font-bold text-emerald-400">
-                {operations?.sources?.status || "Data Flowing"}
+              <span className={`text-sm font-bold ${operations?.sources?.silent_count ? "text-amber-400" : "text-emerald-400"}`}>
+                {operations?.sources?.formatted || "—"}
               </span>
               <span className="text-[10px] text-slate-500 block mt-1">
-                {operations?.sources?.active_count || 1} active source(s)
+                {operations?.sources?.active_count ?? 0} active source(s)
               </span>
             </div>
 
             <div className="bg-slate-950/60 p-3 rounded-lg border border-slate-800">
               <span className="text-slate-500 block mb-1">Notifications Delivered</span>
               <span className="text-sm font-bold text-white">
-                {operations?.notifications?.delivered_rate || "100%"}
+                {operations?.notifications?.formatted || "—"}
               </span>
-              <span className="text-[10px] text-slate-500 block mt-1">durable outbox active</span>
+              <span className="text-[10px] text-slate-500 block mt-1">
+                {operations?.notifications?.pending ?? 0} pending, durable outbox
+              </span>
             </div>
 
             <div className="bg-slate-950/60 p-3 rounded-lg border border-slate-800">
               <span className="text-slate-500 block mb-1">Calibration Accuracy</span>
               <span className="text-sm font-bold text-indigo-400">
-                {operations?.calibration?.headline || "Calibrating (n=0)"}
+                {operations?.calibration?.formatted || "—"}
               </span>
               <span className="text-[10px] text-slate-500 block mt-1">Brier score analysis</span>
             </div>

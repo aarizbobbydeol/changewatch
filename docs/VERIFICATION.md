@@ -87,7 +87,7 @@ PYTHONPATH=server uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 | `REDIS_URL` | `redis://...` | Redis 7 connection URL |
 | `LLM_PROVIDER` | `anthropic` | LLM provider: `anthropic`, `ollama`, or `fake` |
 | `ANTHROPIC_API_KEY` | `""` | API key for Anthropic Claude |
-| `LLM_MODEL` | `claude-3-5-sonnet-20241022` | Model name for Anthropic |
+| `LLM_MODEL_FAST` / `LLM_MODEL_DEEP` | `claude-sonnet-5-5` / `claude-opus-5-5` | Anthropic models (fast investigations / "Dig deeper") |
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | Ollama HTTP endpoint |
 | `OLLAMA_MODEL` | `llama3` | Ollama model tag |
 | `RATE_LIMIT_PER_MIN` | `600` | Max ingest events per minute per API key |

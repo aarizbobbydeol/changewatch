@@ -9,6 +9,7 @@ import time
 from typing import Any, Dict, List, Optional
 import asyncpg
 
+from app.config import settings
 from app.outbox import queue_notification
 
 logger = logging.getLogger("changewatch.notifiers.incident")
@@ -216,13 +217,13 @@ async def dispatch_incident_alert(
         project_id,
     )
 
-    dashboard_url = f"http://localhost:3000/incidents/{incident_id}"
+    dashboard_url = settings.dashboard_link(f"/incidents/{incident_id}")
 
-    # Update incident record with alerted_at and first_alert_ms
+    # Record the first alert only: the later "confirmed" alert must not overwrite time-to-alert
     await conn.execute(
         """
         UPDATE incidents
-        SET alerted_at = now(), first_alert_ms = COALESCE($1, first_alert_ms)
+        SET alerted_at = COALESCE(alerted_at, now()), first_alert_ms = COALESCE(first_alert_ms, $1)
         WHERE id = $2 AND project_id = $3
         """,
         first_alert_ms,

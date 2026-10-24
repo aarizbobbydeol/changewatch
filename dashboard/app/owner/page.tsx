@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
-import { loadAdminKey, loadEndpoint, saveAdminKey, saveEndpoint } from "../lib/session";
+import { apiUrl, loadAdminKey, loadEndpoint, loadReadKey, saveAdminKey, saveEndpoint } from "../lib/session";
 
 interface FleetStats {
   opted_in_installs: number;
@@ -27,6 +27,8 @@ interface FleetStats {
 
 export default function OwnerDashboardPage() {
   const [adminKey, setAdminKey] = useState<string>("");
+  // Telemetry opt-in is a project setting, so it uses the dashboard read key (saved on Settings)
+  const [readKey, setReadKey] = useState<string>("");
   const [endpoint, setEndpoint] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -41,25 +43,11 @@ export default function OwnerDashboardPage() {
   const [telemetryEnabled, setTelemetryEnabled] = useState<boolean>(false);
   const [togglingOptIn, setTogglingOptIn] = useState<boolean>(false);
 
-  useEffect(() => {
-    const savedAdminKey = loadAdminKey();
-    const savedEndpoint =
-      loadEndpoint();
-    setAdminKey(savedAdminKey);
-    setEndpoint(savedEndpoint);
-
-    if (savedEndpoint) {
-      fetchTelemetryStatus(savedEndpoint, savedAdminKey);
-      if (savedAdminKey) {
-        fetchStats(savedEndpoint, savedAdminKey);
-      }
-    }
-  }, []);
-
   const fetchTelemetryStatus = async (ep: string, key: string) => {
+    if (!key) return;
     try {
-      const res = await fetch(`${ep}/v1/telemetry/status`, {
-        headers: key ? { "X-API-Key": key } : {},
+      const res = await fetch(apiUrl(ep, "/v1/telemetry/status"), {
+        headers: { "X-API-Key": key },
       });
       if (res.ok) {
         const data = await res.json();
@@ -70,24 +58,24 @@ export default function OwnerDashboardPage() {
     }
   };
 
-  const fetchStats = async (ep?: string, key?: string) => {
-    const targetEndpoint = ep || endpoint;
-    const targetKey = key || adminKey;
-    if (!targetEndpoint || !targetKey) {
-      setErrorMsg("Please provide ChangeWatch Server Endpoint and Admin API Key.");
+  const fetchStats = async (ep: string = endpoint, key: string = adminKey) => {
+    if (!key) {
+      setErrorMsg("Enter the admin key (ADMIN_API_KEY on the server).");
       return;
     }
 
     setLoading(true);
     setErrorMsg(null);
     try {
-      const res = await fetch(`${targetEndpoint}/v1/owner/stats`, {
+      const res = await fetch(apiUrl(ep, "/v1/owner/stats"), {
         headers: {
-          "X-Admin-Key": targetKey,
+          "X-Admin-Key": key,
           "Content-Type": "application/json",
         },
       });
 
+      if (res.status === 401) throw new Error("Admin key not accepted.");
+      if (res.status === 403) throw new Error("Admin endpoints are off: set ADMIN_API_KEY on the server.");
       if (!res.ok) {
         const err = await res.text();
         throw new Error(err || `HTTP ${res.status}`);
@@ -102,15 +90,33 @@ export default function OwnerDashboardPage() {
     }
   };
 
+  useEffect(() => {
+    // Saved keys live in localStorage, which exists only in the browser
+    const savedAdminKey = loadAdminKey();
+    const savedReadKey = loadReadKey();
+    const savedEndpoint = loadEndpoint();
+    setAdminKey(savedAdminKey);
+    setReadKey(savedReadKey);
+    setEndpoint(savedEndpoint);
+
+    fetchTelemetryStatus(savedEndpoint, savedReadKey);
+    if (savedAdminKey) {
+      fetchStats(savedEndpoint, savedAdminKey);
+    }
+  }, []);
+
   const handleToggleOptIn = async () => {
-    if (!adminKey) return;
+    if (!readKey) {
+      alert("Save the dashboard read key on the Settings page first.");
+      return;
+    }
     setTogglingOptIn(true);
     try {
-      const res = await fetch(`${endpoint}/v1/telemetry/opt-in`, {
+      const res = await fetch(apiUrl(endpoint, "/v1/telemetry/opt-in"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(adminKey ? { "X-API-Key": adminKey } : {}),
+          "X-API-Key": readKey,
         },
         body: JSON.stringify({ enabled: !telemetryEnabled }),
       });
@@ -132,8 +138,8 @@ export default function OwnerDashboardPage() {
     setShowPreviewModal(true);
     setPreviewLoading(true);
     try {
-      const res = await fetch(`${endpoint}/v1/telemetry/preview`, {
-        headers: adminKey ? { "X-API-Key": adminKey } : {},
+      const res = await fetch(apiUrl(endpoint, "/v1/telemetry/preview"), {
+        headers: readKey ? { "X-API-Key": readKey } : {},
       });
       if (res.ok) {
         const data = await res.json();
@@ -194,7 +200,7 @@ export default function OwnerDashboardPage() {
                 setEndpoint(e.target.value);
                 saveEndpoint(e.target.value);
               }}
-              placeholder="http://localhost:8000"
+              placeholder="same origin"
               className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
             />
           </div>
@@ -314,11 +320,13 @@ export default function OwnerDashboardPage() {
                 <span className="text-xs font-medium text-slate-400">Public Signals</span>
                 <div className="flex items-baseline gap-2 mt-2">
                   <span className="text-2xl font-bold text-amber-400">
-                    ★ {stats.public_signals?.github_stars ?? 142}
+                    {stats.public_signals?.github_stars != null ? `★ ${stats.public_signals.github_stars}` : "Not available"}
                   </span>
-                  <span className="text-xs text-slate-400">
-                    ({stats.public_signals?.docker_pulls?.toLocaleString() ?? "4,200"} pulls)
-                  </span>
+                  {stats.public_signals?.docker_pulls != null && (
+                    <span className="text-xs text-slate-400">
+                      ({stats.public_signals.docker_pulls.toLocaleString()} pulls)
+                    </span>
+                  )}
                 </div>
                 <div className="text-[11px] text-slate-500 mt-1">
                   Manual/public APIs, not telemetry

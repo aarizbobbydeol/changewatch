@@ -61,12 +61,14 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: server/requirements.txt
+          cache-dependency-path: |
+            server/requirements.txt
+            requirements-dev.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r server/requirements.txt
+          pip install -r requirements-dev.txt
 
       - name: Apply migrations to a clean database (with dev seed)
         run: python -m app.cli migrate

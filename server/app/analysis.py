@@ -101,7 +101,8 @@ async def generate_likely_cause(
         answer = await llm.complete(
             system=system_prompt,
             prompt=user_prompt,
-            max_tokens=300,
+            # Room for the model's thinking as well as the short answer
+            max_tokens=4000,
         )
         return answer.strip() if answer else None
     except Exception as exc:

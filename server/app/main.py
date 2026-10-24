@@ -5,7 +5,6 @@ import json
 from html import escape as html_escape
 from urllib.parse import parse_qs
 import logging
-import math
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -38,11 +37,14 @@ from app.logging_filter import LogRedactionFilter, redact_delivery_error, redact
 from app.migrations import run_migrations
 from app.metering import (
     Meter,
+    calculate_billed_micros,
+    calculate_llm_cost_micros,
     record_usage,
     get_active_price_book,
     get_project_budget,
     set_project_budget,
 )
+from app.ingest_stats import count_dropped, dropped_totals
 from app.queue import check_redis_health, close_redis, get_redis, init_redis
 from app.ratelimit import check_rate_limit
 from app.analytics import analytics_router
@@ -239,16 +241,10 @@ async def get_system_status_endpoint(
         ]
         status_data["sources"] = sources
 
-        # Dropped events from ingest_stats_daily
-        dropped_row = await conn.fetchrow(
-            """
-            SELECT COALESCE(SUM(dropped_rate_limit + dropped_backpressure + dropped_invalid), 0) AS total_dropped
-            FROM ingest_stats_daily
-            WHERE project_id = $1
-            """,
-            project_id,
-        )
-        status_data["dropped_events"] = int(dropped_row["total_dropped"]) if dropped_row else 0
+        # Events the API turned away in the last 30 days (rate limit, backpressure)
+        today = datetime.now(timezone.utc).date()
+        dropped = await dropped_totals(_redis_or_none(), project_id, today - timedelta(days=29), today)
+        status_data["dropped_events"] = sum(dropped.values())
 
         return status_data
 
@@ -355,6 +351,14 @@ async def create_deploy(
 QUEUE_RETRY_AFTER_SEC = 30
 
 
+def _redis_or_none():
+    """Redis for best-effort counters; None when it is not available."""
+    try:
+        return get_redis()
+    except Exception:
+        return None
+
+
 @app.post("/v1/events", response_model=EventsResponse, tags=["Ingestion"])
 async def ingest_events(
     batch: EventsBatch,
@@ -372,22 +376,29 @@ async def ingest_events(
     heartbeat_count = sum(1 for e in batch.events if e.type == "heartbeat")
     normal_count = len(batch.events) - heartbeat_count
 
+    # Limits are per minute: tell the client (the SDK honours Retry-After) when the next minute starts
+    retry_after = {"Retry-After": str(max(1, 60 - int(time.time()) % 60))}
+
     # Check rate limit for normal events
     if normal_count > 0:
         allowed, current, limit = await check_rate_limit(api_key, normal_count, is_heartbeat=False)
         if not allowed:
+            await count_dropped(_redis_or_none(), project_id, "rate_limit", len(batch.events))
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail=f"Rate limit exceeded: {current} events in current minute (limit {limit})",
+                headers=retry_after,
             )
 
     # Check rate limit for heartbeats
     if heartbeat_count > 0:
         allowed, current, limit = await check_rate_limit(api_key, heartbeat_count, is_heartbeat=True)
         if not allowed:
+            await count_dropped(_redis_or_none(), project_id, "rate_limit", len(batch.events))
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail=f"Heartbeat rate limit exceeded: {current} in current minute (limit {limit})",
+                headers=retry_after,
             )
 
     # Performance Addendum Section 3: Backpressure Shedding
@@ -458,6 +469,7 @@ async def ingest_events(
             await redis.incrby("stats:dropped_count", dropped_count)
         except Exception:
             pass
+        await count_dropped(redis, project_id, "backpressure", dropped_count)
         logger.warning(
             "Backpressure shedding active (queue_len=%d > limit=%d): dropped=%d, accepted=%d",
             queue_len,
@@ -1573,8 +1585,8 @@ async def get_usage_forecast(
         }
 
     effective_days = max(days_with_data, days_elapsed, 1)
-    daily_rate = float(current_spent) / float(effective_days)
-    projected_micros = int(math.ceil(daily_rate * days_in_month))
+    # Integer ceiling division: current_spent * days_in_month / effective_days, rounded up
+    projected_micros = -(-current_spent * days_in_month // effective_days)
 
     return {
         "status": "ok",
@@ -1582,7 +1594,7 @@ async def get_usage_forecast(
         "days_with_data": days_with_data,
         "days_in_month": days_in_month,
         "current_spent_micros": current_spent,
-        "daily_rate_micros": int(round(daily_rate)),
+        "daily_rate_micros": (2 * current_spent + effective_days) // (2 * effective_days),  # rounded half up
         "projected_month_end_micros": projected_micros,
     }
 
@@ -1624,16 +1636,17 @@ async def get_usage_estimate(
         estimated_billed = 0
     elif entry.pricing_mode == "fixed":
         estimated_billed = billable_units * entry.unit_price_micros
-    elif meter == "ai_investigation":
-        # Standard fast investigation estimate (~4,000 input, ~500 output tokens on standard model)
-        # 4,000 * 3.0 = 12,000 micros in; 500 * 15.0 = 7,500 micros out = 19,500 micros our cost
-        unit_cost = 19500
-        billed_unit = int(math.ceil(unit_cost * entry.margin_multiplier))
-        estimated_billed = billable_units * max(billed_unit, entry.min_unit_price_micros)
-    elif meter == "ai_investigation_deep":
-        # Deep investigation estimate (~15,000 input, ~2,000 output tokens)
-        unit_cost = 75000
-        billed_unit = int(math.ceil(unit_cost * entry.margin_multiplier))
+    elif meter in ("ai_investigation", "ai_investigation_deep"):
+        # Typical token use (output includes the model's thinking), priced for the configured model:
+        # fast ~4,000 in / 3,000 out, deep ~15,000 in / 8,000 out
+        deep = meter == "ai_investigation_deep"
+        unit_cost = calculate_llm_cost_micros(
+            settings.LLM_MODEL_DEEP if deep else settings.LLM_MODEL_FAST,
+            15000 if deep else 4000,
+            8000 if deep else 3000,
+            provider=settings.LLM_PROVIDER,
+        )
+        billed_unit, _, _ = calculate_billed_micros(entry, 1, our_cost_micros=unit_cost)
         estimated_billed = billable_units * max(billed_unit, entry.min_unit_price_micros)
     else:
         estimated_billed = billable_units * max(entry.min_unit_price_micros, entry.unit_price_micros)
@@ -2258,10 +2271,11 @@ async def get_owner_stats(_admin: bool = Depends(require_admin_key)):
             "Never IP addresses or hostnames",
             "Never API keys, webhooks, or secrets",
         ],
+        # Stars and pulls come only from the collector; never show made-up numbers
         "public_signals": {
-            "github_stars": 142,
-            "docker_pulls": 4200,
-            "source": "Public APIs and manual entries",
+            "github_stars": None,
+            "docker_pulls": None,
+            "source": "Not collected: the telemetry collector is not reachable",
         },
         "source": "local_fallback",
     }

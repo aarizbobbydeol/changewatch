@@ -215,9 +215,11 @@ async def test_run_investigation_and_caching():
     mock_conn.fetch.side_effect = mock_fetch
 
     with patch("app.investigator.agent.get_llm_client") as mock_llm_factory, \
-         patch("app.investigator.agent.queue_notification", new=AsyncMock()):
+         patch("app.investigator.agent.queue_notification", new=AsyncMock()), \
+         patch("app.metering.record_investigation_usage", new=AsyncMock()) as mock_usage:
         mock_llm = AsyncMock()
         mock_llm.model = "fake-model"
+        mock_llm.last_usage = (1234, 567)  # tokens the provider reported for this call
         # Return valid JSON
         mock_llm.complete.return_value = json.dumps({
             "summary": "KeyError in login header parsing",
@@ -234,6 +236,13 @@ async def test_run_investigation_and_caching():
         res = await run_investigation(mock_conn, project_id=1, incident_id=1, deep_mode=False)
         assert res.confidence in ("high", "medium")
         assert "login" in res.cause.lower()
+
+        # The fast model is used, and the real token counts are stored and metered (not fixed numbers)
+        mock_llm_factory.assert_called_once_with(deep=False)
+        insert_args = next(c.args for c in mock_conn.fetchrow.call_args_list if "insert into investigations" in c.args[0].lower())
+        assert insert_args[-2:] == (1234, 567)
+        assert mock_usage.call_args.kwargs["input_tokens"] == 1234
+        assert mock_usage.call_args.kwargs["output_tokens"] == 567
 
     # 2nd run: Cache hit
     mock_conn_cached = AsyncMock()

@@ -53,6 +53,7 @@ class Bug:
     deploy_message: str
     fix_message: str
     failure_rate: float  # share of requests that fail while the bug is live
+    context: Tuple[str, ...] = ()  # the code just above the changed line, shown on the incident page
 
 
 BUGS = [
@@ -64,6 +65,22 @@ BUGS = [
         exc_type="ZeroDivisionError", message="division by zero", endpoint="/checkout",
         deploy_message="Apply discount to totals", fix_message="Revert discount division in totals",
         failure_rate=0.08,
+        context=(
+            "def line_total(item):",
+            '    """Price of one order line in cents."""',
+            "    return item.price * item.quantity",
+            "",
+            "",
+            "def apply_tax(cents, rate):",
+            '    """Add sales tax, rounding to the nearest cent."""',
+            "    return round(cents * (1 + rate))",
+            "",
+            "",
+            "def total_cents(order):",
+            '    """Order total in cents, after the customer\'s discount."""',
+            "    if not order.items:",
+            "        return 0",
+        ),
     ),
     Bug(
         path="app/orders.py", line=88, function="shipping_label",
@@ -73,6 +90,22 @@ BUGS = [
         exc_type="KeyError", message="'shipping_address'", endpoint="/orders",
         deploy_message="Simplify shipping address lookup", fix_message="Fall back to billing address again",
         failure_rate=0.05,
+        context=(
+            "def parcel_weight(items):",
+            '    """Total weight in grams, with packaging."""',
+            "    return sum(i.weight for i in items) + PACKAGING_GRAMS",
+            "",
+            "",
+            "def shipping_label(payload):",
+            '    """Build the carrier label for a new order."""',
+            '    items = payload["items"]',
+            "    weight = parcel_weight(items)",
+            "    if weight > MAX_PARCEL_GRAMS:",
+            '        raise ValueError("Parcel too heavy for a single label")',
+            "",
+            "    # Ship to the shipping address, or the billing address when none was given",
+            '    name = payload["customer_name"]',
+        ),
     ),
     Bug(
         path="app/search.py", line=57, function="normalize_query",
@@ -82,6 +115,22 @@ BUGS = [
         exc_type="AttributeError", message="'NoneType' object has no attribute 'strip'", endpoint="/search",
         deploy_message="Tidy search query normalisation", fix_message="Handle empty search queries",
         failure_rate=0.06,
+        context=(
+            "STOP_WORDS = {\"the\", \"a\", \"an\", \"of\"}",
+            "",
+            "",
+            "def tokenize(text):",
+            '    """Split a query into search terms."""',
+            "    return [t for t in text.split() if t not in STOP_WORDS]",
+            "",
+            "",
+            "def normalize_query(query):",
+            '    """Lower-case and trim the search box text.',
+            "",
+            "    The search box sends None when it is empty.",
+            '    """',
+            '    logger.debug("search query: %r", query)',
+        ),
     ),
 ]
 
@@ -95,11 +144,11 @@ HEALTHY_CHANGES = [
 
 
 def file_content(bug: Bug, code: str) -> str:
-    """A plausible source file with `code` on exactly line `bug.line`."""
-    head = [f'"""{bug.path} (demo shop)."""', "import logging", "", "logger = logging.getLogger(__name__)", ""]
-    body = [f"def {bug.function}(*args):", '    """Demo function."""']
-    filler = ["" if i % 4 == 0 else f"# {bug.path} line {len(head) + i + 1}" for i in range(bug.line - 1 - len(head) - len(body))]
-    lines = head + filler + body + [code, ""]
+    """A plausible source file with `code` on exactly line `bug.line`, after the bug's context."""
+    head = [f'"""{bug.path.split("/")[-1][:-3].capitalize()} for the demo shop."""', "import logging", "",
+            "logger = logging.getLogger(__name__)", ""]
+    padding = [""] * (bug.line - 1 - len(head) - len(bug.context))
+    lines = head + padding + list(bug.context) + [code, ""]
     assert lines[bug.line - 1] == code
     return "\n".join(lines)
 
