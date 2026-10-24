@@ -109,6 +109,7 @@ docker compose up -d                               # full stack
 docker compose --profile tls up -d                 # + Caddy HTTPS (PUBLIC_HOSTNAME)
 docker compose --profile demo up -d demo           # demo traffic (DEMO_INGEST_KEY, docs/DEMO.md)
 python scripts/verify_pipeline.py --help           # live pipeline check (docs/DATA_PIPELINE.md)
+python scripts/api_contract_check.py --help        # REST contract check of every endpoint (auth, validation, isolation)
 docker compose exec api python -m app.cli create-project "name" --slack-webhook URL
 docker compose exec api python -m app.cli add-channel <id> discord --config '{"webhook_url": "..."}'
 ```

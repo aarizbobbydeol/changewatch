@@ -325,7 +325,7 @@ async def test_budget_get_and_put():
 @pytest.mark.asyncio
 async def test_admin_margin_endpoint_permissions_and_privacy():
     """Verify GET /v1/admin/margin:
-    - Rejects unauthenticated or non-admin callers with 403 Forbidden.
+    - Rejects callers without the admin key with 401 (403 only when admin endpoints are disabled).
     - Exposes strictly aggregate metrics with NO project identifiers or customer data.
     """
     mock_conn = AsyncMock()
@@ -352,12 +352,12 @@ async def test_admin_margin_endpoint_permissions_and_privacy():
             transport=ASGITransport(app=app), base_url="http://test"
         ) as ac:
             resp_no_auth = await ac.get("/v1/admin/margin")
-            assert resp_no_auth.status_code == 403
+            assert resp_no_auth.status_code == 401
 
             resp_bad_key = await ac.get(
                 "/v1/admin/margin", headers={"X-Admin-Key": "wrong_key"}
             )
-            assert resp_bad_key.status_code == 403
+            assert resp_bad_key.status_code == 401
 
     # 2. Valid admin key -> returns aggregates with 0 tenant IDs
     with patch.object(settings, "ADMIN_API_KEY", "super_secret_admin_key"), \
@@ -390,3 +390,13 @@ async def test_admin_margin_endpoint_permissions_and_privacy():
             raw_text = resp_admin.text
             assert "project_id" not in raw_text
             assert "tenant" not in raw_text
+
+
+@pytest.mark.asyncio
+async def test_admin_endpoints_are_disabled_without_an_admin_key_configured():
+    """With ADMIN_API_KEY unset the admin endpoints are off (403), whatever key is sent."""
+    with patch.object(settings, "ADMIN_API_KEY", ""):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/v1/admin/margin", headers={"X-Admin-Key": "anything"})
+    assert resp.status_code == 403
+    assert "disabled" in resp.json()["detail"]

@@ -68,3 +68,46 @@ async def test_live_export_returns_decrypted_events_and_issue_counts():
         app.dependency_overrides.pop(require_read_project_id, None)
         await close_db_pool()
         await close_redis()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("metric,header", [
+    ("overview", "Metric,Value,Unit,N,Sample OK,Note"),
+    ("verdicts", "Week,Safe,Watch,Rollback,No data,Total"),
+    ("ttf", "Week,Median minutes,N,Sample OK"),
+    ("hotspots", "Area,Incident Count,Share Percent"),
+    ("categories", "Category,Count,Share Percent"),
+])
+async def test_live_analytics_csv_export_every_metric(metric, header):
+    """Each dashboard CSV button works against the real schema (overview used to fail with 500)."""
+    if not await _services_up():
+        pytest.skip("Live PostgreSQL or Redis not running. Skipping live integration test.")
+
+    await init_db_pool()
+    app.dependency_overrides[require_read_project_id] = lambda: 1
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get(f"/v1/analytics/export.csv?metric={metric}&period=30&env=prod")
+            unknown = await client.get("/v1/analytics/export.csv?metric=nope")
+        assert resp.status_code == 200, resp.text
+        assert resp.text.splitlines()[0] == header
+        assert unknown.status_code == 422
+    finally:
+        app.dependency_overrides.pop(require_read_project_id, None)
+        await close_db_pool()
+
+
+@pytest.mark.asyncio
+async def test_live_incident_timeline_unknown_id_is_404():
+    if not await _services_up():
+        pytest.skip("Live PostgreSQL or Redis not running. Skipping live integration test.")
+
+    await init_db_pool()
+    app.dependency_overrides[require_read_project_id] = lambda: 1
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/incidents/2000000000/timeline")
+        assert resp.status_code == 404
+    finally:
+        app.dependency_overrides.pop(require_read_project_id, None)
+        await close_db_pool()

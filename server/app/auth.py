@@ -179,9 +179,14 @@ async def require_admin_key(
     provided_key = (x_admin_key or x_api_key or "").strip()
     configured_key = settings.ADMIN_API_KEY.strip()
 
-    if not configured_key or not provided_key or not hmac.compare_digest(provided_key, configured_key):
+    if not configured_key:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required",
+            detail="Admin endpoints are disabled (ADMIN_API_KEY is not set)",
+        )
+    if not provided_key or not hmac.compare_digest(provided_key, configured_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Admin key required",
         )
     return True

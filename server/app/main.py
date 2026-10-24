@@ -2031,6 +2031,9 @@ async def get_incident_audit_timeline(
 ):
     """Retrieve full audit event timeline from incident_events table."""
     async with read_project_transaction(project_id) as conn:
+        exists = await conn.fetchval("SELECT 1 FROM incidents WHERE id = $1 AND project_id = $2", id, project_id)
+        if not exists:
+            raise HTTPException(status_code=404, detail="Incident not found")
         rows = await conn.fetch(
             """
             SELECT id, type, actor, detail, at

@@ -10,7 +10,7 @@ import csv
 import io
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, Query, Response
 
@@ -366,34 +366,48 @@ async def get_operations(
 
 @router.get("/export.csv")
 async def export_csv(
-    metric: str = Query(..., description="Metric ID to export (e.g. overview, hotspots, categories)"),
+    metric: Literal["overview", "verdicts", "ttf", "hotspots", "categories"] = Query(
+        ..., description="Metric to export: overview, verdicts, ttf, hotspots or categories"
+    ),
     period: int = Query(30, ge=1, le=365),
+    env: str = Query("prod"),
     project_id: int = Depends(require_read_project_id),
 ):
     """Export analytics data in RFC-4180 CSV format."""
     output = io.StringIO()
     writer = csv.writer(output)
 
+    # The route functions are called directly, so pass every parameter: one left out would be
+    # FastAPI's Query(...) object rather than its default value.
     if metric == "overview":
-        overview = await get_overview(period=period, project_id=project_id)
+        overview = await get_overview(period=period, env=env, from_date=None, to_date=None, project_id=project_id)
         writer.writerow(["Metric", "Value", "Unit", "N", "Sample OK", "Note"])
         for k, v in overview["kpis"].items():
             writer.writerow([k, v.get("value"), v.get("unit"), v.get("n"), v.get("sample_ok"), v.get("note")])
 
+    elif metric == "verdicts":
+        weeks = await get_verdicts_by_week(period=max(period, 7), env=env, project_id=project_id)
+        writer.writerow(["Week", "Safe", "Watch", "Rollback", "No data", "Total"])
+        for w in weeks:
+            writer.writerow([w["week"], w["safe"], w["watch"], w["rollback"], w["no_data"], w["total"]])
+
+    elif metric == "ttf":
+        weeks = await get_ttf_by_week(period=max(period, 7), project_id=project_id)
+        writer.writerow(["Week", "Median minutes", "N", "Sample OK"])
+        for w in weeks:
+            writer.writerow([w["week"], w["median_minutes"], w["n"], w["sample_ok"]])
+
     elif metric == "hotspots":
-        hotspots = await get_hotspots(period=period, project_id=project_id)
+        hotspots = await get_hotspots(period=period, depth=1, project_id=project_id)
         writer.writerow(["Area", "Incident Count", "Share Percent"])
         for h in hotspots:
             writer.writerow([h["area"], h["count"], h["share_percent"]])
 
-    elif metric == "categories":
+    else:
         cats = await get_categories(period=period, project_id=project_id)
         writer.writerow(["Category", "Count", "Share Percent"])
         for c in cats:
             writer.writerow([c["category"], c["count"], c["share_percent"]])
-
-    else:
-        writer.writerow(["Error", "Unknown metric"])
 
     csv_content = output.getvalue()
     return Response(
