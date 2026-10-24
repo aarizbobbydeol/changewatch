@@ -3,6 +3,9 @@
 Instant incident alerts are queued by the worker; this loop sends them within about a
 second. The detector also delivers the outbox once a minute as a fallback; rows are
 claimed with FOR UPDATE SKIP LOCKED, so both can run without double-sending.
+
+It also runs the watchdog once a minute (as does the detector), so either process
+notices the other failing and the operator hears about it on SYSTEM_ALERT_WEBHOOK_URL.
 """
 from __future__ import annotations
 
@@ -12,13 +15,15 @@ import os
 import signal
 import time
 
-from app.db import close_db_pool, init_db_pool
+from app.db import close_db_pool, get_db_pool, init_db_pool
 from app.outbox import deliver_outbox_batch
 from app.queue import close_redis, get_redis, init_redis
+from app.system_alerts import run_watchdog_cycle
 
 logger = logging.getLogger("changewatch.notifier")
 
 POLL_INTERVAL_SEC = 1.0
+WATCHDOG_INTERVAL_SEC = 60.0
 HEARTBEAT_KEY = "heartbeat:notifier"
 
 
@@ -35,6 +40,7 @@ async def run_notifier() -> None:
         except NotImplementedError:
             pass
 
+    last_watchdog = 0.0
     try:
         while not stop_event.is_set():
             try:
@@ -52,6 +58,11 @@ async def run_notifier() -> None:
                     await redis.set(HEARTBEAT_KEY, str(time.time()), ex=60)
             except Exception as exc:
                 logger.debug("Failed writing notifier heartbeat: %s", exc)
+
+            # The detector runs the watchdog too; running it here as well means a dead detector is noticed
+            if time.monotonic() - last_watchdog >= WATCHDOG_INTERVAL_SEC:
+                last_watchdog = time.monotonic()
+                await run_watchdog_cycle(get_db_pool(), get_redis())
 
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=POLL_INTERVAL_SEC)

@@ -20,7 +20,7 @@ Before contributing code, please review our core architectural rules:
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/your-org/changewatch.git
+git clone https://github.com/aarizbobbydeol/changewatch.git
 cd changewatch
 
 # 2. Start PostgreSQL and Redis via Docker Compose

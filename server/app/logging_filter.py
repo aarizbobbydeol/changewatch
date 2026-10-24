@@ -75,6 +75,20 @@ def redact_sensitive_data(text: str) -> str:
     return redacted
 
 
+_ANY_URL_PATTERN = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://)(?:[^/\s\"'>@]*@)?([^/\s\"'>]+)[^\s\"'>]*")
+
+
+def redact_delivery_error(text: str) -> str:
+    """Redact an error for delivery or alerting: every URL is cut to scheme://host/******.
+
+    httpx errors quote the full target URL (for webhooks the path is the credential), and
+    connection errors can quote DSNs with passwords (redis://:secret@host).
+    """
+    if not text:
+        return text
+    return _ANY_URL_PATTERN.sub(r"\1\2/******", redact_sensitive_data(text))
+
+
 class LogRedactionFilter(logging.Filter):
     """
     Logging filter enforcing Security Addendum Section C3:

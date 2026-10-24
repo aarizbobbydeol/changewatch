@@ -211,6 +211,11 @@ class Settings(BaseModel):
     WATCHDOG_PING_URL: str = Field(
         default_factory=lambda: os.getenv("WATCHDOG_PING_URL", "")
     )
+    # Operator fallback channel for system alerts (Slack, Discord or Teams incoming webhook).
+    # Sent directly, not through the outbox, so it still works when delivery itself is broken.
+    SYSTEM_ALERT_WEBHOOK_URL: str = Field(
+        default_factory=lambda: os.getenv("SYSTEM_ALERT_WEBHOOK_URL", "")
+    )
 
     # Ephemeral Code Mode & Decision Code Settings (TD Addendum Section I)
     CODE_MODE: str = Field(

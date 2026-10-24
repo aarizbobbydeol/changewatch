@@ -209,7 +209,7 @@ async def run_watchdog_checks(
             stats_15m = await conn.fetchrow(
                 """
                 SELECT
-                    COUNT(*) FILTER (WHERE status = 'delivered') AS delivered,
+                    COUNT(*) FILTER (WHERE status = 'sent') AS delivered,
                     COUNT(*) FILTER (WHERE status = 'failed') AS failed
                 FROM outbox
                 WHERE created_at >= $1::timestamptz - INTERVAL '15 minutes'
@@ -264,6 +264,25 @@ async def run_watchdog_checks(
             investigator_status = "degraded"
             investigator_detail = f"Could not verify investigator: {exc}"
     components["investigator"] = {"status": investigator_status, "detail": investigator_detail}
+
+    # 5c. Notifier Heartbeat Check (instant alerts wait for the detector's 60 s fallback without it)
+    notifier_status = "ok"
+    notifier_detail = "Notifier delivering alerts"
+    if redis:
+        try:
+            nt_hb = await redis.get("heartbeat:notifier")
+            if not nt_hb:
+                notifier_status = "down"
+                notifier_detail = "Notifier is not running: alerts are only sent by the detector once a minute"
+            elif current_time.timestamp() - float(nt_hb) > 60:
+                notifier_status = "degraded"
+                notifier_detail = f"Notifier delayed by {int(current_time.timestamp() - float(nt_hb))} seconds"
+        except Exception as exc:
+            notifier_status = "degraded"
+            notifier_detail = f"Could not verify notifier: {exc}"
+    components["notifier_process"] = {"status": notifier_status, "detail": notifier_detail}
+    if notifier_status == "down" and overall_status == "ok":
+        overall_status = "degraded"
 
     # 6. Disk Space Check
     try:

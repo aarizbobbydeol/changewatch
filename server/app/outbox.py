@@ -7,6 +7,7 @@ import asyncpg
 import httpx
 from app.config import settings
 from app.crypto import decrypt_or_plain
+from app.logging_filter import redact_delivery_error
 from app.db import get_connection
 
 logger = logging.getLogger("changewatch.outbox")
@@ -184,7 +185,8 @@ async def process_outbox_item(
 
     except Exception as exc:
         new_attempts = attempts + 1
-        err_msg = str(exc)[:500]
+        # Errors quote the target URL; for webhooks that is the credential
+        err_msg = redact_delivery_error(str(exc))[:500]
         logger.warning(
             "Outbox delivery failed for item %d (attempt %d): %s",
             item_id,
@@ -205,6 +207,14 @@ async def process_outbox_item(
                 item_id,
             )
             logger.error("Outbox item %d permanently failed", item_id)
+            # Tell the operator directly: this alert never reached the team
+            from app.system_alerts import send_fallback
+
+            kind = (item["dedupe_key"] or "").split(":", 1)[0] or "notification"
+            await send_fallback(
+                f"⚠️ ChangeWatch could not deliver a {kind} alert for project {project_id} "
+                f"after {new_attempts} attempts.\nLast error: {err_msg}"
+            )
         else:
             # Exponential backoff: 10s, 20s, 40s, 80s ... capped at 1 hour
             backoff_sec = min(3600.0, (2 ** new_attempts) * 10.0)

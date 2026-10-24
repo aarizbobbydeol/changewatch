@@ -61,6 +61,10 @@ ANTHROPIC_API_KEY=sk-ant-...
 DECISION_PROVIDER=rules
 # JEV_API_KEY=...
 
+# Where ChangeWatch tells YOU it is unwell (a service down, alerts it could not deliver).
+# Use a Slack/Discord/Teams incoming webhook in a channel you watch.
+SYSTEM_ALERT_WEBHOOK_URL=https://hooks.slack.com/services/...
+
 # Opt-in telemetry stays off
 TELEMETRY_ENABLED=0
 ```

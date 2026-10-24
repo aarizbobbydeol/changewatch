@@ -342,6 +342,7 @@ See [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md) and run the audit script 
 | `VERDICT_ROLLBACK_ABS_RATE` | `0.25` | Absolute error rate that triggers `rollback` |
 | `NOTIFY_ON_SAFE` | `1` | Also send alerts for `safe` verdicts |
 | `SILENT_AFTER_MIN` | `10` | Minutes of silence before the dead-man's switch fires |
+| `SYSTEM_ALERT_WEBHOOK_URL` | `""` | Operator fallback channel: tells you when ChangeWatch itself is unwell (a service down, alerts undeliverable) |
 | `DECISION_PROVIDER` | `rules` | `rules` (deterministic, on-prem), `jev` (TypeSafe Jev), or `fake` |
 | `CODE_MODE` | `stored` | `stored` or `ephemeral` handling of deploy code |
 | `PUBLIC_HOSTNAME` | `localhost` | Domain Caddy provisions HTTPS for (`--profile tls`) |

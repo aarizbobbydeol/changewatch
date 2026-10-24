@@ -36,7 +36,8 @@ server/app/
   fingerprint.py       issue grouping
   detector.py          verdict engine (10 / 30 min checkpoints), runs every 60 s
   incident_manager.py  instant incident alerts, triggered from the worker
-  watchdog.py          dead-man's switch (SILENT_AFTER_MIN)
+  watchdog.py          component checks (db, queue, workers, detector, notifier, outbox, disk)
+  system_alerts.py     operator alerts: run the watchdog every minute (detector + notifier), one active alert per component (migration 020), "recovered" on clear, sent straight to SYSTEM_ALERT_WEBHOOK_URL; failed team alerts reported there too
   outbox.py            exactly-once alert delivery (FOR UPDATE SKIP LOCKED), routed per channel; fans out to every enabled channel
   notifier.py          sends the outbox every second (detector is the 60 s fallback)
   notifiers/           Slack, Discord, Teams, email, signed webhooks

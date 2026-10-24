@@ -477,6 +477,24 @@ async def run_detector():
     try:
         while is_running:
             try:
+                # A session advisory lock dies with its connection (e.g. Postgres restarted).
+                # asyncpg detaches a pooled connection whose server went away, and then even
+                # is_closed() raises InterfaceError, so treat that as lost too.
+                lock_lost = False
+                if lock_conn is not None:
+                    try:
+                        lock_lost = lock_conn.is_closed()
+                    except asyncpg.InterfaceError:
+                        lock_lost = True
+                if lock_lost:
+                    logger.warning("Detector lock connection was lost; re-acquiring leadership")
+                    has_lock = False
+                    try:
+                        await pool.release(lock_conn)
+                    except Exception:
+                        pass
+                    lock_conn = None
+
                 # Attempt to acquire advisory lock if not currently held
                 if not has_lock:
                     if lock_conn is None:
@@ -524,10 +542,18 @@ async def run_detector():
                                 logger.info("Flushed %d stored_events usage units from Redis", flushed)
                 except Exception as exc:
                     logger.warning("Failed flushing usage events in detector cycle: %s", exc)
+
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 logger.error("Error during detector evaluation cycle: %s", exc, exc_info=True)
+
+            # Watchdog runs every cycle, even when deploy processing failed (e.g. database down)
+            try:
+                from app.system_alerts import run_watchdog_cycle
+                await run_watchdog_cycle(pool, get_redis(), ping_external=True)
+            except Exception as exc:
+                logger.warning("Watchdog cycle failed: %s", exc)
 
             # Sleep in short steps so a shutdown signal is honoured within a second
             for _ in range(60):
@@ -537,12 +563,13 @@ async def run_detector():
     finally:
         logger.info("Detector cleaning up resources")
         if lock_conn is not None:
-            if has_lock:
-                await release_detector_lock(lock_conn)
             try:
+                if has_lock:
+                    await release_detector_lock(lock_conn)
                 await pool.release(lock_conn)
-            except Exception:
-                pass
+            except Exception as exc:
+                # A lost connection already dropped the lock; still close the pools below
+                logger.debug("Could not release detector lock connection: %s", exc)
         await close_db_pool()
         await close_redis()
 
