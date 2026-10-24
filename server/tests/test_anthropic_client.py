@@ -81,13 +81,24 @@ def test_dig_deeper_uses_the_deep_model(monkeypatch):
     assert (deep.model, deep.effort) == (settings.LLM_MODEL_DEEP, settings.LLM_EFFORT_DEEP)
 
 
-def test_retired_model_is_reported_at_startup(monkeypatch, caplog):
+def test_retired_model_in_env_is_replaced_and_reported(monkeypatch, caplog):
+    """An old .env (LLM_MODEL=claude-3-5-sonnet-20241022) must not leave AI investigations broken."""
+    import app.config as config
+
     caplog.set_level(logging.INFO)
+    monkeypatch.setattr(config, "RETIRED_MODEL_REPLACEMENTS", [])
+    monkeypatch.setattr("app.llm.RETIRED_MODEL_REPLACEMENTS", config.RETIRED_MODEL_REPLACEMENTS)
+    monkeypatch.delenv("LLM_MODEL_FAST", raising=False)
+    monkeypatch.setenv("LLM_MODEL", "claude-3-5-sonnet-20241022")
+    monkeypatch.setenv("LLM_MODEL_DEEP", "claude-opus-5-5")
+    fresh = config.Settings()
+    assert fresh.LLM_MODEL_FAST == "claude-sonnet-5-5" and fresh.LLM_MODEL == "claude-sonnet-5-5"
+    assert fresh.LLM_MODEL_DEEP == "claude-opus-5-5"  # a current model is kept
+
     monkeypatch.setattr(settings, "LLM_PROVIDER", "anthropic")
     monkeypatch.setattr(settings, "DRY_RUN_LLM", False)
-    monkeypatch.setattr(settings, "LLM_MODEL_FAST", "claude-3-5-sonnet-20241022")
     log_llm_privacy_notice()
-    assert "has been retired" in caplog.text
+    assert "LLM_MODEL=claude-3-5-sonnet-20241022 names a model Anthropic has retired; using claude-sonnet-5-5" in caplog.text
 
 
 def test_llm_cost_is_exact_for_fractional_rates_and_unknown_models_use_the_highest_rate(caplog):

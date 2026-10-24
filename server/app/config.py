@@ -12,6 +12,25 @@ else:
     load_dotenv()
 
 
+# Model families Anthropic no longer serves (Claude 3.x and earlier)
+RETIRED_MODEL_PREFIXES = ("claude-instant", "claude-1", "claude-2", "claude-3-")
+# Settings that named a retired model and were replaced: (variable, old value, new value)
+RETIRED_MODEL_REPLACEMENTS: list = []
+
+
+def _current_model(names: tuple, default: str) -> str:
+    """The first of `names` that is set. A retired model would make every AI call fail, so it is
+    replaced by `default` and reported at startup (log_llm_privacy_notice)."""
+    for name in names:
+        value = (os.getenv(name) or "").strip()
+        if value:
+            if value.startswith(RETIRED_MODEL_PREFIXES):
+                RETIRED_MODEL_REPLACEMENTS.append((name, value, default))
+                return default
+            return value
+    return default
+
+
 class Settings(BaseModel):
     # Database and Cache
     DATABASE_URL: str = Field(
@@ -40,13 +59,13 @@ class Settings(BaseModel):
     # Fast model for automatic investigations and deploy summaries; the deep model is for "Dig deeper".
     # LLM_MODEL is the older name for the fast model and is still read.
     LLM_MODEL_FAST: str = Field(
-        default_factory=lambda: os.getenv("LLM_MODEL_FAST") or os.getenv("LLM_MODEL") or "claude-sonnet-5-5"
+        default_factory=lambda: _current_model(("LLM_MODEL_FAST", "LLM_MODEL"), "claude-sonnet-5-5")
     )
     LLM_MODEL_DEEP: str = Field(
-        default_factory=lambda: os.getenv("LLM_MODEL_DEEP") or "claude-opus-5-5"
+        default_factory=lambda: _current_model(("LLM_MODEL_DEEP",), "claude-opus-5-5")
     )
     LLM_MODEL: str = Field(
-        default_factory=lambda: os.getenv("LLM_MODEL_FAST") or os.getenv("LLM_MODEL") or "claude-sonnet-5-5"
+        default_factory=lambda: _current_model(("LLM_MODEL_FAST", "LLM_MODEL"), "claude-sonnet-5-5")
     )
     # Reasoning effort (low, medium, high, xhigh, max): higher is more thorough, slower and costlier
     LLM_EFFORT_FAST: str = Field(default_factory=lambda: os.getenv("LLM_EFFORT_FAST", "medium"))

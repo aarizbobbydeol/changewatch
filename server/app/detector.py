@@ -463,6 +463,8 @@ async def run_detector():
     Uses PostgreSQL session advisory lock (pg_try_advisory_lock) for single-instance leader election.
     """
     logger.info("ChangeWatch spike & verdict detector started (PID: %d)", os.getpid())
+    from app.llm import log_llm_privacy_notice
+    log_llm_privacy_notice()  # the detector writes AI deploy summaries too
     await init_db_pool()
     await init_redis()
 

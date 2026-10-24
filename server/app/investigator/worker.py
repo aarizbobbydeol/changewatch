@@ -142,6 +142,8 @@ async def requeue_interrupted_investigations(redis_client) -> int:
 async def run_investigator_worker():
     """Main investigator worker loop with heartbeats and signal handling."""
     logger.info("Starting ChangeWatch AI SRE Investigator worker...")
+    from app.llm import log_llm_privacy_notice
+    log_llm_privacy_notice()
     await init_db_pool()
     redis_client = await init_redis()
 

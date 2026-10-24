@@ -1,13 +1,10 @@
 import logging
 from typing import Optional, Protocol, Tuple
 import httpx
-from app.config import settings
+from app.config import RETIRED_MODEL_REPLACEMENTS, settings
 from app.scrub import scrub_text
 
 logger = logging.getLogger(__name__)
-
-# Model families Anthropic no longer serves (Claude 3.x and earlier)
-RETIRED_MODEL_PREFIXES = ("claude-instant", "claude-1", "claude-2", "claude-3-")
 
 
 class LLMClient(Protocol):
@@ -159,12 +156,13 @@ def log_llm_privacy_notice():
             settings.LLM_MODEL_FAST,
             settings.LLM_MODEL_DEEP,
         )
-        for model in {settings.LLM_MODEL_FAST, settings.LLM_MODEL_DEEP}:
-            if model.startswith(RETIRED_MODEL_PREFIXES):
-                logger.warning(
-                    "LLM model %s has been retired by Anthropic, so AI investigations will fail. "
-                    "Set LLM_MODEL_FAST / LLM_MODEL_DEEP (for example claude-sonnet-5-5 / claude-opus-5-5).",
-                    model,
-                )
+        for name, old, new in sorted(set(RETIRED_MODEL_REPLACEMENTS)):
+            logger.warning(
+                "%s=%s names a model Anthropic has retired; using %s instead. Update it in .env "
+                "(LLM_MODEL_FAST / LLM_MODEL_DEEP).",
+                name,
+                old,
+                new,
+            )
     else:
         logger.info("LLM Provider: %s", provider)
