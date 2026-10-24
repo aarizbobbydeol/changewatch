@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 import asyncpg
 
+from app.crypto import decrypt_or_plain, encrypt_or_keep
 from app.config import settings
 from app.decisions.verifier import (
     verify_evidence_supports_conclusion,
@@ -165,7 +166,7 @@ async def run_investigation(
     if not deep_mode:
         cached_row = await conn.fetchrow(
             """
-            SELECT id, result
+            SELECT id, result, result_enc
             FROM investigations
             WHERE project_id = $1 AND incident_id = $2 AND status = 'done'
             LIMIT 1
@@ -173,8 +174,14 @@ async def run_investigation(
             project_id,
             incident_id,
         )
-        if cached_row and cached_row["result"]:
-            cached_result = cached_row["result"]
+        cached_result = (
+            await decrypt_or_plain(
+                project_id, "investigations", "result", cached_row.get("result_enc"), cached_row.get("result")
+            )
+            if cached_row
+            else None
+        )
+        if cached_result:
             if isinstance(cached_result, str):
                 cached_result = json.loads(cached_result)
             logger.info("Reusing cached investigation #%d for incident #%d", cached_row["id"], incident_id)
@@ -273,14 +280,17 @@ async def run_investigation(
     # 6. Store investigation record in database
     finished_at = datetime.now(timezone.utc)
     result_dict = parsed_output.model_dump()
+    # Results quote code and stack traces: store them (and the tool audit log) encrypted
+    result_plain, result_enc = await encrypt_or_keep(project_id, "investigations", "result", json.dumps(result_dict))
+    steps_plain, steps_enc = await encrypt_or_keep(project_id, "investigations", "steps", json.dumps(steps))
 
     inv_row = await conn.fetchrow(
         """
         INSERT INTO investigations (
             incident_id, project_id, status, model, started_at, finished_at,
-            steps, result, input_tokens, output_tokens
+            steps, steps_enc, result, result_enc, input_tokens, output_tokens
         )
-        VALUES ($1, $2, 'done', $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, 'done', $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING id
         """,
         incident_id,
@@ -288,8 +298,10 @@ async def run_investigation(
         getattr(llm, "model", "default"),
         started_at,
         finished_at,
-        json.dumps(steps),
-        json.dumps(result_dict),
+        steps_plain or "[]",
+        steps_enc,
+        result_plain,
+        result_enc,
         500,
         250,
     )

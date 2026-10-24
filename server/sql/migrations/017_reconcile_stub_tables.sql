@@ -26,3 +26,6 @@ BEGIN
     ALTER TABLE notification_channels ALTER COLUMN name DROP NOT NULL;
   END IF;
 END $$;
+
+-- investigations: encrypted audit log column used by the investigator (also from the 006 stub)
+ALTER TABLE investigations ADD COLUMN IF NOT EXISTS steps_enc BYTEA;

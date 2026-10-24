@@ -187,6 +187,9 @@ def test_deploy_create_schema_validation():
 @pytest.mark.asyncio
 async def test_deploy_hook_with_files_and_codeowners():
     from unittest.mock import AsyncMock, MagicMock, patch
+
+    async def fake_encrypt(project_id, table, column, plaintext):
+        return b"enc:" + plaintext.encode()
     import httpx
     from app.main import app
 
@@ -211,7 +214,8 @@ async def test_deploy_hook_with_files_and_codeowners():
 
     with patch("app.auth.get_redis", return_value=mock_redis), \
          patch("app.db.get_db_pool", return_value=mock_pool), \
-         patch("app.auth.require_ingest_project_id", return_value=1):
+         patch("app.auth.require_ingest_project_id", return_value=1), \
+         patch("app.crypto.encrypt", side_effect=fake_encrypt):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -248,14 +252,15 @@ async def test_deploy_hook_with_files_and_codeowners():
     assert data["ok"] is True
     assert data["deploy_id"] == 202
 
-    # Verify deploy row insert included codeowners
+    # Verify deploy row insert included codeowners, stored encrypted only
     insert_call = next(
         call for call in mock_conn.fetchrow.call_args_list
         if "INSERT INTO deploys" in call[0][0]
     )
     sql = insert_call[0][0]
-    assert "codeowners" in sql
-    assert "* @core-team\ndb.py @data-team" in insert_call[0]
+    assert "codeowners_enc" in sql
+    assert b"enc:* @core-team\ndb.py @data-team" in insert_call[0]
+    assert "* @core-team\ndb.py @data-team" not in insert_call[0]
 
 
 
@@ -266,4 +271,8 @@ async def test_deploy_hook_with_files_and_codeowners():
     assert any("deploy_files" in str(call) and "db.py" in str(call) for call in execute_calls)
     # Second file is requirements.txt
     assert any("deploy_files" in str(call) and "requirements.txt" in str(call) for call in execute_calls)
+    # File contents are stored encrypted, never as plaintext
+    file_calls = [call for call in execute_calls if "deploy_files" in str(call)]
+    assert all("def connect(): return None" not in call[0] for call in file_calls)
+    assert any(b"enc:def connect(): return None" in call[0] for call in file_calls)
 

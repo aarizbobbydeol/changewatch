@@ -17,7 +17,7 @@ from app.cache import (
     issue_lookup_cache,
 )
 from app.config import resolve_worker_processes, settings
-from app.crypto import encrypt
+from app.crypto import decrypt_or_plain, encrypt_or_keep
 from app.db import close_db_pool, init_db_pool, project_transaction
 from app.fingerprint import compute_fingerprint
 from app.metering import record_stored_event_metric
@@ -191,24 +191,15 @@ async def process_single_event(payload: Dict[str, Any]) -> None:
             store_full = True
 
         if store_full:
-            # Encrypt stack_trace and extra before database insert
-            raw_trace = payload.get("stack_trace")
+            # Store stack_trace and extra encrypted only (plaintext kept only if encryption fails)
             raw_extra = payload.get("extra") or {}
-            extra_json = json.dumps(raw_extra)
-
-            stack_trace_enc = None
-            if raw_trace:
-                try:
-                    stack_trace_enc = await encrypt(project_id, "events", "stack_trace", raw_trace)
-                except Exception as exc:
-                    logger.warning("Failed encrypting stack_trace for event %s: %s", event_id, exc)
-
-            extra_enc = None
-            if extra_json:
-                try:
-                    extra_enc = await encrypt(project_id, "events", "extra", extra_json)
-                except Exception as exc:
-                    logger.warning("Failed encrypting extra for event %s: %s", event_id, exc)
+            raw_trace, stack_trace_enc = await encrypt_or_keep(
+                project_id, "events", "stack_trace", payload.get("stack_trace")
+            )
+            extra_plain, extra_enc = await encrypt_or_keep(
+                project_id, "events", "extra", json.dumps(raw_extra) if raw_extra else None
+            )
+            extra_json = extra_plain or "{}"
 
             # Insert event linked to issue and deploy (idempotent via event_id unique constraint)
             await conn.execute(
@@ -314,7 +305,7 @@ async def check_incident_for_issue(
     try:
         ev_row = await conn.fetchrow(
             """
-            SELECT occurred_at, request_path, stack_trace
+            SELECT occurred_at, request_path, stack_trace, stack_trace_enc
             FROM events
             WHERE project_id = $1 AND deploy_id = $2 AND issue_id = $3
             ORDER BY occurred_at DESC
@@ -337,7 +328,9 @@ async def check_incident_for_issue(
         )
         payload = {
             "request_path": ev_row["request_path"],
-            "stack_trace": ev_row["stack_trace"],
+            "stack_trace": await decrypt_or_plain(
+                project_id, "events", "stack_trace", ev_row.get("stack_trace_enc"), ev_row.get("stack_trace")
+            ),
         }
         iss_row = await conn.fetchrow(
             "SELECT title FROM issues WHERE id = $1 AND project_id = $2",
@@ -603,25 +596,13 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
 
                 # Parallel encryption and insert of full event rows only up to quota
                 async def _enc_ev(ev: Dict[str, Any]):
-                    raw_trace = ev.get("stack_trace")
+                    # Encrypted only; plaintext kept only if encryption fails
                     raw_extra = ev.get("extra")
-                    extra_json = json.dumps(raw_extra) if raw_extra else ""
-
-                    trace_enc = None
-                    if raw_trace:
-                        try:
-                            trace_enc = await encrypt(project_id, "events", "stack_trace", raw_trace)
-                        except Exception as e:
-                            logger.warning("Failed encrypting stack_trace for %s: %s", ev.get("event_id"), e)
-
-                    extra_enc = None
-                    if extra_json:
-                        try:
-                            extra_enc = await encrypt(project_id, "events", "extra", extra_json)
-                        except Exception as e:
-                            logger.warning("Failed encrypting extra for %s: %s", ev.get("event_id"), e)
-
-                    return raw_trace, trace_enc, extra_json, extra_enc
+                    raw_trace, trace_enc = await encrypt_or_keep(project_id, "events", "stack_trace", ev.get("stack_trace"))
+                    extra_plain, extra_enc = await encrypt_or_keep(
+                        project_id, "events", "extra", json.dumps(raw_extra) if raw_extra else None
+                    )
+                    return raw_trace, trace_enc, extra_plain or "", extra_enc
 
                 if full_events_to_store:
                     enc_results = await asyncio.gather(*[_enc_ev(ev) for ev in full_events_to_store])

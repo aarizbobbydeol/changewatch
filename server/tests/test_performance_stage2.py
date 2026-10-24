@@ -124,7 +124,7 @@ async def test_process_event_batch_groups_issues_and_events():
     ]
 
     with patch("app.worker.project_transaction", return_value=mock_pool.acquire.return_value), \
-         patch("app.worker.encrypt", return_value=b"mock_enc"):
+         patch("app.crypto.encrypt", return_value=b"mock_enc"):
         await process_event_batch(batch)
 
         # 1. conn.fetch called for issues upsert with exactly 2 fingerprints
@@ -247,7 +247,7 @@ async def test_incident_check_called_once_per_distinct_deploy_issue():
 
     with patch("app.worker.project_transaction", return_value=mock_pool.acquire.return_value), \
          patch("app.worker.find_deploy", side_effect=_mock_find_deploy), \
-         patch("app.worker.encrypt", return_value=b"mock_enc"), \
+         patch("app.crypto.encrypt", return_value=b"mock_enc"), \
          patch("app.worker.check_incident_for_issue", side_effect=_mock_check_incident):
         await process_event_batch(batch)
 

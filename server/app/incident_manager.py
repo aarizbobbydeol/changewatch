@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 import asyncpg
 
+from app.crypto import decrypt_or_plain
 from app.config import settings
 from app.decisions import (
     build_decision_state,
@@ -40,6 +41,13 @@ from app.sre_prep import (
 logger = logging.getLogger("changewatch.incidents")
 
 
+def _same_file(frame_path: str, repo_path: str) -> bool:
+    """True when a stack-frame path and a repo-relative path name the same file."""
+    frame_path = frame_path.replace("\\", "/")
+    repo_path = repo_path.replace("\\", "/").lstrip("/")
+    return frame_path == repo_path or frame_path.endswith("/" + repo_path)
+
+
 async def check_and_trigger_incident(
     conn: asyncpg.Connection,
     project_id: int,
@@ -56,7 +64,7 @@ async def check_and_trigger_incident(
     # 1. Fetch deploy metadata (deployed_at, commit_sha, author, message, codeowners)
     dep_row = await conn.fetchrow(
         """
-        SELECT deployed_at, commit_sha, author, message, codeowners
+        SELECT deployed_at, commit_sha, author, message, codeowners, codeowners_enc
         FROM deploys
         WHERE id = $1 AND project_id = $2
         """,
@@ -205,6 +213,9 @@ async def check_and_trigger_incident(
     )
     deploy_files = []
     file_authors = []
+    # Stack frames carry absolute paths (/srv/app/app/billing.py); CODEOWNERS rules are
+    # repo-relative, so owners are resolved against the matching deploy file's path.
+    repo_path: Optional[str] = None
     for r in df_rows:
         ranges = r["added_ranges"]
         parsed_ranges = ranges if isinstance(ranges, list) else json.loads(ranges or "[]")
@@ -214,13 +225,16 @@ async def check_and_trigger_incident(
             "added_ranges": parsed_ranges,
         }
         deploy_files.append(df_dict)
-        if where_file.endswith(r["path"]) or r["path"].endswith(where_file):
+        if where_file and _same_file(where_file, r["path"]):
+            repo_path = r["path"]
             auths = r["authors"]
             file_authors = auths if isinstance(auths, list) else json.loads(auths or "[]")
 
     in_diff = frame_in_diff(frame, deploy_files) if frame else False
-    codeowners_content = dep_row["codeowners"]
-    owners = resolve_owners(where_file, codeowners_content, file_authors)
+    codeowners_content = await decrypt_or_plain(
+        project_id, "deploys", "codeowners", dep_row.get("codeowners_enc"), dep_row.get("codeowners")
+    )
+    owners = resolve_owners(repo_path or where_file, codeowners_content, file_authors)
 
     # 6. Run Typed Decisions Triage (sub-second rules/fake fallback)
     triage_info: Dict[str, Any] = {}

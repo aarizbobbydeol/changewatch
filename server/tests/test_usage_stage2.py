@@ -400,7 +400,7 @@ async def test_crash_loop_storm_control_caps_stored_events():
          patch("app.worker.project_transaction", return_value=mock_ptx), \
          patch("app.worker.record_stored_event_metric", side_effect=fake_stored_metric), \
          patch("app.worker.find_deploy", return_value=1), \
-         patch("app.worker.encrypt", return_value=b"enc"):
+         patch("app.crypto.encrypt", return_value=b"enc"):
 
         now_dt = datetime.now(timezone.utc)
 

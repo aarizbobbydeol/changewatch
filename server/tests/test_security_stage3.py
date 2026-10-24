@@ -288,9 +288,15 @@ async def test_encrypt_existing_cli_command():
     mock_conn.fetch.side_effect = [
         # projects fetch
         [{"id": 1, "slack_webhook_url": "https://hooks.slack.com/services/T1/B2/K3"}],
+        # notification channel configs
+        [{"id": 5, "project_id": 1, "config": '{"webhook_url": "https://discord.com/api/webhooks/1/abc"}'}],
         # deploys batch 1
-        [{"id": 10, "project_id": 1, "diff": "diff --git content"}],
+        [{"id": 10, "project_id": 1, "diff": "diff --git content", "codeowners": "* @core-team"}],
         # deploys batch 2 (empty, terminates loop)
+        [],
+        # deploy file contents batch 1
+        [{"id": 20, "project_id": 1, "content": "def connect(): pass"}],
+        # deploy file contents batch 2 (empty, terminates loop)
         [],
         # events batch 1
         [{"id": 100, "project_id": 1, "stack_trace": "Traceback...", "extra": {"user": 1}}],
@@ -308,12 +314,19 @@ async def test_encrypt_existing_cli_command():
         assert stats["projects_encrypted"] == 1
         assert stats["deploys_encrypted"] == 1
         assert stats["events_encrypted"] == 1
+        assert stats["channels_encrypted"] == 1
+        assert stats["deploy_files_encrypted"] == 1
 
         # Check execute calls for UPDATE ... SET *_enc = $1, plaintext = NULL
         updates = [c[0][0] for c in mock_conn.execute.call_args_list if "UPDATE" in c[0][0]]
         assert any("slack_webhook_url_enc" in u and "slack_webhook_url = NULL" in u for u in updates)
         assert any("diff_enc" in u and "diff = NULL" in u for u in updates)
         assert any("stack_trace_enc" in u and "stack_trace = NULL" in u for u in updates)
+        assert any("codeowners_enc" in u and "codeowners = NULL" in u for u in updates)
+        assert any("content_enc" in u and "content = NULL" in u for u in updates)
+        assert any("config_enc" in u for u in updates)
+        # events.extra is NOT NULL: it is emptied, never set to NULL
+        assert not any("extra = NULL" in u for u in updates)
 
 
 @pytest.mark.asyncio

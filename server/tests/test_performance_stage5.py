@@ -116,7 +116,7 @@ async def test_storm_control_caps_full_event_rows_and_keeps_counters_exact():
 
     with patch("app.worker.project_transaction", return_value=mock_pool.acquire.return_value), \
          patch("app.worker.get_redis", return_value=mock_redis), \
-         patch("app.worker.encrypt", return_value=b"enc_val"), \
+         patch("app.crypto.encrypt", return_value=b"enc_val"), \
          patch.object(settings, "STORE_FULL_PER_MIN", 5):
 
         await process_event_batch(events)

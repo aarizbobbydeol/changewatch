@@ -2,6 +2,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 import asyncpg
+from app.crypto import decrypt_or_plain
 from app.db import get_connection, project_transaction
 from app.llm import get_llm_client
 from app.outbox import queue_notification
@@ -30,7 +31,7 @@ async def generate_likely_cause(
     # 1. Fetch deploy information
     dep_row = await conn.fetchrow(
         """
-        SELECT commit_sha, author, message, diff, deployed_at
+        SELECT commit_sha, author, message, diff, diff_enc, deployed_at
         FROM deploys
         WHERE id = $1 AND project_id = $2
         """,
@@ -43,24 +44,25 @@ async def generate_likely_cause(
     commit_sha = dep_row["commit_sha"]
     author = dep_row["author"] or "Unknown"
     message = dep_row["message"] or ""
-    raw_diff = dep_row["diff"] or ""
+    raw_diff = await decrypt_or_plain(project_id, "deploys", "diff", dep_row.get("diff_enc"), dep_row.get("diff")) or ""
     deployed_at = dep_row["deployed_at"]
 
     # 2. Fetch top 3 issues with event counts and sample stack traces
     issues = await conn.fetch(
         """
         SELECT i.title, COUNT(e.id) AS count,
-               (
-                 SELECT e2.stack_trace
-                 FROM events e2
-                 WHERE e2.issue_id = i.id AND e2.stack_trace IS NOT NULL
-                 ORDER BY e2.occurred_at DESC
-                 LIMIT 1
-               ) AS sample_trace
+               s.stack_trace AS sample_trace, s.stack_trace_enc AS sample_trace_enc
         FROM issues i
         JOIN events e ON e.issue_id = i.id
+        LEFT JOIN LATERAL (
+          SELECT e2.stack_trace, e2.stack_trace_enc
+          FROM events e2
+          WHERE e2.issue_id = i.id AND (e2.stack_trace IS NOT NULL OR e2.stack_trace_enc IS NOT NULL)
+          ORDER BY e2.occurred_at DESC
+          LIMIT 1
+        ) s ON true
         WHERE e.project_id = $1 AND (e.deploy_id = $2 OR e.occurred_at >= $3)
-        GROUP BY i.id, i.title
+        GROUP BY i.id, i.title, s.stack_trace, s.stack_trace_enc
         ORDER BY count DESC
         LIMIT 3
         """,
@@ -75,7 +77,10 @@ async def generate_likely_cause(
     issues_text = ""
     for idx, iss in enumerate(issues, start=1):
         clean_title = scrub_text(iss["title"] or "Error")
-        clean_trace = scrub_text((iss["sample_trace"] or "")[:1500])
+        sample_trace = await decrypt_or_plain(
+            project_id, "events", "stack_trace", iss.get("sample_trace_enc"), iss.get("sample_trace")
+        )
+        clean_trace = scrub_text((sample_trace or "")[:1500])
         issues_text += f"\n--- Error #{idx} ({iss['count']} events): {clean_title} ---\n{clean_trace}\n"
 
     system_prompt = (

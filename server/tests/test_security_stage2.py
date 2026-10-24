@@ -166,11 +166,15 @@ async def test_cli_generates_hashed_keys_without_plaintext_in_db():
 
         # The passed parameters must be hashes (length 64), not raw keys
         name_arg = insert_args[1]
-        webhook_arg = insert_args[2]
-        ingest_hash_arg = insert_args[4]
-        ingest_prefix_arg = insert_args[5]
-        read_hash_arg = insert_args[6]
-        read_prefix_arg = insert_args[7]
+        ingest_hash_arg = insert_args[3]
+        ingest_prefix_arg = insert_args[4]
+        read_hash_arg = insert_args[5]
+        read_prefix_arg = insert_args[6]
+
+        # The webhook URL is a credential: it is not part of the project insert
+        # (it is written afterwards, encrypted with the project's data key)
+        assert "slack_webhook_url" not in query
+        assert "https://hooks.slack.com/services/T1/B2/X3" not in insert_args
 
         assert name_arg == "prod-app"
         assert len(ingest_hash_arg) == 64

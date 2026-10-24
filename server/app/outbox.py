@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, List, Optional
 import asyncpg
 import httpx
 from app.config import settings
+from app.crypto import decrypt_or_plain
 from app.db import get_connection
 
 logger = logging.getLogger("changewatch.outbox")
@@ -105,7 +106,7 @@ async def _send_to_channel(conn: asyncpg.Connection, project_id: int, channel_id
     from app.notifiers.channels import get_notifier
 
     ch = await conn.fetchrow(
-        "SELECT type, config, enabled FROM notification_channels WHERE id = $1 AND project_id = $2",
+        "SELECT type, config, config_enc, enabled FROM notification_channels WHERE id = $1 AND project_id = $2",
         channel_id,
         project_id,
     )
@@ -115,7 +116,8 @@ async def _send_to_channel(conn: asyncpg.Connection, project_id: int, channel_id
     notifier = get_notifier(ch["type"])
     if notifier is None:
         raise ValueError(f"Unsupported channel type: {ch['type']}")
-    config = ch["config"] if isinstance(ch["config"], dict) else json.loads(ch["config"] or "{}")
+    raw_config = await decrypt_or_plain(project_id, "notification_channels", "config", ch.get("config_enc"), ch.get("config"))
+    config = raw_config if isinstance(raw_config, dict) else json.loads(raw_config or "{}")
     await notifier.send(payload, config)
 
 
@@ -123,14 +125,18 @@ async def _default_send(project_id: int, payload: Dict[str, Any]) -> None:
     """Send payload to project's configured Slack webhook if present."""
     async with get_connection() as conn:
         row = await conn.fetchrow(
-            "SELECT slack_webhook_url FROM projects WHERE id = $1",
+            "SELECT slack_webhook_url, slack_webhook_url_enc FROM projects WHERE id = $1",
             project_id,
         )
-    if not row or not row["slack_webhook_url"]:
+    url = (
+        await decrypt_or_plain(project_id, "projects", "slack_webhook_url", row.get("slack_webhook_url_enc"), row.get("slack_webhook_url"))
+        if row
+        else None
+    )
+    if not url:
         logger.warning("Project %d has no webhook URL configured; marking notification delivered", project_id)
         return
 
-    url = row["slack_webhook_url"]
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(url, json=payload)
         resp.raise_for_status()

@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 import asyncpg
 
+from app.crypto import decrypt_or_plain
 from app.config import settings
 
 logger = logging.getLogger("changewatch.investigator.tools")
@@ -68,7 +69,7 @@ async def get_file_at_commit(
     """
     row = await conn.fetchrow(
         """
-        SELECT content
+        SELECT content, content_enc
         FROM deploy_files
         WHERE project_id = $1 AND deploy_id = $2 AND path = $3
         LIMIT 1
@@ -77,7 +78,11 @@ async def get_file_at_commit(
         deploy_id,
         path,
     )
-    content = row["content"] if row else None
+    content = (
+        await decrypt_or_plain(project_id, "deploy_files", "content", row.get("content_enc"), row.get("content"))
+        if row
+        else None
+    )
 
     # Ephemeral or missing fallback: if GITHUB_READ_TOKEN configured
     if content is None and settings.GITHUB_READ_TOKEN:
@@ -124,7 +129,7 @@ async def get_dependency_changes(
     """Parse added or modified dependency files to extract package changes."""
     rows = await conn.fetch(
         """
-        SELECT path, status, content
+        SELECT path, status, content, content_enc
         FROM deploy_files
         WHERE project_id = $1 AND deploy_id = $2 AND is_dependency_file = true
         LIMIT 10
@@ -135,7 +140,7 @@ async def get_dependency_changes(
     changes = []
     for r in rows:
         path = r["path"]
-        content = r.get("content") or ""
+        content = await decrypt_or_plain(project_id, "deploy_files", "content", r.get("content_enc"), r.get("content")) or ""
         # Parse requirements.txt style lines
         if "requirements" in path or path.endswith(".txt"):
             for line in content.splitlines():
@@ -173,7 +178,7 @@ async def get_config_changes(
     """Extract changed config, Docker, migration files and new environment variable names."""
     rows = await conn.fetch(
         """
-        SELECT path, status, content
+        SELECT path, status, content, content_enc
         FROM deploy_files
         WHERE project_id = $1 AND deploy_id = $2
           AND (is_config_file = true OR path LIKE '%docker%' OR path LIKE '%env%' OR path LIKE '%migration%')
@@ -187,7 +192,7 @@ async def get_config_changes(
 
     for r in rows:
         changed_configs.append({"path": r["path"], "status": r["status"]})
-        content = r.get("content") or ""
+        content = await decrypt_or_plain(project_id, "deploy_files", "content", r.get("content_enc"), r.get("content")) or ""
         # Search for os.environ, os.getenv, process.env, settings.
         for match in re.finditer(r"(?:os\.(?:environ\[|getenv\()|process\.env\.)[\"']([A-Z0-9_]+)[\"']", content):
             env_vars_found.add(match.group(1))
@@ -228,7 +233,7 @@ async def get_issue_events(
     """Retrieve recent event stack traces and request paths for an issue."""
     rows = await conn.fetch(
         """
-        SELECT id, occurred_at, request_path, duration_ms, stack_trace
+        SELECT id, occurred_at, request_path, duration_ms, stack_trace, stack_trace_enc
         FROM events
         WHERE project_id = $1 AND issue_id = $2
         ORDER BY occurred_at DESC
@@ -238,16 +243,19 @@ async def get_issue_events(
         issue_id,
         min(limit, 20),
     )
-    return [
-        {
-            "id": r["id"],
-            "occurred_at": r["occurred_at"].isoformat() if r.get("occurred_at") else None,
-            "request_path": r.get("request_path"),
-            "duration_ms": r.get("duration_ms"),
-            "stack_trace": (r.get("stack_trace") or "")[:2000],
-        }
-        for r in rows
-    ]
+    events = []
+    for r in rows:
+        trace = await decrypt_or_plain(project_id, "events", "stack_trace", r.get("stack_trace_enc"), r.get("stack_trace"))
+        events.append(
+            {
+                "id": r["id"],
+                "occurred_at": r["occurred_at"].isoformat() if r.get("occurred_at") else None,
+                "request_path": r.get("request_path"),
+                "duration_ms": r.get("duration_ms"),
+                "stack_trace": (trace or "")[:2000],
+            }
+        )
+    return events
 
 
 async def get_error_rate(

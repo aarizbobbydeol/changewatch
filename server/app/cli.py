@@ -8,7 +8,9 @@ from typing import Optional
 from app.auth import hash_api_key
 from app.crypto import (
     decrypt_data_key,
+    decrypt_or_plain,
     encrypt,
+    encrypt_or_keep,
     encrypt_data_key,
     generate_master_key,
     get_master_key_bytes,
@@ -36,6 +38,14 @@ def generate_ingest_key() -> str:
 def generate_read_key() -> str:
     """Generate a cryptographically secure random read API key."""
     return f"cw_read_{secrets.token_urlsafe(24)}"
+
+
+def _mask_url(url: str) -> str:
+    """Show only scheme and host of a URL; webhook paths are credentials."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}/******" if parsed.netloc else "******"
 
 
 async def create_project_cmd(name: str, slack_webhook: Optional[str] = None):
@@ -67,24 +77,33 @@ async def create_project_cmd(name: str, slack_webhook: Optional[str] = None):
                 """
                 INSERT INTO projects (
                     name,
-                    slack_webhook_url,
                     data_key_enc,
                     ingest_key_hash,
                     ingest_key_prefix,
                     read_key_hash,
                     read_key_prefix
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 RETURNING id, name, created_at
                 """,
                 name,
-                slack_webhook,
                 data_key_enc,
                 ingest_hash,
                 ingest_prefix,
                 read_hash,
                 read_prefix,
             )
+            if slack_webhook:
+                # The webhook URL is a credential: store it encrypted with the project's data key
+                webhook_plain, webhook_enc = await encrypt_or_keep(
+                    row["id"], "projects", "slack_webhook_url", slack_webhook
+                )
+                await conn.execute(
+                    "UPDATE projects SET slack_webhook_url = $1, slack_webhook_url_enc = $2 WHERE id = $3",
+                    webhook_plain,
+                    webhook_enc,
+                    row["id"],
+                )
 
         print("\n==========================================")
         print(" ChangeWatch Project Created Successfully ")
@@ -93,7 +112,7 @@ async def create_project_cmd(name: str, slack_webhook: Optional[str] = None):
         print(f"Project Name:      {row['name']}")
         print(f"Ingest Key:        {ingest_key}")
         print(f"Read Key:          {read_key}")
-        print(f"Slack Webhook URL: {slack_webhook or '(None)'}")
+        print(f"Slack Webhook URL: {_mask_url(slack_webhook) if slack_webhook else '(None)'}")
         print(f"Envelope Security: {'Enabled (AES-256-GCM)' if data_key_enc else 'Pending'}")
         print("------------------------------------------")
         print("IMPORTANT: Save these keys now. They are hashed with SHA-256 and will NEVER be shown again.")
@@ -112,7 +131,8 @@ async def list_projects_cmd():
         async with get_connection() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, name, ingest_key_prefix, read_key_prefix, api_key, slack_webhook_url, created_at,
+                SELECT id, name, ingest_key_prefix, read_key_prefix, api_key, slack_webhook_url,
+                       (slack_webhook_url_enc IS NOT NULL) AS webhook_encrypted, created_at,
                        (data_key_enc IS NOT NULL) as has_crypto
                 FROM projects
                 ORDER BY id
@@ -128,7 +148,10 @@ async def list_projects_cmd():
         for r in rows:
             ingest_p = r["ingest_key_prefix"] or (r["api_key"][:12] + "..." if r["api_key"] else "-")
             read_p = r["read_key_prefix"] or "-"
-            webhook = r["slack_webhook_url"] or "-"
+            if r["webhook_encrypted"]:
+                webhook = "(encrypted)"
+            else:
+                webhook = _mask_url(r["slack_webhook_url"]) if r["slack_webhook_url"] else "-"
             enc = "YES" if r["has_crypto"] else "NO"
             print(f"{r['id']:<3} | {r['name']:<20} | {ingest_p:<15} | {read_p:<15} | {enc:<9} | {webhook}")
         print()
@@ -242,16 +265,21 @@ async def encrypt_existing_cmd(batch_size: int = 1000) -> dict:
     One-time resumable CLI to convert existing plaintext columns to encrypted BYTEA columns.
     Converts:
     - deploys.diff -> deploys.diff_enc
+    - deploys.codeowners -> deploys.codeowners_enc
+    - deploy_files.content -> deploy_files.content_enc
     - events.stack_trace -> events.stack_trace_enc
     - events.extra -> events.extra_enc
     - projects.slack_webhook_url -> projects.slack_webhook_url_enc
+    - notification_channels.config -> notification_channels.config_enc
     Safe to re-run and resumable.
     """
     pool = await init_db_pool()
     stats = {
         "deploys_encrypted": 0,
+        "deploy_files_encrypted": 0,
         "events_encrypted": 0,
         "projects_encrypted": 0,
+        "channels_encrypted": 0,
     }
     try:
         async with get_connection() as conn:
@@ -267,12 +295,26 @@ async def encrypt_existing_cmd(batch_size: int = 1000) -> dict:
                 )
                 stats["projects_encrypted"] += 1
 
-            # 2. Deploys (batched)
+            # 1b. Notification channel configs (credentials)
+            ch_rows = await conn.fetch(
+                "SELECT id, project_id, config FROM notification_channels WHERE config_enc IS NULL AND config <> '{}'::jsonb"
+            )
+            for cr in ch_rows:
+                cfg = cr["config"] if isinstance(cr["config"], str) else json.dumps(cr["config"])
+                enc = await encrypt(cr["project_id"], "notification_channels", "config", cfg)
+                await conn.execute(
+                    "UPDATE notification_channels SET config_enc = $1, config = '{}'::jsonb WHERE id = $2",
+                    enc, cr["id"]
+                )
+                stats["channels_encrypted"] += 1
+
+            # 2. Deploys: diff and CODEOWNERS (batched)
             while True:
                 dep_rows = await conn.fetch(
                     """
-                    SELECT id, project_id, diff FROM deploys
-                    WHERE diff IS NOT NULL AND diff_enc IS NULL
+                    SELECT id, project_id, diff, codeowners FROM deploys
+                    WHERE (diff IS NOT NULL AND diff_enc IS NULL)
+                       OR (codeowners IS NOT NULL AND codeowners_enc IS NULL)
                     LIMIT $1
                     """,
                     batch_size
@@ -280,12 +322,34 @@ async def encrypt_existing_cmd(batch_size: int = 1000) -> dict:
                 if not dep_rows:
                     break
                 for dr in dep_rows:
-                    enc = await encrypt(dr["project_id"], "deploys", "diff", dr["diff"])
-                    await conn.execute(
-                        "UPDATE deploys SET diff_enc = $1, diff = NULL WHERE id = $2",
-                        enc, dr["id"]
-                    )
+                    if dr.get("diff") is not None:
+                        enc = await encrypt(dr["project_id"], "deploys", "diff", dr["diff"])
+                        await conn.execute("UPDATE deploys SET diff_enc = $1, diff = NULL WHERE id = $2", enc, dr["id"])
+                    if dr.get("codeowners") is not None:
+                        enc = await encrypt(dr["project_id"], "deploys", "codeowners", dr["codeowners"])
+                        await conn.execute(
+                            "UPDATE deploys SET codeowners_enc = $1, codeowners = NULL WHERE id = $2", enc, dr["id"]
+                        )
                     stats["deploys_encrypted"] += 1
+
+            # 2b. Deploy file contents (batched)
+            while True:
+                file_rows = await conn.fetch(
+                    """
+                    SELECT id, project_id, content FROM deploy_files
+                    WHERE content IS NOT NULL AND content_enc IS NULL
+                    LIMIT $1
+                    """,
+                    batch_size
+                )
+                if not file_rows:
+                    break
+                for fr in file_rows:
+                    enc = await encrypt(fr["project_id"], "deploy_files", "content", fr["content"])
+                    await conn.execute(
+                        "UPDATE deploy_files SET content_enc = $1, content = NULL WHERE id = $2", enc, fr["id"]
+                    )
+                    stats["deploy_files_encrypted"] += 1
 
             # 3. Events (batched)
             while True:
@@ -293,7 +357,7 @@ async def encrypt_existing_cmd(batch_size: int = 1000) -> dict:
                     """
                     SELECT id, project_id, stack_trace, extra FROM events
                     WHERE (stack_trace IS NOT NULL AND stack_trace_enc IS NULL)
-                       OR (extra IS NOT NULL AND extra_enc IS NULL)
+                       OR (extra <> '{}'::jsonb AND extra_enc IS NULL)
                     LIMIT $1
                     """,
                     batch_size
@@ -309,10 +373,11 @@ async def encrypt_existing_cmd(batch_size: int = 1000) -> dict:
                         updates.append(f"stack_trace_enc = ${arg_idx}, stack_trace = NULL")
                         args.append(enc_st)
                         arg_idx += 1
-                    if er["extra"] is not None:
-                        extra_str = json.dumps(er["extra"]) if isinstance(er["extra"], dict) else str(er["extra"])
-                        enc_ex = await encrypt(er["project_id"], "events", "extra", extra_str)
-                        updates.append(f"extra_enc = ${arg_idx}, extra = NULL")
+                    extra_val = er["extra"] if isinstance(er["extra"], (dict, type(None))) else json.loads(er["extra"])
+                    if extra_val:
+                        enc_ex = await encrypt(er["project_id"], "events", "extra", json.dumps(extra_val))
+                        # extra is NOT NULL: leave an empty object behind
+                        updates.append(f"extra_enc = ${arg_idx}, extra = '{{}}'::jsonb")
                         args.append(enc_ex)
                         arg_idx += 1
                     if updates:
@@ -328,7 +393,9 @@ async def encrypt_existing_cmd(batch_size: int = 1000) -> dict:
         print("==========================================")
         print(f"Projects Encrypted: {stats['projects_encrypted']}")
         print(f"Deploys Encrypted:  {stats['deploys_encrypted']}")
+        print(f"Files Encrypted:    {stats['deploy_files_encrypted']}")
         print(f"Events Encrypted:   {stats['events_encrypted']}")
+        print(f"Channels Encrypted: {stats['channels_encrypted']}")
         print("==========================================\n")
         return stats
     finally:
@@ -385,15 +452,20 @@ async def add_channel_cmd(project_id: int, channel_type: str, config_json: str, 
 
     try:
         async with get_connection() as conn:
+            # Channel config holds credentials (webhook URLs, tokens, SMTP passwords): store it encrypted
+            config_plain, config_enc = await encrypt_or_keep(
+                project_id, "notification_channels", "config", json.dumps(config)
+            )
             row = await conn.fetchrow(
                 """
-                INSERT INTO notification_channels (project_id, type, config, enabled)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO notification_channels (project_id, type, config, config_enc, enabled)
+                VALUES ($1, $2, $3, $4, $5)
                 RETURNING id, type, enabled, created_at
                 """,
                 project_id,
                 channel_type.lower(),
-                json.dumps(config),
+                config_plain or "{}",
+                config_enc,
                 enabled,
             )
             print(f"Channel created: ID={row['id']}, Type={row['type']}, Enabled={row['enabled']}")
@@ -407,7 +479,7 @@ async def list_channels_cmd(project_id: int):
     try:
         async with get_connection() as conn:
             rows = await conn.fetch(
-                "SELECT id, type, config, enabled, created_at FROM notification_channels WHERE project_id = $1 ORDER BY id",
+                "SELECT id, type, config, config_enc, enabled, created_at FROM notification_channels WHERE project_id = $1 ORDER BY id",
                 project_id,
             )
             if not rows:
@@ -415,11 +487,15 @@ async def list_channels_cmd(project_id: int):
             else:
                 print(f"\nNotification Channels for Project {project_id}:")
                 for r in rows:
-                    cfg = r["config"]
-                    cfg_display = dict(cfg) if isinstance(cfg, dict) else json.loads(cfg)
+                    cfg = await decrypt_or_plain(
+                        project_id, "notification_channels", "config", r.get("config_enc"), r.get("config")
+                    )
+                    cfg_display = dict(cfg) if isinstance(cfg, dict) else json.loads(cfg or "{}")
                     for k in cfg_display:
                         if any(s in k.lower() for s in ("token", "secret", "password", "key")):
                             cfg_display[k] = "******"
+                        elif "url" in k.lower() and isinstance(cfg_display[k], str):
+                            cfg_display[k] = _mask_url(cfg_display[k])
                     print(f"  [{r['id']}] {r['type'].upper()} (enabled={r['enabled']}): {cfg_display}")
     finally:
         await close_db_pool()

@@ -26,7 +26,7 @@ from app.auth import (
 from app.cache import invalidate_deploy_cache, issue_lookup_cache
 from app.codeowners import invalidate_codeowners
 from app.config import settings
-from app.crypto import encrypt, decrypt
+from app.crypto import decrypt, decrypt_or_plain, encrypt, encrypt_or_keep
 from app.db import check_db_health, close_db_pool, get_connection, init_db_pool, project_transaction, read_project_transaction
 from app.scrub import scrub_text
 from app.sre_prep import classify_file
@@ -277,20 +277,17 @@ async def create_deploy(
     diff = None if is_ephemeral else (payload.diff[:20000] if payload.diff else None)
     msg = payload.message[:2000] if payload.message else None
 
-    diff_enc = None
-    if diff and not is_ephemeral:
-        try:
-            diff_enc = await encrypt(project_id, "deploys", "diff", diff)
-        except Exception as exc:
-            logger.warning("Could not encrypt deploy diff: %s", exc)
-
-    codeowners = payload.codeowners[:20000] if payload.codeowners else None
+    # Sensitive code is stored encrypted only (plaintext kept only if encryption fails)
+    diff, diff_enc = await encrypt_or_keep(project_id, "deploys", "diff", diff)
+    codeowners, codeowners_enc = await encrypt_or_keep(
+        project_id, "deploys", "codeowners", payload.codeowners[:20000] if payload.codeowners else None
+    )
 
     async with project_transaction(project_id) as conn:
         row = await conn.fetchrow(
             """
-            INSERT INTO deploys (project_id, commit_sha, author, message, diff, diff_enc, environment, codeowners)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            INSERT INTO deploys (project_id, commit_sha, author, message, diff, diff_enc, environment, codeowners, codeowners_enc)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING id
             """,
             project_id,
@@ -301,6 +298,7 @@ async def create_deploy(
             diff_enc,
             payload.environment,
             codeowners,
+            codeowners_enc,
         )
         deploy_id = int(row["id"])
 
@@ -308,14 +306,15 @@ async def create_deploy(
             for f in payload.files[:50]:
                 is_dep, is_cfg = classify_file(f.path)
                 file_content = None if is_ephemeral else (scrub_text(f.content[:20480]) if f.content else None)
+                file_content, content_enc = await encrypt_or_keep(project_id, "deploy_files", "content", file_content)
                 await conn.execute(
                     """
                     INSERT INTO deploy_files (
                         deploy_id, project_id, path, status,
-                        added_ranges, authors, content,
+                        added_ranges, authors, content, content_enc,
                         is_dependency_file, is_config_file
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                     """,
                     deploy_id,
                     project_id,
@@ -324,6 +323,7 @@ async def create_deploy(
                     json.dumps(f.added_ranges),
                     json.dumps(f.authors[:2]),
                     file_content,
+                    content_enc,
                     is_dep,
                     is_cfg,
                 )
@@ -1010,7 +1010,7 @@ async def get_incident(
         if where_file:
             df_row = await conn.fetchrow(
                 """
-                SELECT content
+                SELECT content, content_enc
                 FROM deploy_files
                 WHERE deploy_id = $1 AND project_id = $2
                   AND (path = $3 OR $3 LIKE '%' || path OR path LIKE '%' || $3)
@@ -1020,8 +1020,13 @@ async def get_incident(
                 project_id,
                 where_file,
             )
-            if df_row and df_row["content"]:
-                lines = df_row["content"].splitlines()
+            file_content = (
+                await decrypt_or_plain(project_id, "deploy_files", "content", df_row.get("content_enc"), df_row.get("content"))
+                if df_row
+                else None
+            )
+            if file_content:
+                lines = file_content.splitlines()
                 start_l = max(0, where_line - 15)
                 end_l = min(len(lines), where_line + 15)
                 code_excerpt = "\n".join(lines[start_l:end_l])
@@ -1031,7 +1036,7 @@ async def get_incident(
         try:
             inv_row = await conn.fetchrow(
                 """
-                SELECT id, status, model, started_at, finished_at, result, not_sure_reason
+                SELECT id, status, model, started_at, finished_at, result, result_enc, not_sure_reason
                 FROM investigations
                 WHERE incident_id = $1 AND project_id = $2
                 ORDER BY id DESC
@@ -1058,7 +1063,9 @@ async def get_incident(
 
     ai_investigation: Dict[str, Any] = {}
     if inv_row:
-        inv_res = inv_row["result"]
+        inv_res = await decrypt_or_plain(
+            project_id, "investigations", "result", inv_row.get("result_enc"), inv_row.get("result")
+        )
         if isinstance(inv_res, str):
             try:
                 inv_res = json.loads(inv_res)

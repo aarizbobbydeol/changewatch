@@ -21,7 +21,7 @@ ChangeWatch is designed for developer teams who care about security, transparenc
 
 3. **Data is encrypted in transit and at rest.**
    - **In Transit:** SDK and Action enforce HTTPS with strict TLS certificate verification. Reverse proxy profiles provide automatic TLS (via Caddy with Let's Encrypt or local CA). Outbound webhooks are cryptographically signed with HMAC-SHA256 (`X-ChangeWatch-Signature`).
-   - **At Rest:** Sensitive columns (`deploys.diff`, `events.stack_trace`, `events.extra`, notification configs) are protected using AES-256-GCM envelope encryption with per-project data keys and Associated Authenticated Data (AAD).
+   - **At Rest:** Sensitive values are stored **only** as AES-256-GCM ciphertext, using envelope encryption with per-project data keys and Associated Authenticated Data (AAD `table.column.project_id`): deploy diffs and CODEOWNERS, changed-file contents, stack traces, event extras, AI investigation results and their tool audit log, the project Slack webhook URL, and notification channel configs (webhook URLs, tokens, SMTP passwords). Plaintext is written only if encryption fails (logged as a warning), so data is never silently lost. Installs created before this behaviour can convert remaining plaintext with `python -m app.cli encrypt-existing` (safe to re-run).
 
 4. **We collect the minimum and the customer controls retention and purging.**
    - Ingestion excludes request bodies, headers, and secrets (`.env*`, `*.pem`, `*.key`, `id_rsa`).

@@ -261,3 +261,39 @@ async def decrypt(
     """Decrypt ciphertext and decode to UTF-8 string."""
     raw_bytes = await decrypt_bytes(project_id, table, column, ciphertext)
     return raw_bytes.decode("utf-8")
+
+
+async def encrypt_or_keep(
+    project_id: int,
+    table: str,
+    column: str,
+    plaintext: Optional[str],
+) -> Tuple[Optional[str], Optional[bytes]]:
+    """Prepare a sensitive value for storage as (plaintext_column, encrypted_column).
+
+    Normally only the ciphertext is stored. If encryption fails (for example no master
+    key), the plaintext is kept and a warning logged, so data is never silently lost.
+    """
+    if not plaintext:
+        return None, None
+    try:
+        return None, await encrypt(project_id, table, column, plaintext)
+    except Exception as exc:
+        logger.warning("Storing %s.%s unencrypted for project %d: %s", table, column, project_id, exc)
+        return plaintext, None
+
+
+async def decrypt_or_plain(
+    project_id: int,
+    table: str,
+    column: str,
+    ciphertext: Optional[bytes],
+    plaintext: Optional[str] = None,
+) -> Optional[str]:
+    """Read a sensitive value written by encrypt_or_keep (or a legacy plaintext row)."""
+    if ciphertext:
+        try:
+            return await decrypt(project_id, table, column, ciphertext)
+        except Exception as exc:
+            logger.warning("Could not decrypt %s.%s for project %d: %s", table, column, project_id, exc)
+    return plaintext
