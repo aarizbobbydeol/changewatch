@@ -163,14 +163,19 @@ async def get_or_create_project_data_key(project_id: int) -> bytes:
                 else:
                     raise
         else:
-            # Generate new 256-bit data key
+            # Generate a new 256-bit data key. Concurrent first encryptions (several events in a
+            # batch, or several processes) race here: only the first key is saved, and everyone
+            # else adopts it, so no data is ever encrypted with a key that was thrown away.
             data_key = AESGCM.generate_key(bit_length=256)
             new_data_key_enc = encrypt_data_key(data_key, master_key)
-            await conn.execute(
-                "UPDATE projects SET data_key_enc = $1 WHERE id = $2",
+            saved = await conn.fetchval(
+                "UPDATE projects SET data_key_enc = $1 WHERE id = $2 AND data_key_enc IS NULL RETURNING id",
                 new_data_key_enc,
                 project_id,
             )
+            if saved is None:
+                stored = await conn.fetchval("SELECT data_key_enc FROM projects WHERE id = $1", project_id)
+                data_key = decrypt_data_key(stored, master_key)
 
     _project_key_cache[project_id] = data_key
     return data_key
@@ -270,16 +275,21 @@ async def encrypt_or_keep(
 ) -> Tuple[Optional[str], Optional[bytes]]:
     """Prepare a sensitive value for storage as (plaintext_column, encrypted_column).
 
-    Normally only the ciphertext is stored. If encryption fails (for example no master
-    key), the plaintext is kept and a warning logged, so data is never silently lost.
+    Only the ciphertext is stored. If encryption fails the error is raised rather than the
+    plaintext kept: services refuse to start without a master key (check_master_key), so a
+    failure here is transient, and the caller's retry (the worker's queue) stores it later.
+    The plaintext column stays in the return value for rows written before encryption.
     """
     if not plaintext:
         return None, None
-    try:
-        return None, await encrypt(project_id, table, column, plaintext)
-    except Exception as exc:
-        logger.warning("Storing %s.%s unencrypted for project %d: %s", table, column, project_id, exc)
-        return plaintext, None
+    return None, await encrypt(project_id, table, column, plaintext)
+
+
+def check_master_key() -> None:
+    """Fail fast at startup when the master key is missing or malformed (never run unencrypted)."""
+    key = get_master_key_bytes()
+    if len(key) != 32:
+        raise MasterKeyMissingError("MASTER_KEY must be 32 bytes (64 hex characters): openssl rand -hex 32")
 
 
 async def decrypt_or_plain(

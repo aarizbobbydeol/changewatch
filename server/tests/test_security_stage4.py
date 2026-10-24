@@ -199,4 +199,11 @@ def test_composite_action_lint():
     assert "continue-on-error: true" in text
     assert "git commit" not in text
     assert "git push" not in text
-    assert "--max-time 10" in text
+    # Inputs reach the script only through the environment, never interpolated into it
+    run_line = next(line for line in text.splitlines() if line.strip().startswith("run:"))
+    assert "inputs." not in run_line
+
+    script = (repo_root / "action" / "notify.py").read_text(encoding="utf-8")
+    for forbidden in ('"commit"', '"push"', '"checkout"', '"reset"', '"add"', '"tag"'):
+        assert f"git({forbidden}" not in script and f'["git", {forbidden}' not in script
+    assert "timeout=15" in script

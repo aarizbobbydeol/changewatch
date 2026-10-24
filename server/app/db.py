@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 import asyncpg
@@ -12,6 +13,11 @@ _read_db_pool: Optional[asyncpg.Pool] = None
 
 TENANT_ROLE = "changewatch_tenant"
 _switch_to_tenant_role = False
+# The user bypasses RLS but the role was not usable yet (another process may still be running
+# migration 018 on a first start): check again, at most every ROLE_RECHECK_SEC
+_tenant_role_pending = False
+_last_role_check = 0.0
+ROLE_RECHECK_SEC = 30.0
 
 # Connections start in system scope: system jobs (detector, outbox, retention, escalations) read
 # every project, which row-level security otherwise blocks when the database user is not a
@@ -28,7 +34,8 @@ async def detect_tenant_role(pool: asyncpg.Pool) -> bool:
     as `changewatch_tenant` (created by migration 018). Called when pools start and again
     after migrations, since the role may only exist once 018 has run.
     """
-    global _switch_to_tenant_role
+    global _switch_to_tenant_role, _tenant_role_pending, _last_role_check
+    _last_role_check = time.monotonic()
     try:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -44,14 +51,24 @@ async def detect_tenant_role(pool: asyncpg.Pool) -> bool:
         logger.warning("Could not check row-level security role: %s", exc)
         return _switch_to_tenant_role
     bypasses = bool(row and row["bypasses_rls"])
+    was_pending = _tenant_role_pending
     _switch_to_tenant_role = bypasses and bool(row["can_switch"])
-    if bypasses and not _switch_to_tenant_role:
+    _tenant_role_pending = bypasses and not _switch_to_tenant_role
+    if _tenant_role_pending and not was_pending:
         logger.warning(
             "Database user bypasses row-level security and role %s is unavailable; "
-            "tenant isolation relies on application filters only",
+            "tenant isolation relies on application filters until it is (checked every %.0f s)",
             TENANT_ROLE,
+            ROLE_RECHECK_SEC,
         )
+    elif was_pending and _switch_to_tenant_role:
+        logger.info("Role %s is available: tenant transactions now enforce row-level security", TENANT_ROLE)
     return _switch_to_tenant_role
+
+
+async def _recheck_tenant_role(pool: asyncpg.Pool) -> None:
+    if _tenant_role_pending and time.monotonic() - _last_role_check >= ROLE_RECHECK_SEC:
+        await detect_tenant_role(pool)
 
 
 async def init_db_pool(
@@ -162,6 +179,7 @@ async def project_transaction(project_id: int) -> AsyncGenerator[asyncpg.Connect
     that cannot bypass RLS (see _enforce_rls).
     """
     pool = get_db_pool()
+    await _recheck_tenant_role(pool)
     async with pool.acquire() as conn:
         async with conn.transaction():
             # Parameterized equivalent of SET LOCAL app.project_id = ... (and leave system scope)
@@ -177,6 +195,7 @@ async def read_project_transaction(project_id: int) -> AsyncGenerator[asyncpg.Co
     and execute within a transaction where `SET LOCAL app.project_id = ...` is enforced for RLS.
     """
     pool = get_read_db_pool()
+    await _recheck_tenant_role(pool)
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute(TENANT_SCOPE_SQL, str(project_id))

@@ -214,7 +214,8 @@ async def test_run_investigation_and_caching():
     mock_conn.fetchrow.side_effect = mock_fetchrow
     mock_conn.fetch.side_effect = mock_fetch
 
-    with patch("app.investigator.agent.get_llm_client") as mock_llm_factory, \
+    with patch("app.crypto.encrypt", new=AsyncMock(return_value=b"enc")), \
+         patch("app.investigator.agent.get_llm_client") as mock_llm_factory, \
          patch("app.investigator.agent.queue_notification", new=AsyncMock()), \
          patch("app.metering.record_investigation_usage", new=AsyncMock()) as mock_usage:
         mock_llm = AsyncMock()

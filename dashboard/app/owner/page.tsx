@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
-import { apiUrl, loadAdminKey, loadEndpoint, loadReadKey, saveAdminKey, saveEndpoint } from "../lib/session";
+import { apiUrl, loadAdminKey, loadEndpoint, saveAdminKey, saveEndpoint } from "../lib/session";
 
 interface FleetStats {
   opted_in_installs: number;
@@ -27,8 +27,6 @@ interface FleetStats {
 
 export default function OwnerDashboardPage() {
   const [adminKey, setAdminKey] = useState<string>("");
-  // Telemetry opt-in is a project setting, so it uses the dashboard read key (saved on Settings)
-  const [readKey, setReadKey] = useState<string>("");
   const [endpoint, setEndpoint] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -47,7 +45,7 @@ export default function OwnerDashboardPage() {
     if (!key) return;
     try {
       const res = await fetch(apiUrl(ep, "/v1/telemetry/status"), {
-        headers: { "X-API-Key": key },
+        headers: { "X-Admin-Key": key },
       });
       if (res.ok) {
         const data = await res.json();
@@ -93,21 +91,19 @@ export default function OwnerDashboardPage() {
   useEffect(() => {
     // Saved keys live in localStorage, which exists only in the browser
     const savedAdminKey = loadAdminKey();
-    const savedReadKey = loadReadKey();
     const savedEndpoint = loadEndpoint();
     setAdminKey(savedAdminKey);
-    setReadKey(savedReadKey);
     setEndpoint(savedEndpoint);
 
-    fetchTelemetryStatus(savedEndpoint, savedReadKey);
     if (savedAdminKey) {
+      fetchTelemetryStatus(savedEndpoint, savedAdminKey);
       fetchStats(savedEndpoint, savedAdminKey);
     }
   }, []);
 
   const handleToggleOptIn = async () => {
-    if (!readKey) {
-      alert("Save the dashboard read key on the Settings page first.");
+    if (!adminKey) {
+      alert("Enter the admin key first: telemetry is a setting for the whole install.");
       return;
     }
     setTogglingOptIn(true);
@@ -116,7 +112,7 @@ export default function OwnerDashboardPage() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-API-Key": readKey,
+          "X-Admin-Key": adminKey,
         },
         body: JSON.stringify({ enabled: !telemetryEnabled }),
       });
@@ -139,7 +135,7 @@ export default function OwnerDashboardPage() {
     setPreviewLoading(true);
     try {
       const res = await fetch(apiUrl(endpoint, "/v1/telemetry/preview"), {
-        headers: readKey ? { "X-API-Key": readKey } : {},
+        headers: adminKey ? { "X-Admin-Key": adminKey } : {},
       });
       if (res.ok) {
         const data = await res.json();

@@ -23,8 +23,9 @@ async def generate_likely_cause(
     from app.metering import Meter, can_spend
     allowed, reason = await can_spend(conn, project_id, Meter.AI_INVESTIGATION)
     if not allowed:
+        # Not stored as the "likely cause": it is not one, and it would stay after the budget resets
         logger.info("AI investigation skipped for deploy %d (project %d): %s", deploy_id, project_id, reason)
-        return "AI investigation paused: budget reached"
+        return None
 
     # 1. Fetch deploy information
     dep_row = await conn.fetchrow(

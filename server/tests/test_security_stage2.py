@@ -151,7 +151,8 @@ async def test_cli_generates_hashed_keys_without_plaintext_in_db():
     with patch("app.cli.init_db_pool", return_value=mock_pool), \
          patch("app.cli.get_connection", return_value=mock_ctx), \
          patch("app.cli.close_db_pool", return_value=None), \
-         patch("app.cli.run_migrations", return_value=[]):
+         patch("app.cli.run_migrations", return_value=[]), \
+         patch("app.crypto.encrypt", new=AsyncMock(return_value=b"enc")):
 
         await create_project_cmd("prod-app", "https://hooks.slack.com/services/T1/B2/X3")
 

@@ -45,12 +45,14 @@ from app.metering import (
     get_project_budget,
     set_project_budget,
 )
+from app.diffparse import parse_unified_diff
 from app.ingest_stats import count_dropped, dropped_totals
 from app.queue import check_redis_health, close_redis, get_redis, init_redis
 from app.ratelimit import check_rate_limit
 from app.analytics import analytics_router
 from app.schemas import (
     DeployCreate,
+    DeployFileItem,
     DeployItem,
     DeployResponse,
     EventsBatch,
@@ -103,6 +105,8 @@ logger = logging.getLogger("changewatch")
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application startup and shutdown lifecycle."""
     logger.info("ChangeWatch server starting up")
+    from app.crypto import check_master_key
+    check_master_key()  # never run without encryption: refuse to start instead
     try:
         pool = await init_db_pool()
         # Apply pending database migrations on startup (Addendum A2)
@@ -277,8 +281,19 @@ async def create_deploy(
     # Ephemeral Code Mode (TD Addendum Section G):
     # Server never stores file contents or diff body; only paths, line ranges, authors, and CODEOWNERS
     is_ephemeral = settings.CODE_MODE == "ephemeral"
-    diff = None if is_ephemeral else (payload.diff[:20000] if payload.diff else None)
+    diff = None if is_ephemeral else (scrub_text(payload.diff[:20000]) if payload.diff else None)
     msg = payload.message[:2000] if payload.message else None
+
+    # Clients that send only a diff (the GitHub Action, curl) still get changed files and line
+    # ranges, so alerts can say the failing line changed in this release. Paths and line numbers
+    # only: no file content.
+    files = list(payload.files or [])
+    if not files and payload.diff:
+        files = [
+            DeployFileItem(path=f["path"], status=f["status"], added_ranges=f["added_ranges"],
+                           authors=[payload.author] if payload.author else [])
+            for f in parse_unified_diff(payload.diff)
+        ]
 
     # Sensitive code is stored encrypted only (plaintext kept only if encryption fails)
     diff, diff_enc = await encrypt_or_keep(project_id, "deploys", "diff", diff)
@@ -305,8 +320,8 @@ async def create_deploy(
         )
         deploy_id = int(row["id"])
 
-        if payload.files:
-            for f in payload.files[:50]:
+        if files:
+            for f in files[:50]:
                 is_dep, is_cfg = classify_file(f.path)
                 file_content = None if is_ephemeral else (scrub_text(f.content[:20480]) if f.content else None)
                 file_content, content_enc = await encrypt_or_keep(project_id, "deploy_files", "content", file_content)
@@ -2220,8 +2235,10 @@ class TelemetryOptInRequest(BaseModel):
 
 
 @app.get("/v1/telemetry/preview", tags=["Telemetry & Privacy"])
-async def preview_telemetry(project_id: int = Depends(require_read_project_id)):
+async def preview_telemetry(_admin: bool = Depends(require_admin_key)):
     """Inspect the exact allowlisted payload that would be transmitted if telemetry is enabled.
+
+    Install-wide (counts across all projects), so it needs the admin key, not a project key.
 
     GUARANTEE: No code, diffs, repository names, file paths, error messages, emails, URLs, or IPs.
     """
@@ -2231,7 +2248,7 @@ async def preview_telemetry(project_id: int = Depends(require_read_project_id)):
 
 
 @app.get("/v1/telemetry/status", tags=["Telemetry & Privacy"])
-async def get_telemetry_status(project_id: int = Depends(require_read_project_id)):
+async def get_telemetry_status(_admin: bool = Depends(require_admin_key)):
     """Retrieve current opt-in status and anonymous installation ID."""
     from app.telemetry import get_or_create_install_id
     return {
@@ -2245,9 +2262,11 @@ async def get_telemetry_status(project_id: int = Depends(require_read_project_id
 @app.post("/v1/telemetry/opt-in", tags=["Telemetry & Privacy"])
 async def set_telemetry_opt_in(
     body: TelemetryOptInRequest,
-    project_id: int = Depends(require_read_project_id),
+    _admin: bool = Depends(require_admin_key),
 ):
-    """Enable or disable anonymous opt-in telemetry."""
+    """Enable or disable anonymous opt-in telemetry for this install (admin key; one project's
+    key must not decide for every tenant). Lasts until this process restarts: set
+    TELEMETRY_ENABLED in .env to keep it."""
     from app.telemetry import send_telemetry_report
     settings.TELEMETRY_ENABLED = body.enabled
     sent = False
@@ -2257,6 +2276,7 @@ async def set_telemetry_opt_in(
         "status": "updated",
         "enabled": settings.TELEMETRY_ENABLED,
         "report_transmitted": sent,
+        "note": "Applies until the API restarts; set TELEMETRY_ENABLED in .env to keep it.",
     }
 
 

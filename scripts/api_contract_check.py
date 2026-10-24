@@ -171,7 +171,7 @@ def main() -> int:
                     if (method, path) not in CHANGES_DATA:
                         status, _ = call(api, method, target, read, params, headers={"X-Admin-Key": args.admin_key})
                         r.expect(status == 200, f"{name}: read key + admin key -> expected 200, got {status}")
-                elif args.admin_key:
+                elif args.admin_key and (method, path) not in CHANGES_DATA:
                     status, _ = call(api, method, target, None, params, headers={"X-Admin-Key": args.admin_key})
                     r.expect(status == 200, f"{name}: admin key -> expected 200, got {status}")
                 continue

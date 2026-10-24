@@ -75,6 +75,43 @@ async def meter_decision_call(
         return False
 
 
+async def _returned_after_resolution(
+    conn: asyncpg.Connection, project_id: int, issue_id: int, deployed_at: datetime
+) -> bool:
+    """True when the issue's last incident was resolved before this deploy and the error did
+    not occur again between that resolution and the deploy."""
+    resolved_at = await conn.fetchval(
+        """
+        SELECT max(resolved_at) FROM incidents
+        WHERE project_id = $1 AND issue_id = $2 AND status = 'resolved' AND resolved_at <= $3
+        """,
+        project_id,
+        issue_id,
+        deployed_at,
+    )
+    if resolved_at is None:
+        return False
+    still_open = await conn.fetchval(
+        "SELECT 1 FROM incidents WHERE project_id = $1 AND issue_id = $2 AND status != 'resolved' LIMIT 1",
+        project_id,
+        issue_id,
+    )
+    if still_open:
+        return False
+    seen_since = await conn.fetchval(
+        """
+        SELECT 1 FROM events
+        WHERE project_id = $1 AND issue_id = $2 AND occurred_at > $3 AND occurred_at < $4
+        LIMIT 1
+        """,
+        project_id,
+        issue_id,
+        resolved_at,
+        deployed_at,
+    )
+    return seen_since is None
+
+
 async def check_and_trigger_incident(
     conn: asyncpg.Connection,
     project_id: int,
@@ -123,9 +160,13 @@ async def check_and_trigger_incident(
         return None
 
     first_seen = issue_row["first_seen"]
+    returned = False
     if first_seen and first_seen < deployed_at - timedelta(seconds=10):
-        # Existing issue from an earlier release; not a new regression for this deploy
-        return None
+        # An issue from an earlier release is only this deploy's regression if it had been
+        # resolved and stayed quiet until this deploy: then it is back ("returned")
+        returned = await _returned_after_resolution(conn, project_id, issue_id, deployed_at)
+        if not returned:
+            return None
 
     # 3. Check trigger conditions: critical routes or >= INSTANT_MIN_EVENTS in INSTANT_WINDOW_SEC
     proj_row = await conn.fetchrow(
@@ -312,6 +353,8 @@ async def check_and_trigger_incident(
         decision_state = None
         t_latency = 0
 
+    if returned:
+        triage_info["returned"] = True
     category_str = triage_info.get("category", "logic_bug")
 
     # 7. Insert new incident record

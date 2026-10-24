@@ -211,6 +211,14 @@ async def run_calm_auto_resolve(
         FROM incidents i
         JOIN deploys d ON d.id = i.deploy_id
         WHERE i.status != 'resolved' AND i.last_event_at <= $1
+          -- Incidents whose app is silent stay open: leave them out here, or 50 of them
+          -- would fill every batch and stop auto-resolve for all projects
+          AND NOT EXISTS (
+            SELECT 1 FROM sources s
+            WHERE s.project_id = i.project_id AND s.environment = d.environment
+              AND s.status = 'silent' AND s.silence_alerts = true
+          )
+        ORDER BY i.last_event_at ASC
         LIMIT 50
         """,
         cutoff,

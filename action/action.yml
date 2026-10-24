@@ -1,56 +1,41 @@
 name: "ChangeWatch Deployment Hook"
-description: "Notifies ChangeWatch of production deployments with strict read-only guarantees."
+description: "Tells ChangeWatch about a deploy (commit, diff, changed lines, CODEOWNERS). Read-only: it never writes to your repository."
 author: "ChangeWatch"
 
 inputs:
   changewatch_url:
-    description: "ChangeWatch server URL"
-    required: false
-    default: "https://api.changewatch.io"
+    description: "ChangeWatch server URL, for example https://changewatch.yourdomain.com"
+    required: true
   changewatch_api_key:
-    description: "ChangeWatch Ingest API key"
+    description: "Project ingest key (cw_ingest_...). Store it as a repository secret."
     required: true
   environment:
     description: "Deployment environment (e.g. prod, staging)"
     required: false
     default: "prod"
   mode:
-    description: "Inspection mode: 'minimal' (diff and metadata only) or 'full' (includes changed files without secrets)"
+    description: "'minimal': diff, changed paths and line ranges. 'full': also the changed files' contents (shown next to an alert; scrubbed and encrypted on the server)."
     required: false
     default: "minimal"
   exclude:
-    description: "Comma-separated globs of paths to exclude"
+    description: "Comma-separated globs never sent (added to **/.env*, **/*.pem, **/*.key, **/id_rsa*, secrets/**)"
     required: false
-    default: "secrets/**,**/*.pem,infra/**,**/.env*"
+    default: "infra/**"
 
 runs:
   using: "composite"
   steps:
-    - name: Notify ChangeWatch Deploy Hook
+    - name: Notify ChangeWatch
       shell: bash
+      # A ChangeWatch outage must never fail your deploy
       continue-on-error: true
-      run: |
-        SHA="${{ github.sha }}"
-        AUTHOR="${{ github.actor }}"
-        MESSAGE=$(git log -1 --pretty=%B "$SHA" 2>/dev/null | head -c 2000 || echo "Deploy $SHA")
-        BEFORE="${{ github.event.before }}"
-
-        EXCLUDE_PATTERNS=':(exclude)*.env* :(exclude)*.pem :(exclude)*.key :(exclude)*id_rsa* :(exclude)secrets/** :(exclude)infra/**'
-        if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
-          DIFF=$(git diff "$BEFORE" "$SHA" -- . $EXCLUDE_PATTERNS 2>/dev/null | head -c 20000 || echo "")
-        else
-          DIFF=$(git show "$SHA" -- . $EXCLUDE_PATTERNS 2>/dev/null | head -c 20000 || echo "")
-        fi
-
-        PAYLOAD=$(jq -n \
-          --arg commit_sha "$SHA" \
-          --arg author "$AUTHOR" \
-          --arg message "$MESSAGE" \
-          --arg diff "$DIFF" \
-          --arg environment "${{ inputs.environment }}" \
-          '{commit_sha: $commit_sha, author: $author, message: $message, diff: $diff, environment: $environment}')
-
-        curl -s -f --max-time 10 -X POST "${{ inputs.changewatch_url }}/v1/deploys" \
-          -H "Content-Type: application/json" \
-          -H "X-API-Key: ${{ inputs.changewatch_api_key }}" \
-          -d "$PAYLOAD"
+      # Inputs go through the environment, never pasted into the script
+      env:
+        CW_URL: ${{ inputs.changewatch_url }}
+        CW_KEY: ${{ inputs.changewatch_api_key }}
+        CW_ENV: ${{ inputs.environment }}
+        CW_MODE: ${{ inputs.mode }}
+        CW_EXCLUDE: ${{ inputs.exclude }}
+        CW_SHA: ${{ github.sha }}
+        CW_BEFORE: ${{ github.event.before }}
+      run: python3 "${{ github.action_path }}/notify.py"

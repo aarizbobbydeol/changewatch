@@ -160,3 +160,67 @@ def test_overhead_budget_benchmark():
     stats = run_overhead_benchmark(iterations=3000)
     assert stats["p95"] < 1.0, f"p95 overhead {stats['p95']} ms exceeded 1.0 ms budget"
     assert stats["peak_memory_mb"] < 20.0, f"Memory {stats['peak_memory_mb']} MB exceeded 20 MB budget"
+
+
+def _sent_events(mock_urlopen):
+    import json as _json
+    out = []
+    for call in mock_urlopen.call_args_list:
+        out += _json.loads(call.args[0].data)["events"]
+    return out
+
+
+def test_unserializable_extra_does_not_stop_sending():
+    """A UUID in extra once made every later send fail and the batch grow forever."""
+    import uuid
+
+    client = Client(api_key="cw_test", endpoint="http://localhost:8000")
+    ok = MagicMock()
+    ok.__enter__.return_value.read.return_value = b"{}"
+    with patch("urllib.request.urlopen", return_value=ok) as mock_urlopen:
+        for tag, extra in (("bad", {"order_id": uuid.uuid4(), "when": object()}), ("after", {"n": 1})):
+            try:
+                raise ValueError(tag)
+            except ValueError as e:
+                client.capture_exception(e, extra=extra)
+        deadline = time.time() + 6
+        def mine():
+            return [e for e in _sent_events(mock_urlopen) if e.get("message") in ("bad", "after")]
+
+        while time.time() < deadline and len(mine()) < 2:
+            time.sleep(0.1)
+        sent = mine()
+    assert [e["message"] for e in sent] == ["bad", "after"]
+    assert isinstance(sent[0]["extra"]["order_id"], str)
+
+
+def test_extra_is_capped_and_old_events_are_left_out():
+    import changewatch
+
+    client = Client(api_key="cw_test", endpoint="http://localhost:8000")
+    big = changewatch._json_safe_extra({"blob": "x" * 20000})
+    assert big == {"_truncated": True, "_bytes": len('{"blob": "' + "x" * 20000 + '"}')}
+
+    ok = MagicMock()
+    ok.__enter__.return_value.read.return_value = b"{}"
+    old = {"event_id": "old", "type": "error", "occurred_at": time.time() - 25 * 3600}
+    new = {"event_id": "new", "type": "error", "occurred_at": time.time()}
+    before = client._dropped_events
+    with patch("urllib.request.urlopen", return_value=ok) as mock_urlopen:
+        client._send_batch([old, new])
+    assert [e["event_id"] for e in _sent_events(mock_urlopen)] == ["new"]
+    assert client._dropped_events == before + 1
+
+
+def test_scrubbing_time_is_bounded_for_hostile_exception_text():
+    """Text echoed into an exception (user input) must not stall the customer's app."""
+    import changewatch
+
+    client = Client(api_key="cw_test", endpoint="http://localhost:8000")
+    start = time.perf_counter()
+    try:
+        raise ValueError("a-" * 200000)
+    except ValueError as e:
+        client.capture_exception(e)
+    assert time.perf_counter() - start < 0.2
+    assert len(changewatch._scrub("a." * 20000)) == 40000

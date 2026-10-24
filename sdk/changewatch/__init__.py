@@ -40,7 +40,9 @@ _KV_PATTERN = re.compile(
 )
 
 # PII patterns
-_EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+# The lookbehind lets a match start only where a run of local-part characters starts. Without it,
+# every position inside a long run like "a-a-a-..." was tried again: quadratic, seconds per 40 KB.
+_EMAIL_PATTERN = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 _IPV4_PATTERN = re.compile(r"\b(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b")
 _IPV6_PATTERN = re.compile(r"\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b")
 _JWT_PATTERN = re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_.-]{10,}\b")
@@ -66,6 +68,21 @@ def _scrub(text: Optional[str]) -> Optional[str]:
 
     return scrubbed
 
+
+
+_MAX_EXTRA_BYTES = 10000  # the server rejects an event whose extra is over 10 KB
+_MAX_EVENT_AGE_SEC = 23 * 3600  # the server rejects events older than 24 hours
+
+
+def _json_safe_extra(extra: Dict[str, Any]) -> Dict[str, Any]:
+    """`extra` as plain JSON (UUIDs, datetimes, Decimals become strings), within the server's limit."""
+    try:
+        text = json.dumps(extra, default=str)
+    except Exception:
+        return {"_unserializable": True}
+    if len(text.encode("utf-8")) > _MAX_EXTRA_BYTES:
+        return {"_truncated": True, "_bytes": len(text.encode("utf-8"))}
+    return json.loads(text)
 
 
 def _scrub_dict(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -213,7 +230,7 @@ class Client:
             try:
                 self._queue.put_nowait(event)
             except queue.Full:
-                pass  # Drop if queue full
+                self._dropped_events += 1
             self._heartbeat_requests = 0
             self._heartbeat_errors = 0
             self._last_heartbeat_time = now
@@ -229,21 +246,23 @@ class Client:
         if self.disabled:
             return
         try:
-            exc_type = type(exc).__name__
-            message = _scrub(str(exc))
+            exc_type = type(exc).__name__[:200]
+            # Cut to the server's limits (with room for redaction markers) before scrubbing, so
+            # scrubbing time stays bounded however large the exception text is
+            message = _scrub(str(exc)[:4000])
             tb_str = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-            stack_trace = _scrub(tb_str)
+            stack_trace = _scrub(tb_str[-40000:])
 
-            clean_extra = _scrub_dict(extra) if extra else {}
+            clean_extra = _json_safe_extra(_scrub_dict(extra) if extra else {})
             if method:
-                clean_extra["method"] = method
+                clean_extra["method"] = str(method)[:20]
 
             event = {
                 "event_id": uuid.uuid4().hex,
                 "type": "error",
                 "exc_type": exc_type,
                 "message": (message or "")[:2000],
-                "stack_trace": (stack_trace or "")[:20000],
+                "stack_trace": (stack_trace or "")[-20000:],
                 "request_path": (request_path or "")[:500] if request_path else None,
                 "release": self.release[:64] if self.release else None,
                 "environment": self.environment[:20],
@@ -252,7 +271,7 @@ class Client:
             }
             self._queue.put_nowait(event)
         except queue.Full:
-            pass  # Drops event if queue capacity exceeded
+            self._dropped_events += 1
         except Exception:
             self._internal_errors += 1
 
@@ -274,7 +293,7 @@ class Client:
             }
             self._queue.put_nowait(event)
         except queue.Full:
-            pass
+            self._dropped_events += 1
         except Exception:
             self._internal_errors += 1
 
@@ -302,9 +321,13 @@ class Client:
 
                 now = time.monotonic()
                 if len(batch) >= 20 or (batch and (now - last_flush) >= 2.0):
-                    self._send_batch(batch)
-                    batch = []
-                    last_flush = now
+                    try:
+                        self._send_batch(batch)
+                    finally:
+                        # Never retry the same list here: a batch that cannot be sent must not
+                        # block every later event (and grow without bound)
+                        batch = []
+                        last_flush = now
 
             except Exception:
                 self._internal_errors += 1
@@ -329,8 +352,17 @@ class Client:
         if now < self._circuit_open_until:
             return  # Circuit open, drop batch
 
+        # The server rejects a whole request if one event is older than 24 hours (after a long
+        # outage, re-queued events can be): leave those out and count them
+        cutoff = time.time() - _MAX_EVENT_AGE_SEC
+        fresh = [e for e in batch if e.get("occurred_at", 0) >= cutoff]
+        self._dropped_events += len(batch) - len(fresh)
+        if not fresh:
+            return
+        batch = fresh
+
         url = f"{self.endpoint}/v1/events"
-        payload = json.dumps({"events": batch}).encode("utf-8")
+        payload = json.dumps({"events": batch}, default=str).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
             "X-API-Key": self.api_key,

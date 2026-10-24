@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import time
 from typing import Tuple
@@ -28,7 +29,8 @@ async def check_rate_limit(
     limit = HEARTBEAT_LIMIT_PER_MIN if is_heartbeat else settings.RATE_LIMIT_PER_MIN
     prefix = "ratelimit:heartbeat" if is_heartbeat else "ratelimit"
     minute_bucket = int(time.time() // 60)
-    key = f"{prefix}:{api_key}:{minute_bucket}"
+    # Hash, not the key itself (Redis keys are visible to SCAN and saved to disk)
+    key = f"{prefix}:{hashlib.sha256(api_key.encode('utf-8')).hexdigest()[:32]}:{minute_bucket}"
 
     try:
         redis = get_redis()

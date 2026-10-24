@@ -219,8 +219,8 @@ async def test_collector_service_flow():
 @pytest.mark.asyncio
 async def test_telemetry_preview_and_status_api():
     """Verify preview and status endpoints return allowlist-compliant info."""
-    from app.auth import require_read_project_id
-    app.dependency_overrides[require_read_project_id] = lambda: 1
+    from app.auth import require_admin_key
+    app.dependency_overrides[require_admin_key] = lambda: True
 
     try:
         transport = ASGITransport(app=app)
@@ -247,6 +247,23 @@ async def test_telemetry_preview_and_status_api():
             opt_res = await client.post("/v1/telemetry/opt-in", json={"enabled": True}, headers=headers)
             assert opt_res.status_code == 200
             assert opt_res.json()["enabled"] is True
+    finally:
+        app.dependency_overrides.pop(require_admin_key, None)
+
+
+@pytest.mark.asyncio
+async def test_telemetry_controls_need_the_admin_key_not_a_project_key():
+    """Telemetry is install-wide: one tenant's read key must not switch it on or preview it."""
+    from app.auth import require_read_project_id
+    app.dependency_overrides[require_read_project_id] = lambda: 1
+    try:
+        with patch.object(settings, "ADMIN_API_KEY", "admin-key-for-tests"):
+            async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                for method, path in (("get", "/v1/telemetry/preview"), ("get", "/v1/telemetry/status")):
+                    resp = await getattr(client, method)(path, headers={"X-API-Key": "cw_read_key"})
+                    assert resp.status_code == 401, path
+                resp = await client.post("/v1/telemetry/opt-in", json={"enabled": True}, headers={"X-API-Key": "cw_read_key"})
+                assert resp.status_code == 401
     finally:
         app.dependency_overrides.pop(require_read_project_id, None)
 

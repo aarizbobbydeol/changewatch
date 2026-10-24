@@ -846,6 +846,8 @@ async def run_worker(worker_id: Optional[str] = None):
     processing_queue = f"events:processing:{worker_uuid}"
 
     logger.info("ChangeWatch reliable queue worker started (ID: %s)", worker_uuid)
+    from app.crypto import check_master_key
+    check_master_key()  # stack traces and extras are stored encrypted: refuse to start without the key
     await init_db_pool()
     await init_redis()
 

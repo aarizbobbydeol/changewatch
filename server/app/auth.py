@@ -29,7 +29,9 @@ async def get_project_id_by_api_key(
     """
     cleaned_key = api_key.strip()
     key_hash = hash_api_key(cleaned_key)
-    cache_key = f"apikey:{role}:{cleaned_key}" if role != "any" else f"apikey:{cleaned_key}"
+    # Cache keys name the hash, never the key itself: Redis keys are visible to SCAN/MONITOR and
+    # written to disk (append-only file), while Postgres stores only the hash
+    cache_key = f"apikey:{role}:{key_hash}" if role != "any" else f"apikey:{key_hash}"
 
     # 1. Check in-memory LRU+TTL cache
     in_memory = api_key_cache.get(cache_key)

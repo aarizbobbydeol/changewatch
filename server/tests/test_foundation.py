@@ -1,7 +1,7 @@
 from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
-from app.auth import get_project_id_by_api_key
+from app.auth import get_project_id_by_api_key, hash_api_key
 from app.db import TENANT_SCOPE_SQL, project_transaction
 from app.main import app
 
@@ -118,7 +118,8 @@ async def test_auth_valid_key_cache_miss_then_hit():
         pid1 = await get_project_id_by_api_key("cw_test_key_123")
         assert pid1 == 1
         mock_conn.fetchrow.assert_called_once()
-        mock_redis.setex.assert_called_once_with("apikey:cw_test_key_123", 60, "1")
+        # Redis holds the key's hash, never the key itself
+        mock_redis.setex.assert_called_once_with(f"apikey:{hash_api_key('cw_test_key_123')}", 60, "1")
 
         # Second call: simulated cache hit
         mock_redis.get.return_value = "1"

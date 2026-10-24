@@ -53,4 +53,19 @@ async def test_non_bypassing_user_keeps_its_role(monkeypatch):
 async def test_bypassing_user_without_tenant_role_warns(caplog):
     pool, _ = _mock_pool({"bypasses_rls": True, "can_switch": False})
     assert await db.detect_tenant_role(pool) is False
-    assert "relies on application filters only" in caplog.text
+    assert "relies on application filters" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_role_missing_at_startup_is_checked_again(monkeypatch):
+    """On a first start another process may still be creating the role: switch once it exists."""
+    pool, conn = _mock_pool({"bypasses_rls": True, "can_switch": False})
+    assert await db.detect_tenant_role(pool) is False
+    monkeypatch.setattr(db, "_db_pool", pool)
+
+    conn.fetchrow = AsyncMock(return_value={"bypasses_rls": True, "can_switch": True})  # migration 018 ran
+    monkeypatch.setattr(db, "_last_role_check", 0.0)  # 30 s have passed
+    async with db.project_transaction(7):
+        pass
+
+    assert ("SET LOCAL ROLE changewatch_tenant",) in [c.args for c in conn.execute.call_args_list]

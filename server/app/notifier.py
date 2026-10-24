@@ -29,6 +29,8 @@ HEARTBEAT_KEY = "heartbeat:notifier"
 
 async def run_notifier() -> None:
     logger.info("ChangeWatch notifier started (PID: %d)", os.getpid())
+    from app.crypto import check_master_key
+    check_master_key()  # channel secrets are stored encrypted: refuse to start without the key
     await init_db_pool()
     await init_redis()
 

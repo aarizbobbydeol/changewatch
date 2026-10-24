@@ -281,156 +281,163 @@ async def process_active_deploys_once() -> int:
         deploy_id = dep["id"]
         project_id = dep["project_id"]
 
-        async with project_transaction(project_id) as conn:
-            verdict, reasons, is_final, is_flagged = await evaluate_deploy(
-                conn, project_id, dep, now_dt
-            )
-
-            # Check existing analysis record
-            analysis_row = await conn.fetchrow(
-                "SELECT verdict, likely_cause, verdict_final FROM deploy_analysis WHERE deploy_id = $1",
-                deploy_id,
-            )
-            prev_verdict = analysis_row["verdict"] if analysis_row else None
-            existing_cause = analysis_row["likely_cause"] if analysis_row else None
-
-            # Generate AI explanation for watch / rollback if not already present
-            likely_cause = existing_cause
-            if verdict in ("watch", "rollback") and not likely_cause:
-                likely_cause = await generate_likely_cause(conn, project_id, deploy_id)
-
-            # Upsert into deploy_analysis
-            reasons_json = json.dumps(reasons)
-            await conn.execute(
-                """
-                INSERT INTO deploy_analysis (
-                  deploy_id, new_issues, errors_before, errors_after,
-                  flagged, likely_cause, verdict, verdict_reasons,
-                  verdict_updated_at, verdict_final
+        # One deploy failing (bad data, a lock timeout) must not stop the others, nor the
+        # auto-resolve, escalation and outbox steps after this loop
+        try:
+            async with project_transaction(project_id) as conn:
+                verdict, reasons, is_final, is_flagged = await evaluate_deploy(
+                    conn, project_id, dep, now_dt
                 )
-                VALUES ($1, 0, 0, 0, $2, $3, $4, $5::jsonb, now(), $6)
-                ON CONFLICT (deploy_id) DO UPDATE SET
-                  flagged = EXCLUDED.flagged,
-                  likely_cause = COALESCE(deploy_analysis.likely_cause, EXCLUDED.likely_cause),
-                  verdict = EXCLUDED.verdict,
-                  verdict_reasons = EXCLUDED.verdict_reasons,
-                  verdict_updated_at = now(),
-                  verdict_final = EXCLUDED.verdict_final
-                """,
-                deploy_id,
-                is_flagged,
-                likely_cause,
-                verdict,
-                reasons_json,
-                is_final,
-            )
 
-            # Alert Checkpoints
-            age_min = (now_dt - dep["deployed_at"]).total_seconds() / 60.0
+                # Check existing analysis record
+                analysis_row = await conn.fetchrow(
+                    "SELECT verdict, likely_cause, verdict_final FROM deploy_analysis WHERE deploy_id = $1",
+                    deploy_id,
+                )
+                prev_verdict = analysis_row["verdict"] if analysis_row else None
+                existing_cause = analysis_row["likely_cause"] if analysis_row else None
 
-            # Remember the verdict announced at each checkpoint (set once, never overwritten)
-            first_verdict = None
-            if age_min >= settings.VERDICT_FIRST_MIN:
-                first_verdict = await conn.fetchval(
+                # Generate AI explanation for watch / rollback if not already present
+                likely_cause = existing_cause
+                if verdict in ("watch", "rollback") and not likely_cause and await _first_ai_attempt(deploy_id):
+                    likely_cause = await generate_likely_cause(conn, project_id, deploy_id)
+
+                # Upsert into deploy_analysis
+                reasons_json = json.dumps(reasons)
+                await conn.execute(
                     """
-                    UPDATE deploy_analysis SET first_verdict = COALESCE(first_verdict, $2)
-                    WHERE deploy_id = $1 RETURNING first_verdict
+                    INSERT INTO deploy_analysis (
+                      deploy_id, new_issues, errors_before, errors_after,
+                      flagged, likely_cause, verdict, verdict_reasons,
+                      verdict_updated_at, verdict_final
+                    )
+                    VALUES ($1, 0, 0, 0, $2, $3, $4, $5::jsonb, now(), $6)
+                    ON CONFLICT (deploy_id) DO UPDATE SET
+                      flagged = EXCLUDED.flagged,
+                      likely_cause = COALESCE(deploy_analysis.likely_cause, EXCLUDED.likely_cause),
+                      verdict = EXCLUDED.verdict,
+                      verdict_reasons = EXCLUDED.verdict_reasons,
+                      verdict_updated_at = now(),
+                      verdict_final = EXCLUDED.verdict_final
                     """,
                     deploy_id,
+                    is_flagged,
+                    likely_cause,
                     verdict,
-                )
-            if is_final:
-                await conn.execute(
-                    "UPDATE deploy_analysis SET final_verdict = COALESCE(final_verdict, $2) WHERE deploy_id = $1",
-                    deploy_id,
-                    verdict,
+                    reasons_json,
+                    is_final,
                 )
 
-            # Checkpoint 1: First check
-            first_alert_exists = await conn.fetchval(
-                "SELECT 1 FROM alerts WHERE deploy_id = $1 AND kind = 'verdict_first'",
-                deploy_id,
-            )
+                # Alert Checkpoints
+                age_min = (now_dt - dep["deployed_at"]).total_seconds() / 60.0
 
-            if not first_alert_exists and age_min >= settings.VERDICT_FIRST_MIN:
-                # Send first check notification
-                should_notify = True
-                if verdict == "safe" and not settings.NOTIFY_ON_SAFE:
-                    should_notify = False
-
-                if should_notify:
-                    await dispatch_verdict_alert(
-                        conn=conn,
-                        project_id=project_id,
-                        deploy_id=deploy_id,
-                        verdict=verdict,
-                        reasons=reasons,
-                        kind="verdict_first",
-                        likely_cause=likely_cause,
-                    )
-
-            # Checkpoint 2: Final check (verdict_change)
-            final_alert_exists = await conn.fetchval(
-                "SELECT 1 FROM alerts WHERE deploy_id = $1 AND kind IN ('verdict_final', 'verdict_change')",
-                deploy_id,
-            )
-            if is_final and not final_alert_exists:
-                # Addendum C4: post only if verdict changed from the one announced at the first check
-                baseline_verdict = first_verdict or prev_verdict
-                if baseline_verdict and baseline_verdict != verdict:
-                    await dispatch_verdict_alert(
-                        conn=conn,
-                        project_id=project_id,
-                        deploy_id=deploy_id,
-                        verdict=verdict,
-                        reasons=reasons,
-                        kind="verdict_change",
-                        likely_cause=likely_cause,
-                    )
-                else:
-                    # Record verdict_final to prevent future checks
-                    await conn.execute(
+                # Remember the verdict announced at each checkpoint (set once, never overwritten)
+                first_verdict = None
+                if age_min >= settings.VERDICT_FIRST_MIN:
+                    first_verdict = await conn.fetchval(
                         """
-                        INSERT INTO alerts (project_id, deploy_id, channel, kind)
-                        VALUES ($1, $2, 'slack', 'verdict_final')
-                        ON CONFLICT (deploy_id, kind) DO NOTHING
+                        UPDATE deploy_analysis SET first_verdict = COALESCE(first_verdict, $2)
+                        WHERE deploy_id = $1 RETURNING first_verdict
                         """,
-                        project_id,
+                        deploy_id,
+                        verdict,
+                    )
+                if is_final:
+                    await conn.execute(
+                        "UPDATE deploy_analysis SET final_verdict = COALESCE(final_verdict, $2) WHERE deploy_id = $1",
+                        deploy_id,
+                        verdict,
+                    )
+
+                # Checkpoint 1: First check
+                first_alert_exists = await conn.fetchval(
+                    "SELECT 1 FROM alerts WHERE deploy_id = $1 AND kind = 'verdict_first'",
+                    deploy_id,
+                )
+
+                if not first_alert_exists and age_min >= settings.VERDICT_FIRST_MIN:
+                    # Send first check notification
+                    should_notify = True
+                    if verdict == "safe" and not settings.NOTIFY_ON_SAFE:
+                        should_notify = False
+
+                    if should_notify:
+                        await dispatch_verdict_alert(
+                            conn=conn,
+                            project_id=project_id,
+                            deploy_id=deploy_id,
+                            verdict=verdict,
+                            reasons=reasons,
+                            kind="verdict_first",
+                            likely_cause=likely_cause,
+                        )
+
+                # Checkpoint 2: Final check (verdict_change)
+                final_alert_exists = await conn.fetchval(
+                    "SELECT 1 FROM alerts WHERE deploy_id = $1 AND kind IN ('verdict_final', 'verdict_change')",
+                    deploy_id,
+                )
+                if is_final and not final_alert_exists:
+                    # Addendum C4: post only if verdict changed from the one announced at the first check
+                    baseline_verdict = first_verdict or prev_verdict
+                    if baseline_verdict and baseline_verdict != verdict:
+                        await dispatch_verdict_alert(
+                            conn=conn,
+                            project_id=project_id,
+                            deploy_id=deploy_id,
+                            verdict=verdict,
+                            reasons=reasons,
+                            kind="verdict_change",
+                            likely_cause=likely_cause,
+                        )
+                    else:
+                        # Record verdict_final to prevent future checks
+                        await conn.execute(
+                            """
+                            INSERT INTO alerts (project_id, deploy_id, channel, kind)
+                            VALUES ($1, $2, 'slack', 'verdict_final')
+                            ON CONFLICT (deploy_id, kind) DO NOTHING
+                            """,
+                            project_id,
+                            deploy_id,
+                        )
+
+                if verdict == "rollback":
+                    # Upgrade incidents from possible to confirmed when verdict is rollback (Stage B2)
+                    possible_incidents = await conn.fetch(
+                        "SELECT id, title, where_file, where_line, where_function, in_diff, owners, event_count, first_event_at FROM incidents WHERE deploy_id = $1 AND status = 'possible'",
                         deploy_id,
                     )
+                    for inc in possible_incidents:
+                        inc_id = inc["id"]
+                        await conn.execute(
+                            "UPDATE incidents SET status = 'confirmed', confirmed_at = now() WHERE id = $1",
+                            inc_id,
+                        )
+                        owners_list = json.loads(inc["owners"]) if inc["owners"] else []
+                        first_event_at_ts = inc["first_event_at"].timestamp() if inc["first_event_at"] else None
+                        from app.notifiers.incident_alert import dispatch_incident_alert
+                        await dispatch_incident_alert(
+                            conn=conn,
+                            project_id=project_id,
+                            incident_id=inc_id,
+                            status="confirmed",
+                            commit_sha=dep["commit_sha"],
+                            author=dep["author"] or "Unknown",
+                            message=dep["message"] or "",
+                            error_title=inc["title"] or "Error",
+                            event_count=inc["event_count"],
+                            where_file=inc["where_file"] or "unknown",
+                            where_line=inc["where_line"] or 0,
+                            where_function=inc["where_function"] or "unknown",
+                            in_diff=bool(inc["in_diff"]),
+                            raw_owners=owners_list,
+                            first_event_at=first_event_at_ts,
+                        )
 
-            if verdict == "rollback":
-                # Upgrade incidents from possible to confirmed when verdict is rollback (Stage B2)
-                possible_incidents = await conn.fetch(
-                    "SELECT id, title, where_file, where_line, where_function, in_diff, owners, event_count, first_event_at FROM incidents WHERE deploy_id = $1 AND status = 'possible'",
-                    deploy_id,
-                )
-                for inc in possible_incidents:
-                    inc_id = inc["id"]
-                    await conn.execute(
-                        "UPDATE incidents SET status = 'confirmed', confirmed_at = now() WHERE id = $1",
-                        inc_id,
-                    )
-                    owners_list = json.loads(inc["owners"]) if inc["owners"] else []
-                    first_event_at_ts = inc["first_event_at"].timestamp() if inc["first_event_at"] else None
-                    from app.notifiers.incident_alert import dispatch_incident_alert
-                    await dispatch_incident_alert(
-                        conn=conn,
-                        project_id=project_id,
-                        incident_id=inc_id,
-                        status="confirmed",
-                        commit_sha=dep["commit_sha"],
-                        author=dep["author"] or "Unknown",
-                        message=dep["message"] or "",
-                        error_title=inc["title"] or "Error",
-                        event_count=inc["event_count"],
-                        where_file=inc["where_file"] or "unknown",
-                        where_line=inc["where_line"] or 0,
-                        where_function=inc["where_function"] or "unknown",
-                        in_diff=bool(inc["in_diff"]),
-                        raw_owners=owners_list,
-                        first_event_at=first_event_at_ts,
-                    )
+        except Exception as exc:
+            logger.warning("Verdict for deploy %s (project %s) failed this cycle: %s", deploy_id, project_id, exc)
+            continue
 
         processed_count += 1
 
@@ -449,6 +456,16 @@ async def process_active_deploys_once() -> int:
     await deliver_outbox_batch()
     return processed_count
 
+
+
+async def _first_ai_attempt(deploy_id: int) -> bool:
+    """True once per deploy: the AI explanation is asked for once, not again every cycle while
+    the provider is failing (each attempt can take the full LLM timeout)."""
+    try:
+        redis = get_redis()
+        return bool(await redis.set(f"ai_cause_attempted:{deploy_id}", "1", nx=True, ex=3 * 3600))
+    except Exception:
+        return True
 
 
 DETECTOR_ADVISORY_LOCK_ID = 420042
@@ -474,7 +491,9 @@ async def run_detector():
     Uses PostgreSQL session advisory lock (pg_try_advisory_lock) for single-instance leader election.
     """
     logger.info("ChangeWatch spike & verdict detector started (PID: %d)", os.getpid())
+    from app.crypto import check_master_key
     from app.llm import log_llm_privacy_notice
+    check_master_key()  # refuse to start without encryption
     log_llm_privacy_notice()  # the detector writes AI deploy summaries too
     await init_db_pool()
     await init_redis()

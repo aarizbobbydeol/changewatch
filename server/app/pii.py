@@ -12,9 +12,11 @@ import os
 import re
 from typing import Optional
 
-# 1. Email address pattern
+# 1. Email address pattern. The lookbehind lets a match start only where a run of local-part
+# characters starts; without it a long run like "a-a-a-..." was rescanned from every position
+# (quadratic: 0.4 s for a 20 KB stack trace, blocking the worker).
 EMAIL_PATTERN = re.compile(
-    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
+    r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
 )
 
 # 2. IPv4 address pattern (0-255 octets)

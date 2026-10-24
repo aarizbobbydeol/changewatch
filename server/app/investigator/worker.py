@@ -142,7 +142,9 @@ async def requeue_interrupted_investigations(redis_client) -> int:
 async def run_investigator_worker():
     """Main investigator worker loop with heartbeats and signal handling."""
     logger.info("Starting ChangeWatch AI SRE Investigator worker...")
+    from app.crypto import check_master_key
     from app.llm import log_llm_privacy_notice
+    check_master_key()  # results quote code and traces and are stored encrypted
     log_llm_privacy_notice()
     await init_db_pool()
     redis_client = await init_redis()
@@ -182,7 +184,9 @@ async def run_investigator_worker():
 
 
 def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    # Same redacting JSON logs as the other services (no keys, URLs or stack traces)
+    from app.main import setup_structured_logging
+    setup_structured_logging()
     asyncio.run(run_investigator_worker())
 
 

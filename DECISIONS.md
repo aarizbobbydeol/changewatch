@@ -969,3 +969,34 @@ This document records key decisions made during development to ensure transparen
   - Live tests: a bad event next to a good one; NUL storage; prod and staging heartbeats in one minute; redeployed SHA; a prod verdict that ignores staging errors while the staging deploy gets `rollback`, with encrypted HTTP errors counted; NaN gets 422 without echo; a transient error is not counted. 369 tests pass against Postgres 16.
   - On the live harness, the three reproductions now store every valid event and dead-letter nothing new. Replaying the 7 events dead-lettered earlier recovered 6 (all of the other tenant's); the NaN event queued before the API fix failed alone.
   - `verify_pipeline.py` 13/13; `api_contract_check.py` 281/281.
+
+### 81. SDK, security and end-to-end fixes from the review (and what testing the real customer path found)
+- **SDK (runs inside customers' apps):**
+  - One `extra` value that JSON cannot encode (a UUID, a datetime) made every later send fail. The batch was never cleared, so it grew forever and nothing was sent again; reproduced live, the next error never arrived. The batch is now always cleared, and `extra` is made JSON-safe (unknown types become strings) and capped at the server's 10 KB.
+  - Events older than the server's 24 h limit are left out and counted, so they no longer make the server reject a whole batch.
+  - Exception text is cut to size before scrubbing.
+  - The email pattern scanned long runs like `a-a-a-...` from every position. That is quadratic: 0.7 s per 40 KB, blocking the customer's app and, in the server copy, the worker. A lookbehind makes it linear (0.35 ms, same matches on normal emails).
+  - Queue-full drops are counted.
+  - The three new SDK tests fail on the old code (the old suite took 3 minutes because of the regex).
+- **Security:**
+  - The auth cache and rate limiter used raw API keys in Redis key names, readable via SCAN/MONITOR and saved to the append-only file. They now use the key's SHA-256.
+  - Telemetry opt-in and preview (install-wide, with cross-tenant counts) accepted any project's read key; they now need the admin key. The response says the switch lasts until restart (`TELEMETRY_ENABLED` in .env keeps it).
+  - A process that started before migration 018 created the restricted role never used it until restarted. It now checks again every 30 s while the role is missing.
+  - Export and purge name the project in every statement instead of relying on row-level security alone.
+  - Concurrent first encryptions for a project could create different data keys and save only one, leaving some data undecryptable (reproduced live: 8 concurrent calls, 2 keys). The key is now saved only if none exists, and everyone adopts the saved one.
+  - Every service refuses to start without a valid master key (there was no check, despite the error text). `encrypt_or_keep` raises instead of storing plaintext; the worker's retries and `requeue-dead` keep the data.
+  - The investigator now uses the same redacting JSON logs as the other services.
+- **Verdicts and the detector:**
+  - One failing deploy no longer stops the rest of the cycle (auto-resolve, escalation, outbox).
+  - The AI explanation is requested once per deploy, not every cycle while the provider fails.
+  - "AI investigation paused: budget reached" is no longer stored as the deploy's likely cause.
+  - Auto-resolve no longer stalls once 50 incidents with a silent app pile up: they are filtered in the query, oldest first.
+- **The GitHub Action sent only the diff.** The server stored changed files only when a client sent them, and the Action never sent CODEOWNERS. So for real users (not the demo), alerts could never say "this line was changed in this release" or name an owner.
+  - The server now derives changed files and exact added line ranges from any diff (`app/diffparse.py`), and scrubs the stored diff.
+  - The Action is now a small standard-library Python script (`action/notify.py`). It honours `exclude` and `mode` (both were ignored), adds default exclusions (`.env`, keys, `secrets/**`), and sends changed files with line ranges, CODEOWNERS and the commit author's email; `full` mode adds file contents. Inputs reach it through the environment instead of being pasted into shell code. A shallow checkout gets a warning to use `fetch-depth: 2` instead of a whole-repository diff.
+- **A resolved error that comes back was never alerted** (issues first seen before a deploy were skipped). The brief's "regression flag when a resolved issue returns" now works: if the issue's last incident was resolved before the deploy and the error stayed quiet until then, its return opens an incident, and the alert says the error is back.
+- **Also:** validation errors (422) no longer echo submitted values.
+- **Verification (live, real customer path):**
+  - A throwaway git repo (CODEOWNERS, a change to `app/billing.py` line 42, a change under `secrets/`) was run through `action/notify.py` against the harness API. It registered one changed file with range [[42, 42]] (`secrets/` excluded), the author's email, encrypted content and CODEOWNERS.
+  - Errors from that line with the commit SHA produced: "Possible regression … at app/billing.py:42 (this line was changed in this release) after deploy fc578519 by dev@acme.example. This error was resolved before and is back. Owners: @acme/payments", then the AI reply in the thread through the real Anthropic SDK against a local stand-in API.
+  - 380 tests pass against Postgres 16, plus security 12/12, evals 12/12 and chaos. `verify_pipeline.py` 13/13; `api_contract_check.py` 280/280. Dashboard lint has 0 errors and the build passes.

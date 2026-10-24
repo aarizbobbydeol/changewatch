@@ -26,8 +26,10 @@ def reset_tenant_role_flag():
     import app.db
 
     app.db._switch_to_tenant_role = False
+    app.db._tenant_role_pending = False
     yield
     app.db._switch_to_tenant_role = False
+    app.db._tenant_role_pending = False
 
 
 @pytest.fixture(autouse=True)

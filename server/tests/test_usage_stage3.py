@@ -4,7 +4,7 @@ Tests budgets, spend enforcement, warnings, outbox alerts, and the non-negotiabl
 
 import json
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -125,7 +125,7 @@ async def test_raising_budget_resumes_paused_extras_immediately():
 async def test_safety_floor_under_hard_limit():
     """Test the non-negotiable safety floor:
     With the hard limit hit, a bad deploy:
-    1. Skips AI investigation and outputs 'AI investigation paused: budget reached'.
+    1. Skips the AI explanation (none is stored, so none lingers after the budget resets).
     2. Does NOT raise errors into detector or analysis.
     """
     mock_conn = AsyncMock()
@@ -137,6 +137,8 @@ async def test_safety_floor_under_hard_limit():
     # Current spend exceeds hard limit
     mock_conn.fetchval.return_value = 150000
 
-    cause = await generate_likely_cause(mock_conn, project_id=1, deploy_id=99)
-    # Explanation shows paused notice instead of calling LLM
-    assert cause == "AI investigation paused: budget reached"
+    with patch("app.analysis.get_llm_client") as llm:
+        cause = await generate_likely_cause(mock_conn, project_id=1, deploy_id=99)
+    # No LLM call and no explanation; the verdict and alert still go out (checked below)
+    assert cause is None
+    llm.assert_not_called()
