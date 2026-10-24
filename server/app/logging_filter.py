@@ -1,6 +1,5 @@
 import logging
 import re
-from typing import Any
 
 # 1. API Keys: cw_live_..., cw_test_..., cw_ingest_..., cw_read_..., cw_...
 CW_KEY_PATTERN = re.compile(r"\bcw_[A-Za-z0-9_\-]{6,}\b")

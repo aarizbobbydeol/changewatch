@@ -9,19 +9,17 @@ import asyncio
 import json
 import logging
 import signal
-import sys
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 import asyncpg
 
-from app.config import settings
-from app.db import close_db_pool, get_db_pool, init_db_pool, project_transaction
+from app.db import close_db_pool, init_db_pool, project_transaction
 from app.investigator.agent import run_investigation
 from app.investigator.schemas import InvestigationOutput
 from app.metering import Meter, can_spend
 from app.outbox import queue_notification
-from app.queue import close_redis, get_redis, init_redis
+from app.queue import close_redis, init_redis
 
 logger = logging.getLogger("changewatch.investigator.worker")
 

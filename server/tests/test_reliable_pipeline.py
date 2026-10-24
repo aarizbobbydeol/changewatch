@@ -1,16 +1,12 @@
-import json
-import time
-import uuid
-from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, patch
 import pytest
 from app.outbox import (
     annotate_delayed_message,
-    deliver_outbox_batch,
     process_outbox_item,
     queue_notification,
 )
-from app.worker import process_single_event, reap_stuck_processing_events
+from app.worker import reap_stuck_processing_events
 
 
 def test_sdk_event_id_generation():

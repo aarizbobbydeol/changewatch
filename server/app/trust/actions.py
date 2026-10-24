@@ -10,7 +10,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 import asyncpg
 
 from app.config import settings
@@ -153,7 +153,7 @@ async def execute_incident_action(
         await record_incident_event(
             conn, project_id, incident_id, "reopened", actor=actor, detail={"reopened_at": now.isoformat()}
         )
-        return {"status": "ok", "action": "reopen", "status": "confirmed"}
+        return {"status": "ok", "action": "reopen", "incident_status": "confirmed"}
 
     return {"status": "ok"}
 

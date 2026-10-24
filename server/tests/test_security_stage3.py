@@ -1,4 +1,3 @@
-import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
@@ -9,9 +8,7 @@ from app.cli import encrypt_existing_cmd
 from app.crypto import (
     DecryptionError,
     decrypt,
-    decrypt_bytes,
     encrypt,
-    get_or_create_project_data_key,
 )
 from app.main import app
 from app.worker import process_single_event

@@ -16,7 +16,7 @@ from collections import OrderedDict
 import asyncio
 import threading
 import time
-from typing import Any, Dict, Generic, List, Optional, Tuple, TypeVar
+from typing import Any, Generic, Optional, Tuple, TypeVar
 
 K = TypeVar("K")
 V = TypeVar("V")

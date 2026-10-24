@@ -20,9 +20,8 @@ import argparse
 import ast
 import os
 import sys
-import time
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 # Ensure server and sdk are in sys.path
 root_dir = Path(__file__).resolve().parent.parent
@@ -274,7 +273,7 @@ class SecurityComplianceRunner:
 def main():
     parser = argparse.ArgumentParser(description="ChangeWatch Security Verification")
     parser.add_argument("--url", default="http://localhost:8000", help="ChangeWatch API URL")
-    args = parser.parse_args()
+    parser.parse_args()
 
     runner = SecurityComplianceRunner()
     runner.run_all_checks()

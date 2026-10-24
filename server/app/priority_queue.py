@@ -13,7 +13,7 @@ import json
 import logging
 import time
 from enum import IntEnum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger("changewatch.priority_queue")
 

@@ -7,9 +7,9 @@ telemetry payloads and serve fleet aggregates to the Owner Dashboard.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Literal, Optional
-from fastapi import FastAPI, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Dict, List, Literal
+from fastapi import FastAPI
+from pydantic import BaseModel, ConfigDict
 
 app = FastAPI(title="ChangeWatch Telemetry Collector", version="0.1.0")
 

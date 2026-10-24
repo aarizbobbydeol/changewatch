@@ -2,17 +2,14 @@
 """
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.config import settings
 from app.decisions.jev_provider import JevDecisionProvider
 from app.decisions.schemas import Question
 from app.decisions.verifier import (
@@ -20,25 +17,15 @@ from app.decisions.verifier import (
     verify_suggestion_safety,
 )
 from app.investigator.agent import (
-    build_investigation_prompt,
-    pregather_context,
     run_investigation,
 )
 from app.investigator.schemas import (
-    EvidenceItem,
     InvestigationOutput,
     SuggestedFix,
     WhereLocation,
 )
 from app.investigator.tools import (
-    get_config_changes,
-    get_dependency_changes,
     get_diff_files,
-    get_error_rate,
-    get_file_at_commit,
-    get_issue_events,
-    get_previous_deploys,
-    list_new_issues,
 )
 from app.investigator.worker import execute_investigation
 from app.main import app

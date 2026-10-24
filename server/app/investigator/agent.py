@@ -9,7 +9,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 import asyncpg
 
 from app.crypto import decrypt_or_plain, encrypt_or_keep

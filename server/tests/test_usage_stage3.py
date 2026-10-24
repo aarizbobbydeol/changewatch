@@ -4,7 +4,7 @@ Tests budgets, spend enforcement, warnings, outbox alerts, and the non-negotiabl
 
 import json
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -13,7 +13,6 @@ from app.metering import (
     Meter,
     can_spend,
     check_and_notify_budget_thresholds,
-    get_project_budget,
     set_project_budget,
 )
 

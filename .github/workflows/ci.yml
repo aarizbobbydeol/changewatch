@@ -81,8 +81,26 @@ jobs:
       - name: Run Chaos Test Suite
         run: python scripts/chaos.py
 
+  lint:
+    name: Lint (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff (version pinned in requirements-dev.txt)
+        run: pip install "$(grep '^ruff==' requirements-dev.txt)"
+
+      - name: Ruff
+        run: ruff check --output-format=github .
+
   dashboard:
-    name: Dashboard build (types + production bundle)
+    name: Dashboard lint + build (types + production bundle)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -100,6 +118,11 @@ jobs:
 
       - name: Install dependencies from the lock file
         run: npm ci --no-audit --no-fund
+
+      - name: Lint
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run lint
 
       - name: Build
         env:

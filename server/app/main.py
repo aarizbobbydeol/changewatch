@@ -23,12 +23,11 @@ from app.auth import (
     require_ingest_project_id,
     require_read_project_id,
     require_admin_key,
-    get_project_id_by_api_key,
 )
 from app.cache import invalidate_deploy_cache, issue_lookup_cache
 from app.codeowners import invalidate_codeowners
 from app.config import settings
-from app.crypto import decrypt, decrypt_or_plain, encrypt, encrypt_or_keep
+from app.crypto import decrypt, decrypt_or_plain, encrypt_or_keep
 from app.db import check_db_health, close_db_pool, get_connection, init_db_pool, project_transaction, read_project_transaction
 from app.scrub import scrub_text
 from app.sre_prep import classify_file
@@ -59,9 +58,6 @@ from app.schemas import (
     IssueEventItem,
     IssueItem,
     ProjectSettingsResponse,
-    TimelineBucket,
-    TimelineDeploy,
-    TimelineDictResponse,
     VerdictResponse,
 )
 
@@ -2155,7 +2151,7 @@ async def delete_mute_rule(
 ):
     """Delete / unmute an active ignore rule."""
     async with project_transaction(project_id) as conn:
-        res = await conn.execute(
+        await conn.execute(
             "DELETE FROM ignore_rules WHERE id = $1 AND project_id = $2",
             id,
             project_id,

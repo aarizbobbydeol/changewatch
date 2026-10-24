@@ -200,12 +200,6 @@ class Settings(BaseModel):
     SILENT_AFTER_MIN: int = Field(
         default_factory=lambda: int(os.getenv("SILENT_AFTER_MIN", "10"))
     )
-    QUEUE_VISIBILITY_TIMEOUT_SEC: int = Field(
-        default_factory=lambda: int(os.getenv("QUEUE_VISIBILITY_TIMEOUT_SEC", "60"))
-    )
-    OUTBOX_MAX_AGE_HOURS: int = Field(
-        default_factory=lambda: int(os.getenv("OUTBOX_MAX_AGE_HOURS", "24"))
-    )
     STALE_AFTER_SEC: int = Field(
         default_factory=lambda: int(os.getenv("STALE_AFTER_SEC", "180"))
     )

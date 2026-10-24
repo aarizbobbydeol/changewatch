@@ -3,15 +3,14 @@ Usage API, forecast, cost estimate, CSV export, budget endpoints, and admin marg
 """
 
 from datetime import date, datetime, timezone
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.auth import require_admin_key, require_read_project_id
+from app.auth import require_read_project_id
 from app.config import settings
 from app.main import app
-from app.metering import Meter, PriceBookEntry
+from app.metering import PriceBookEntry
 
 
 @pytest.fixture

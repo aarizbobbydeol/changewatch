@@ -8,12 +8,11 @@
 3. Migration 009 schema validation:
    - Partitioned table definition, weekly pre-allocation, indexes, and RLS policy.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
-from app.config import settings
 from app.db import (
     close_db_pool,
     get_db_pool,

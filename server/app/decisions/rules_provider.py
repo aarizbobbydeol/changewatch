@@ -5,7 +5,7 @@ Specified in Typed Decisions Addendum Section A & C.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from app.decisions.catalog import (
     Q_REGRESSION,
     Q_NOISE,
@@ -14,7 +14,7 @@ from app.decisions.catalog import (
     Q_CATEGORY,
     Q_OWNER,
 )
-from app.decisions.schemas import Answer, DecisionProvider, Question
+from app.decisions.schemas import Answer, Question
 
 logger = logging.getLogger("changewatch.decisions.rules")
 

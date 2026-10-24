@@ -5,10 +5,8 @@ Specified in Typed Decisions Addendum (TD).
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional, Protocol
 
 logger = logging.getLogger("changewatch.decisions")

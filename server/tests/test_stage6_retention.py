@@ -11,7 +11,7 @@ import pytest
 import httpx
 
 from app.config import settings
-from app.retention import _cleanup_with_conn, _parse_delete_count, cleanup_old_records
+from app.retention import _parse_delete_count, cleanup_old_records
 from app.cli import cleanup_retention_cmd, main as cli_main
 from app.schemas import EventItem
 from scripts.load_test import (
@@ -235,7 +235,7 @@ def test_cli_subcommand_dispatch():
 
 def test_generate_synthetic_event():
     """Verify synthetic event generator produces valid schema conforming events."""
-    now = time.time() if False else datetime.now(timezone.utc).timestamp()
+    now = datetime.now(timezone.utc).timestamp()
 
     # 1. Error event
     err_event = generate_synthetic_event(event_type="error", release="v2.1.0", occurred_at=now)

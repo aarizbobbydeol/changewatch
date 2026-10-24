@@ -3,23 +3,15 @@ Implements TRUST Addendum Stages 4 to 8, TD Stages 6 & 8, and AN Stages 4–5.
 """
 from __future__ import annotations
 
-import asyncio
-import json
 import time
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 
-from app.auth import require_read_project_id
-from app.config import settings
-from app.main import app
 from app.trust.actions import (
     execute_incident_action,
     generate_signed_action_token,
-    record_incident_event,
     verify_signed_action_token,
     verify_slack_signature,
 )
@@ -34,7 +26,6 @@ from app.trust.calm import (
 )
 from app.trust.digest import generate_weekly_digest
 from app.trust.feedback import (
-    compute_trust_metrics,
     get_feedback_suggestions,
     record_alert_feedback,
 )
@@ -71,7 +62,8 @@ async def test_execute_incident_actions_and_timeline():
     # 4. Reopen
     reopen_res = await execute_incident_action(mock_conn, project_id=1, incident_id=5, action="reopen", actor="bob")
     assert reopen_res["action"] == "reopen"
-    assert reopen_res["status"] == "confirmed"
+    assert reopen_res["status"] == "ok"
+    assert reopen_res["incident_status"] == "confirmed"
 
     # Invariant: Invalid action raises ValueError
     with pytest.raises(ValueError):

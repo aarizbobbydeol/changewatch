@@ -1,7 +1,6 @@
 import argparse
 import asyncio
 import json
-import os
 import secrets
 import sys
 from typing import Optional
@@ -78,7 +77,8 @@ async def create_project_cmd(name: str, slack_webhook: Optional[str] = None):
         data_key = AESGCM.generate_key(bit_length=256)
         data_key_enc = encrypt_data_key(data_key, master_key)
     except Exception as exc:
-        logger_warn = f"Warning: could not generate encrypted data key: {exc}"
+        # Say why: without a data key, stored stack traces and diffs cannot be encrypted
+        print(f"Warning: could not generate the project's encryption key: {exc}", file=sys.stderr)
         data_key_enc = None
 
     try:
@@ -136,7 +136,7 @@ async def create_project_cmd(name: str, slack_webhook: Optional[str] = None):
 
 async def list_projects_cmd():
     """List existing projects (names and IDs only, keys masked)."""
-    pool = await init_db_pool()
+    await init_db_pool()
     try:
         async with get_connection() as conn:
             rows = await conn.fetch(
@@ -178,7 +178,7 @@ async def rotate_master_key_cmd():
         print("ERROR: MASTER_KEY_PREVIOUS is not configured. Set MASTER_KEY_PREVIOUS before running key rotation.")
         sys.exit(1)
 
-    pool = await init_db_pool()
+    await init_db_pool()
     try:
         async with get_connection() as conn:
             rows = await conn.fetch(
@@ -208,10 +208,10 @@ async def rotate_project_key_cmd(project_id: int):
     new_data_key = AESGCM.generate_key(bit_length=256)
     new_enc = encrypt_data_key(new_data_key, master_key)
 
-    pool = await init_db_pool()
+    await init_db_pool()
     try:
         async with get_connection() as conn:
-            res = await conn.execute(
+            await conn.execute(
                 "UPDATE projects SET data_key_enc = $1 WHERE id = $2",
                 new_enc,
                 project_id,
@@ -224,7 +224,7 @@ async def rotate_project_key_cmd(project_id: int):
 
 async def delete_project_cmd(project_id: int, purge: bool):
     """Delete a project and purge its data and encryption keys (crypto-shred)."""
-    pool = await init_db_pool()
+    await init_db_pool()
     try:
         async with get_connection() as conn:
             await conn.execute("DELETE FROM projects WHERE id = $1", project_id)
@@ -283,7 +283,7 @@ async def encrypt_existing_cmd(batch_size: int = 1000) -> dict:
     - notification_channels.config -> notification_channels.config_enc
     Safe to re-run and resumable.
     """
-    pool = await init_db_pool()
+    await init_db_pool()
     stats = {
         "deploys_encrypted": 0,
         "deploy_files_encrypted": 0,
@@ -414,7 +414,7 @@ async def encrypt_existing_cmd(batch_size: int = 1000) -> dict:
 
 async def publish_price_book_cmd(file_path: str):
     """Publish a new rate card version from a YAML file."""
-    pool = await init_db_pool()
+    await init_db_pool()
     try:
         data = load_price_book_yaml(file_path)
         async with get_connection() as conn:
@@ -434,7 +434,7 @@ async def publish_price_book_cmd(file_path: str):
 
 async def price_lock_cmd(project_id: int, days: int):
     """Lock rate card version for a project for N days."""
-    pool = await init_db_pool()
+    await init_db_pool()
     try:
         async with get_connection() as conn:
             version, lock_until = await set_price_lock(conn, project_id, days)
@@ -452,7 +452,7 @@ async def price_lock_cmd(project_id: int, days: int):
 async def add_channel_cmd(project_id: int, channel_type: str, config_json: str, enabled: bool = True):
 
     """Add a notification channel for a project."""
-    pool = await init_db_pool()
+    await init_db_pool()
     try:
         config = json.loads(config_json)
     except Exception as exc:
@@ -485,7 +485,7 @@ async def add_channel_cmd(project_id: int, channel_type: str, config_json: str, 
 
 async def list_channels_cmd(project_id: int):
     """List notification channels for a project."""
-    pool = await init_db_pool()
+    await init_db_pool()
     try:
         async with get_connection() as conn:
             rows = await conn.fetch(
@@ -520,7 +520,7 @@ async def add_member_cmd(
     email: Optional[str] = None,
 ):
     """Add a team member to a project."""
-    pool = await init_db_pool()
+    await init_db_pool()
     emails = [e.strip() for e in git_emails.split(",") if e.strip()] if git_emails else []
     try:
         async with get_connection() as conn:
@@ -544,7 +544,7 @@ async def add_member_cmd(
 
 async def list_members_cmd(project_id: int):
     """List team members for a project."""
-    pool = await init_db_pool()
+    await init_db_pool()
     try:
         async with get_connection() as conn:
             rows = await conn.fetch(

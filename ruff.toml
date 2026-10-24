@@ -1,0 +1,7 @@
+# Lint for real bugs, not style: syntax errors, undefined names, unused imports/variables,
+# repeated dict keys, duplicate class fields and mutable default arguments.
+line-length = 120
+extend-exclude = ["dashboard", ".python-dist"]
+
+[lint]
+select = ["E9", "F", "PIE794", "B006"]

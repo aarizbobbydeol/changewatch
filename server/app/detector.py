@@ -5,7 +5,7 @@ import math
 import os
 import signal
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 import asyncpg
 from app.analysis import dispatch_verdict_alert, generate_likely_cause
 from app.config import settings
@@ -40,7 +40,6 @@ async def evaluate_deploy(
     deployed_at = deploy["deployed_at"]
 
     age_min = (now_dt - deployed_at).total_seconds() / 60.0
-    is_first_checkpoint = age_min >= settings.VERDICT_FIRST_MIN
     is_final = age_min >= settings.VERDICT_FINAL_MIN
 
     # RULE 0: Silence is never "safe" (TRUST Addendum Section A2)

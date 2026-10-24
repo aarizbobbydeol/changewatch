@@ -9,7 +9,7 @@ import sys
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import asyncpg
 from app.cache import (
     deploy_lookup_cache,

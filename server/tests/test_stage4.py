@@ -1,6 +1,5 @@
-import json
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 import pytest
 from app.analysis import dispatch_verdict_alert, format_slack_blocks, generate_likely_cause
 from app.detector import calculate_p95, evaluate_deploy

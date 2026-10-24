@@ -10,11 +10,7 @@ Verifies:
 """
 from __future__ import annotations
 
-import asyncio
-import os
-import signal
 import sys
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest

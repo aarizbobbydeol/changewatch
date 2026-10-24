@@ -3,8 +3,7 @@ Final Benchmark Comparison Table & Suite Verification.
 """
 import json
 from pathlib import Path
-import pytest
-from scripts.bench import compare_runs, run_benchmark_suite, SCENARIOS
+from scripts.bench import compare_runs
 
 
 def test_baseline_and_optimized_benchmark_files_exist():

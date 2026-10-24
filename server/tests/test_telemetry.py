@@ -10,7 +10,6 @@ Specified in Master Prompt Section 6:
 """
 from __future__ import annotations
 
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 from httpx import ASGITransport
@@ -21,12 +20,9 @@ from app.config import settings
 from app.main import app
 from app.telemetry import (
     APP_VERSION,
-    FORBIDDEN_KEYWORDS,
     TelemetryPayload,
     assert_allowlist_compliance,
     bucket_count,
-    build_telemetry_payload,
-    get_or_create_install_id,
     send_telemetry_report,
 )
 from collector.server import app as collector_app, reset_collector_store

@@ -43,7 +43,6 @@ def verify_evidence_supports_conclusion(
 
     for ev in evidence:
         detail = str(ev.get("detail", "")).lower()
-        kind = ev.get("kind", "")
         # Check if detail keywords match cause keywords
         common_words = set(detail.split()) & set(cause_lower.split())
         # Filter stopwords

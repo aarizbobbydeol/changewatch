@@ -357,7 +357,7 @@ export default function DashboardPage() {
         {!apiKey && (
           <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-sm flex items-center justify-between">
             <div>
-              <strong>Read Key Required:</strong> Enter your project's read key (<code className="bg-amber-950/50 px-1 py-0.5 rounded text-amber-300">cw_read_...</code>) in the top bar to connect.
+              <strong>Read Key Required:</strong> Enter your project&apos;s read key (<code className="bg-amber-950/50 px-1 py-0.5 rounded text-amber-300">cw_read_...</code>) in the top bar to connect.
             </div>
           </div>
         )}

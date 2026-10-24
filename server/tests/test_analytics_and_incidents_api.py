@@ -1,4 +1,3 @@
-import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -6,16 +5,11 @@ import httpx
 import pytest
 
 from app.analytics.metrics import (
-    METRIC_DEFINITIONS,
-    compute_alert_speed,
-    compute_alerts_accuracy,
-    compute_categories,
     compute_change_failure_rate,
     compute_hotspots,
     compute_releases,
     compute_time_to_detect,
     compute_time_to_fix,
-    compute_tool_uptime,
 )
 from app.auth import require_read_project_id
 from app.main import app

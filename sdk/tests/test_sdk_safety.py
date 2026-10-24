@@ -10,7 +10,6 @@ Verifies:
 """
 from __future__ import annotations
 
-import os
 import sys
 import threading
 import time
@@ -23,8 +22,7 @@ sdk_root = Path(__file__).resolve().parent.parent
 if str(sdk_root) not in sys.path:
     sys.path.insert(0, str(sdk_root))
 
-import changewatch
-from changewatch import ASGIMiddleware, Client, init, shutdown
+from changewatch import Client, init, shutdown
 import importlib.util
 _bench_spec = importlib.util.spec_from_file_location("sdk_bench_overhead", sdk_root / "bench" / "overhead.py")
 _bench_mod = importlib.util.module_from_spec(_bench_spec)
@@ -85,7 +83,7 @@ def test_sdk_shutdown_restores_original_hooks():
     orig_sys = sys.excepthook
     orig_threading = getattr(threading, "excepthook", None)
 
-    client = init(api_key="cw_test", endpoint="http://localhost:8000")
+    init(api_key="cw_test", endpoint="http://localhost:8000")
     # Verify hooks changed
     assert sys.excepthook != orig_sys
 

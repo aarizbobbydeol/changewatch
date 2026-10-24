@@ -13,7 +13,6 @@ Verifies:
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 import time
 from unittest.mock import AsyncMock, MagicMock, patch

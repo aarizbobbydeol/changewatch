@@ -8,13 +8,11 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from fastapi.responses import PlainTextResponse
+from fastapi import APIRouter, Depends, Query, Response
 
 from app.analytics.metrics import (
     METRIC_DEFINITIONS,

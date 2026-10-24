@@ -1,4 +1,3 @@
-import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
@@ -11,7 +10,6 @@ from app.main import app
 from app.sources import (
     check_dead_mans_switch,
     is_in_idle_hours,
-    is_source_silent,
     record_source_activity,
 )
 from app.watchdog import reap_stuck_queue_items, run_watchdog_checks

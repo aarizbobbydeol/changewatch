@@ -3,9 +3,9 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
-from app.fingerprint import compute_fingerprint, normalize_stack_trace
+from app.fingerprint import compute_fingerprint
 from app.main import app
-from app.worker import find_deploy, handle_event_with_retry, process_single_event
+from app.worker import find_deploy, handle_event_with_retry
 
 
 @pytest.mark.asyncio

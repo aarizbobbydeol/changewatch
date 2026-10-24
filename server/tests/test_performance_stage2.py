@@ -10,7 +10,6 @@ Verifies:
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 from datetime import datetime, timezone
@@ -20,13 +19,8 @@ import pytest
 
 from app.fingerprint import compute_fingerprint
 from app.worker import (
-    BATCH_MAX,
-    BATCH_MAX_WAIT_MS,
-    check_incident_for_issue,
-    find_deploy,
     handle_event_batch_with_retry,
     process_event_batch,
-    process_single_event,
     pull_batch_from_queue,
 )
 
@@ -81,7 +75,6 @@ async def test_process_event_batch_groups_issues_and_events():
     mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
 
     now = time.time()
-    now_dt = datetime.fromtimestamp(now, tz=timezone.utc)
 
     # 6 events: 3 of ValueError (same fingerprint), 3 of KeyError (same fingerprint)
     batch = [

@@ -1,11 +1,9 @@
-import os
 from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 from app.auth import get_project_id_by_api_key
-from app.db import check_db_health, project_transaction
+from app.db import project_transaction
 from app.main import app
-from app.queue import check_redis_health
 
 
 @pytest.mark.asyncio

@@ -15,7 +15,6 @@ import argparse
 import asyncio
 import json
 import logging
-import os
 import sys
 import time
 from pathlib import Path
@@ -27,7 +26,6 @@ SERVER_DIR = BASE_DIR / "server"
 if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
 
-from app.config import settings
 from app.decisions import (
     build_decision_state,
     decide_with_fallback,
@@ -70,7 +68,7 @@ async def evaluate_decision_triage(
 ) -> Tuple[bool, Dict[str, Any], str]:
     """Evaluate decision layer answers against expected labels."""
     inc = scenario["incident"]
-    labels = scenario.get("decision_labels", {})
+    scenario.get("decision_labels", {})
 
     state = build_decision_state(
         error_title=inc["title"],

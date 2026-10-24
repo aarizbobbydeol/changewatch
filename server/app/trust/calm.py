@@ -3,14 +3,12 @@ Specified in TRUST Addendum Stage 5.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 import asyncpg
 
-from app.config import settings
 from app.sources import is_source_silent
 from app.trust.actions import record_incident_event
 

@@ -3,7 +3,6 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
-from fastapi import HTTPException
 
 from app.auth import hash_api_key
 from app.cache import api_key_cache

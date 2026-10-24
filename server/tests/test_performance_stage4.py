@@ -4,18 +4,14 @@
 3. Redis sliding-window atomic counters (10s buckets, 6-bucket sliding window sum)
 4. Event rollups aggregation and timeline integration
 """
-import asyncio
 import concurrent.futures
 import time
-from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.cache import (
     LRUTTLCache,
-    api_key_cache,
     deploy_lookup_cache,
-    issue_lookup_cache,
     invalidate_deploy_cache,
     increment_sliding_window_counter,
     get_sliding_window_sum,

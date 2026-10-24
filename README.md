@@ -121,6 +121,14 @@ flowchart LR
 4. **Explain**: for `watch` and `rollback`, the LLM matches stack frames against the changed lines and names a likely cause and owner.
 5. **Alert**: your channels receive the verdict, the reasons, the likely cause and the tagged owners.
 
+### What an alert looks like
+
+<p align="center">
+  <img src="docs/assets/slack-alert.svg" alt="ChangeWatch alert in Slack: possible regression at app/billing.py line 42, changed in this release, owner @billing-team, followed by an AI investigation reply in the thread" width="100%">
+</p>
+
+One message per incident: what broke, the exact file and line, whether that line changed in this release, who owns it, and a link to the incident. The AI explanation follows in the same thread. Discord, Teams, email and signed webhooks get the same content.
+
 ### The deploy lifecycle
 
 ```mermaid

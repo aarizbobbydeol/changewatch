@@ -7,10 +7,8 @@ import pytest
 from app.auth import (
     get_project_id_by_api_key,
     hash_api_key,
-    require_ingest_project_id,
-    require_read_project_id,
 )
-from app.cli import create_project_cmd, generate_ingest_key, generate_read_key
+from app.cli import create_project_cmd
 from app.logging_filter import LogRedactionFilter, redact_sensitive_data
 from app.main import app, JSONLogFormatter
 from fastapi import HTTPException

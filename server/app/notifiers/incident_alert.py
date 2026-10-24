@@ -4,7 +4,6 @@ Specified in AI SRE Prompt Stage B3 & B4.
 """
 from __future__ import annotations
 
-import json
 import logging
 import time
 from typing import Any, Dict, List, Optional

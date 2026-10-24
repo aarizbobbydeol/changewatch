@@ -17,7 +17,6 @@ from typing import Any, Dict, Optional, Tuple, Union
 import yaml
 
 from app.config import settings
-from app.db import get_connection
 
 logger = logging.getLogger("app.metering")
 

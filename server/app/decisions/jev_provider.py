@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 from typing import Any, Dict, List, Optional, Union
 import httpx
 
@@ -95,7 +94,6 @@ class JevDecisionProvider:
             "Content-Type": "application/json",
         }
 
-        start_time = time.monotonic()
         try:
             async with httpx.AsyncClient(timeout=self.timeout_sec, transport=self.transport) as client:
                 resp = await client.post(self.base_url, json=body, headers=headers)
@@ -105,7 +103,6 @@ class JevDecisionProvider:
             logger.warning("Jev provider call failed (%s); falling back to rules", exc)
             return await self.rules_fallback.decide(state, q_dict)
 
-        latency_ms = int((time.monotonic() - start_time) * 1000)
         answers_data = data.get("answers", data)
 
         answers: Dict[str, Answer] = {}

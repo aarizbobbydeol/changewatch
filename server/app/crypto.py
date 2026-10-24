@@ -236,7 +236,6 @@ async def decrypt_bytes(
     if version != CURRENT_VERSION:
         raise DecryptionError(f"Unsupported ciphertext envelope version: {version!r}")
 
-    key_id = ciphertext[1:3]
     nonce = ciphertext[3:15]
     payload = ciphertext[15:]
     aad = f"{table}.{column}.{project_id}".encode("utf-8")

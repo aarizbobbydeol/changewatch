@@ -14,7 +14,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -216,7 +215,7 @@ def compare_runs(file1: Path, file2: Path):
         print("-" * 90)
 
         if not s1 or not s2:
-            print(f"Scenario missing in one of the runs")
+            print("Scenario missing in one of the runs")
             continue
 
         metrics_to_compare = [

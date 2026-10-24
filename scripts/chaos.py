@@ -17,7 +17,6 @@ import asyncio
 import logging
 import sys
 import time
-from typing import Any, Dict, List
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("changewatch.chaos")
@@ -89,7 +88,7 @@ class ChaosHarness:
         await self.step_2_simulate_redis_disruption()
         await self.step_3_simulate_slack_500s_and_outbox()
         await self.step_4_simulate_detector_lag_and_system_alerts()
-        duration = time.monotonic() - t0
+        time.monotonic() - t0
 
         logger.info("-" * 70)
         logger.info("Chaos Verification Results:")

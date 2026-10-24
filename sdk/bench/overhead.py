@@ -9,7 +9,6 @@ Measures:
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import time
 import tracemalloc
@@ -21,7 +20,6 @@ sdk_dir = Path(__file__).resolve().parent.parent
 if str(sdk_dir) not in sys.path:
     sys.path.insert(0, str(sdk_dir))
 
-import changewatch
 from changewatch import ASGIMiddleware, Client
 
 

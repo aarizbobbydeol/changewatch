@@ -861,3 +861,15 @@ This document records key decisions made during development to ensure transparen
   - Usage loaded; both CSV exports returned 200 `text/csv` with the key (401 without).
   - At 375 px, all 7 nav links were visible and wrapped.
 - **Not changed (decision for the owner):** the dashboard keeps its dark slate design. The brief's "plain, light, teal" look is a redesign of about 3,500 lines of UI; the teal accent is introduced for active states and new pages.
+
+### 72. Linting (and the bugs it found), templates, alert visual
+- **Ruff** (pinned 0.17.2 in `requirements-dev.txt`; `ruff.toml` selects bug-class rules only: `E9`, `F`, `PIE794`, `B006`) and **ESLint** (`next/core-web-vitals`, eslint 8.57.1 + eslint-config-next 14.2.35, pinned exactly) now run in CI.
+- **Bugs found by the linters:**
+  - `create-project` built the reason it could not create the project's encryption key into a variable and never printed it; it now goes to stderr.
+  - The "reopen" incident action returned `{"status": "ok", ..., "status": "confirmed"}` (duplicate key, so callers saw `status: confirmed`); it now returns `status: ok` plus `incident_status`. The test had locked in the wrong value.
+  - `QUEUE_VISIBILITY_TIMEOUT_SEC` and `OUTBOX_MAX_AGE_HOURS` were defined twice in `Settings`.
+  - Dead code (`time.time() if False else …`) in a test.
+  - An unescaped apostrophe in JSX.
+  - Cleanup: 208 unused imports and 22 unused variables removed. One of my own bulk edits briefly left `pool` undefined in three CLI commands; Ruff's `F821` caught it before commit.
+- **Not changed:** 8 `react-hooks/exhaustive-deps` warnings remain visible. Each page intentionally re-fetches only when the key or API address changes; restructuring them is a refactor without a behaviour change. B023 (closures over loop variables in `worker.py`) is excluded: those closures are awaited within the same iteration.
+- Issue templates (bug, feature with a "keeps ChangeWatch's promises" checklist, security redirect), PR template with an end-to-end testing checklist, and `docs/assets/slack-alert.svg` (drawn from the alert and AI reply produced in the live test runs) in the README.

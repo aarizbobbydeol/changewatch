@@ -6,7 +6,7 @@ for typed decisions questions (is_regression_from_release, is_known_noise).
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 import asyncpg
 
 logger = logging.getLogger("changewatch.trust.calibration")

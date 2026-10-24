@@ -14,7 +14,7 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 import asyncpg
 
 from app.crypto import decrypt_or_plain
@@ -27,11 +27,9 @@ from app.decisions import (
     Q_REGRESSION,
     Q_SEVERITY,
     Q_CATEGORY,
-    Q_OWNER,
 )
 from app.notifiers.incident_alert import dispatch_incident_alert
 from app.sre_prep import (
-    StackFrame,
     frame_in_diff,
     innermost_project_frame,
     parse_stack_trace,

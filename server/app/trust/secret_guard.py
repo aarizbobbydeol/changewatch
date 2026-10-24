@@ -9,9 +9,8 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, Dict, Tuple
+from typing import Tuple
 
-from app.config import settings
 
 logger = logging.getLogger("changewatch.trust.secret_guard")
 

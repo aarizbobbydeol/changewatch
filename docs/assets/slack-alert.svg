@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="470" viewBox="0 0 760 470" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>Example ChangeWatch alert in Slack: a possible regression at app/billing.py line 42 with an AI investigation reply</title>
+  <rect width="760" height="470" rx="14" fill="#ffffff" stroke="#e2e8f0"/>
+
+  <!-- Channel header -->
+  <rect width="760" height="44" rx="14" fill="#f8fafc"/>
+  <rect y="30" width="760" height="14" fill="#f8fafc"/>
+  <line x1="0" y1="44" x2="760" y2="44" stroke="#e2e8f0"/>
+  <text x="24" y="28" font-size="15" font-weight="700" fill="#1e293b"># releases</text>
+  <text x="736" y="28" font-size="12" fill="#64748b" text-anchor="end">ChangeWatch · instant alert (no AI) · 1.1 s after the first error</text>
+
+  <!-- Bot avatar + name -->
+  <rect x="24" y="62" width="36" height="36" rx="8" fill="#0F5F58"/>
+  <circle cx="42" cy="80" r="9" fill="none" stroke="#ffffff" stroke-width="2.5"/>
+  <circle cx="42" cy="80" r="2.5" fill="#ffffff"/>
+  <text x="72" y="76" font-size="14" font-weight="700" fill="#1e293b">ChangeWatch</text>
+  <rect x="164" y="64" width="30" height="16" rx="3" fill="#e2e8f0"/>
+  <text x="179" y="76" font-size="10" font-weight="700" fill="#475569" text-anchor="middle">APP</text>
+  <text x="204" y="76" font-size="12" fill="#64748b">11:27 PM</text>
+
+  <!-- Alert card -->
+  <rect x="72" y="88" width="664" height="196" rx="8" fill="#ffffff" stroke="#e2e8f0"/>
+  <rect x="72" y="88" width="5" height="196" rx="2" fill="#f59e0b"/>
+  <text x="92" y="114" font-size="16" font-weight="700" fill="#b45309">Possible regression · deploy a75cf96a</text>
+
+  <text x="92" y="142" font-size="12" font-weight="700" fill="#334155">Error</text>
+  <text x="92" y="160" font-size="13" fill="#1e293b" font-family="SFMono-Regular, Menlo, Consolas, monospace">ZeroDivisionError: division by zero  (5×)</text>
+  <text x="420" y="142" font-size="12" font-weight="700" fill="#334155">Commit</text>
+  <text x="420" y="160" font-size="13" fill="#1e293b"><tspan font-family="SFMono-Regular, Menlo, Consolas, monospace">a75cf96a</tspan> by dev@example.com</text>
+
+  <text x="92" y="188" font-size="12" font-weight="700" fill="#334155">Where</text>
+  <text x="92" y="206" font-size="13" fill="#1e293b"><tspan font-family="SFMono-Regular, Menlo, Consolas, monospace">app/billing.py:42</tspan> in <tspan font-family="SFMono-Regular, Menlo, Consolas, monospace">total_cents</tspan></text>
+  <rect x="92" y="214" width="236" height="20" rx="4" fill="#fef3c7"/>
+  <text x="100" y="228" font-size="12" font-weight="600" fill="#92400e">this line was changed in this release</text>
+  <text x="420" y="188" font-size="12" font-weight="700" fill="#334155">Owners</text>
+  <text x="420" y="206" font-size="13" fill="#1d4ed8">@billing-team</text>
+
+  <text x="92" y="258" font-size="12" fill="#64748b">Triage (rules): regression likely · severity high · logic bug</text>
+  <text x="92" y="276" font-size="12" fill="#64748b">Deploy message: “Apply discount to totals” ·</text>
+  <text x="352" y="276" font-size="12" fill="#1d4ed8">View incident</text>
+
+  <!-- Thread reply -->
+  <line x1="72" y1="306" x2="72" y2="446" stroke="#cbd5e1" stroke-width="2"/>
+  <rect x="92" y="300" width="28" height="28" rx="6" fill="#0F5F58"/>
+  <circle cx="106" cy="314" r="7" fill="none" stroke="#ffffff" stroke-width="2"/>
+  <text x="130" y="312" font-size="13" font-weight="700" fill="#1e293b">ChangeWatch</text>
+  <text x="226" y="312" font-size="12" fill="#64748b">replied in thread · AI investigation (read-only)</text>
+
+  <rect x="130" y="322" width="606" height="124" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="146" y="346" font-size="13" font-weight="700" fill="#1e293b">Root cause: regression in app/billing.py after deploy a75cf96a</text>
+  <rect x="146" y="356" width="120" height="20" rx="10" fill="#fef3c7"/>
+  <text x="206" y="370" font-size="11" font-weight="700" fill="#92400e" text-anchor="middle">Confidence: medium</text>
+  <text x="146" y="398" font-size="12" font-weight="700" fill="#334155">Evidence</text>
+  <text x="146" y="416" font-size="12" fill="#334155">• [diff] Line 42 in app/billing.py was modified in deploy a75cf96a.</text>
+  <text x="146" y="436" font-size="12" fill="#334155"><tspan font-weight="700">Suggested action:</tspan> inspect the change to app/billing.py around line 42.</text>
+</svg>

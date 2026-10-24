@@ -1,9 +1,7 @@
-import json
 import logging
 from typing import Any, Dict, List, Optional
 import asyncpg
 from app.crypto import decrypt_or_plain
-from app.db import get_connection, project_transaction
 from app.llm import get_llm_client
 from app.outbox import queue_notification
 from app.scrub import scrub_text

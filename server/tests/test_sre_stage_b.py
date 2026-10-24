@@ -1,25 +1,16 @@
 import asyncio
-import json
-import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.decisions import (
-    Answer,
-    CATALOG_VERSION,
     CircuitBreaker,
-    FakeDecisionProvider,
-    Question,
     RulesDecisionProvider,
-    build_decision_state,
     decide_with_fallback,
     get_triage_questions,
-    persist_decisions,
     Q_REGRESSION,
     Q_NOISE,
-    Q_TRANSIENT,
     Q_SEVERITY,
     Q_CATEGORY,
     Q_OWNER,
@@ -28,14 +19,11 @@ from app.incident_manager import check_and_trigger_incident, auto_resolve_stale_
 from app.notifiers.incident_alert import (
     format_incident_instant_message,
     resolve_team_mentions,
-    dispatch_incident_alert,
 )
 from app.notifiers.channels import (
-    SlackNotifier,
     DiscordNotifier,
     TeamsNotifier,
     WebhookNotifier,
-    EmailNotifier,
     get_notifier,
 )
 

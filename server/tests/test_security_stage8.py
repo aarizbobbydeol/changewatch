@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-import pytest
 
 # Ensure scripts dir is in sys.path
 repo_root = Path(__file__).resolve().parent.parent.parent

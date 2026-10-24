@@ -5,9 +5,7 @@
    and NEVER drops deploys, heartbeats, or the first occurrence of a new fingerprint.
 3. Telemetry: reports dropped count in ingest response and /healthz.
 """
-import json
 import time
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
@@ -16,7 +14,7 @@ from app.auth import hash_api_key
 from app.cache import api_key_cache
 from app.config import settings
 from app.main import app
-from app.worker import process_event_batch, process_single_event
+from app.worker import process_event_batch
 
 
 @pytest.fixture(autouse=True)

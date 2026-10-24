@@ -1,17 +1,14 @@
 import base64
-import os
 from unittest.mock import AsyncMock, patch
 import pytest
 from app.crypto import (
     CURRENT_VERSION,
     DecryptionError,
     decrypt,
-    decrypt_bytes,
     decrypt_data_key,
     encrypt,
     encrypt_data_key,
     generate_master_key,
-    get_master_key_bytes,
     invalidate_project_data_key_cache,
 )
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM

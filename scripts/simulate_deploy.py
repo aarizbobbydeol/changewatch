@@ -47,7 +47,7 @@ def simulate(mode: str, api_key: str):
 
     if mode == "no_data":
         print("Mode is 'no_data': Sending no events or heartbeats.")
-        print(f"Simulation complete. Release verdict will be 'no_data'.\n")
+        print("Simulation complete. Release verdict will be 'no_data'.\n")
         return
 
     if mode == "safe":

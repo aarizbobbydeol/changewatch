@@ -6,16 +6,12 @@
 5. Precompiled single-pass regexes for secret scrubbing and trace normalization.
 """
 import random
-import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 import pytest
 
 from app.cache import codeowners_cache
 from app.codeowners import (
-    CodeownerRule,
-    CompiledCodeowners,
     get_or_compile_codeowners,
-    glob_to_regex,
     invalidate_codeowners,
     parse_codeowners,
 )
@@ -28,9 +24,7 @@ from app.intervals import (
 )
 from app.priority_queue import (
     InvestigationPriority,
-    compute_priority_score,
     get_queue_depth,
-    peek_investigation,
     pop_investigation,
     push_investigation,
 )
