@@ -2,6 +2,8 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
+import { loadAdminKey, loadEndpoint, saveAdminKey, saveEndpoint } from "../../lib/session";
+import NavLinks from "../../components/NavLinks";
 
 interface MeterMargin {
   meter: string;
@@ -46,18 +48,15 @@ export default function OwnerMarginPage() {
   const [marginData, setMarginData] = useState<MarginResponse | null>(null);
 
   useEffect(() => {
-    const savedAdminKey = localStorage.getItem("changewatch_admin_key") || "";
+    const savedAdminKey = loadAdminKey();
     const savedEndpoint =
-      localStorage.getItem("changewatch_endpoint") ||
-      (typeof window !== "undefined" && window.location.hostname === "localhost"
-        ? "http://localhost:8000"
-        : "");
+      loadEndpoint();
     setAdminKey(savedAdminKey);
     setEndpoint(savedEndpoint);
   }, []);
 
   const fetchMargin = async () => {
-    if (!endpoint || !adminKey) {
+    if (!adminKey) {
       setLoading(false);
       return;
     }
@@ -94,8 +93,8 @@ export default function OwnerMarginPage() {
 
   const handleConnect = (e: React.FormEvent) => {
     e.preventDefault();
-    localStorage.setItem("changewatch_admin_key", adminKey);
-    localStorage.setItem("changewatch_endpoint", endpoint);
+    saveAdminKey(adminKey);
+    saveEndpoint(endpoint);
     fetchMargin();
   };
 
@@ -123,25 +122,8 @@ export default function OwnerMarginPage() {
           </p>
         </div>
 
-        <nav className="flex items-center gap-2">
-          <Link
-            href="/"
-            className="px-3 py-1.5 text-sm rounded bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition"
-          >
-            ← Releases & Issues
-          </Link>
-          <Link
-            href="/usage"
-            className="px-3 py-1.5 text-sm rounded bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition"
-          >
-            Usage & Budgets
-          </Link>
-          <Link
-            href="/owner/margin"
-            className="px-3 py-1.5 text-sm rounded bg-indigo-950 text-indigo-300 border border-indigo-700/50 font-medium transition"
-          >
-            Owner Margin
-          </Link>
+        <nav className="flex flex-wrap items-center gap-2">
+          <NavLinks />
         </nav>
       </header>
 

@@ -11,6 +11,7 @@ module.exports = {
         watch: "#f59e0b",
         rollback: "#ef4444",
         nodata: "#6b7280",
+        brand: "#0F5F58", // teal accent from the brief's design language
       },
     },
   },

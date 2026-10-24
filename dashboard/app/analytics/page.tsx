@@ -14,6 +14,8 @@ import {
   CartesianGrid,
   Legend,
 } from "recharts";
+import { downloadWithKey, loadEndpoint, loadReadKey } from "../lib/session";
+import NavLinks from "../components/NavLinks";
 
 interface MetricItem {
   id: string;
@@ -28,7 +30,7 @@ interface MetricItem {
 
 export default function AnalyticsDashboardPage() {
   const [apiKey, setApiKey] = useState("");
-  const [endpoint, setEndpoint] = useState("http://localhost:8000");
+  const [endpoint, setEndpoint] = useState("");
   const [periodDays, setPeriodDays] = useState<number>(30);
   const [env, setEnv] = useState("prod");
   const [loading, setLoading] = useState(true);
@@ -42,14 +44,13 @@ export default function AnalyticsDashboardPage() {
   const [hotspots, setHotspots] = useState<any[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
   const [operations, setOperations] = useState<Record<string, any>>({});
-  const [usageSummary, setUsageSummary] = useState<Record<string, any>>({});
   const [definitions, setDefinitions] = useState<Record<string, any>>({});
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
 
   // Load API key from localStorage
   useEffect(() => {
-    const savedKey = localStorage.getItem("cw_api_key") || "cw_read_test_key";
-    const savedEp = localStorage.getItem("cw_endpoint") || "http://localhost:8000";
+    const savedKey = loadReadKey();
+    const savedEp = loadEndpoint();
     setApiKey(savedKey);
     setEndpoint(savedEp);
   }, []);
@@ -70,7 +71,6 @@ export default function AnalyticsDashboardPage() {
         hotRes,
         catRes,
         opsRes,
-        useRes,
         defRes,
       ] = await Promise.allSettled([
         fetch(getApiUrl(`/v1/analytics/overview?period=${periodDays}&env=${env}`), { headers }).then((r) => r.json()),
@@ -79,17 +79,25 @@ export default function AnalyticsDashboardPage() {
         fetch(getApiUrl(`/v1/analytics/hotspots?period=${periodDays}&env=${env}`), { headers }).then((r) => r.json()),
         fetch(getApiUrl(`/v1/analytics/categories?period=${periodDays}&env=${env}`), { headers }).then((r) => r.json()),
         fetch(getApiUrl(`/v1/analytics/operations?period=${periodDays}&env=${env}`), { headers }).then((r) => r.json()),
-        fetch(getApiUrl(`/v1/analytics/usage-summary`), { headers }).then((r) => r.json()),
         fetch(getApiUrl(`/v1/analytics/definitions`), { headers }).then((r) => r.json()),
       ]);
 
-      if (ovRes.status === "fulfilled" && !ovRes.value.detail) setOverview(ovRes.value);
-      if (vbwRes.status === "fulfilled" && Array.isArray(vbwRes.value.weeks)) setVerdictsByWeek(vbwRes.value.weeks);
-      if (tbwRes.status === "fulfilled" && Array.isArray(tbwRes.value.weeks)) setTtfByWeek(tbwRes.value.weeks);
-      if (hotRes.status === "fulfilled" && Array.isArray(hotRes.value.hotspots)) setHotspots(hotRes.value.hotspots);
-      if (catRes.status === "fulfilled" && Array.isArray(catRes.value.categories)) setCategories(catRes.value.categories);
+      // The API returns the KPI tiles under `kpis` and the series as plain lists
+      const asList = (res: PromiseSettledResult<any>, key: string): any[] | null => {
+        if (res.status !== "fulfilled") return null;
+        if (Array.isArray(res.value)) return res.value;
+        return Array.isArray(res.value?.[key]) ? res.value[key] : null;
+      };
+      if (ovRes.status === "fulfilled" && !ovRes.value.detail) setOverview(ovRes.value.kpis ?? ovRes.value);
+      const weeks = asList(vbwRes, "weeks");
+      if (weeks) setVerdictsByWeek(weeks);
+      const ttfWeeks = asList(tbwRes, "weeks");
+      if (ttfWeeks) setTtfByWeek(ttfWeeks);
+      const hot = asList(hotRes, "hotspots");
+      if (hot) setHotspots(hot);
+      const cats = asList(catRes, "categories");
+      if (cats) setCategories(cats);
       if (opsRes.status === "fulfilled") setOperations(opsRes.value);
-      if (useRes.status === "fulfilled") setUsageSummary(useRes.value);
       if (defRes.status === "fulfilled") setDefinitions(defRes.value);
 
       setLastUpdatedSec(0);
@@ -115,7 +123,11 @@ export default function AnalyticsDashboardPage() {
   }, []);
 
   const exportCsv = (metricId: string) => {
-    window.open(getApiUrl(`/v1/analytics/export.csv?metric=${metricId}&period=${periodDays}&env=${env}`), "_blank");
+    downloadWithKey(
+      getApiUrl(`/v1/analytics/export.csv?metric=${metricId}&period=${periodDays}&env=${env}`),
+      apiKey,
+      `changewatch-${metricId}.csv`
+    ).catch((err) => setError(err.message));
   };
 
   const renderMetricTile = (metricKey: string, title: string) => {
@@ -169,7 +181,7 @@ export default function AnalyticsDashboardPage() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
       {/* Top Navigation */}
-      <header className="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur px-6 py-4 flex items-center justify-between">
+      <header className="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur px-6 py-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center space-x-6">
           <Link href="/" className="flex items-center space-x-2.5">
             <div className="h-7 w-7 rounded bg-gradient-to-tr from-indigo-500 to-sky-400 flex items-center justify-center font-black text-white text-sm shadow-md">
@@ -177,19 +189,8 @@ export default function AnalyticsDashboardPage() {
             </div>
             <span className="font-bold text-slate-100 text-base tracking-tight">ChangeWatch</span>
           </Link>
-          <nav className="flex items-center space-x-1.5 pl-4 border-l border-slate-800">
-            <Link href="/" className="px-3 py-1.5 text-xs rounded bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700 transition">
-              Overview
-            </Link>
-            <Link href="/incidents" className="px-3 py-1.5 text-xs rounded bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700 transition">
-              Incidents
-            </Link>
-            <Link href="/analytics" className="px-3 py-1.5 text-xs rounded bg-indigo-600/30 text-indigo-300 border border-indigo-500/50 font-semibold transition">
-              Analytics
-            </Link>
-            <Link href="/usage" className="px-3 py-1.5 text-xs rounded bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700 transition">
-              Usage & Budgets
-            </Link>
+          <nav className="flex flex-wrap items-center gap-1.5 pl-4 border-l border-slate-800">
+            <NavLinks />
           </nav>
         </div>
 
@@ -293,7 +294,7 @@ export default function AnalyticsDashboardPage() {
                     <XAxis dataKey="week" stroke="#64748b" fontSize={11} />
                     <YAxis stroke="#64748b" fontSize={11} />
                     <Tooltip contentStyle={{ backgroundColor: "#1e293b", borderColor: "#334155" }} />
-                    <Line type="monotone" dataKey="median_ttf_min" stroke="#38bdf8" strokeWidth={2} name="Median TTF (m)" />
+                    <Line type="monotone" dataKey="median_minutes" stroke="#38bdf8" strokeWidth={2} name="Median TTF (m)" />
                   </LineChart>
                 </ResponsiveContainer>
               ) : (
@@ -319,7 +320,7 @@ export default function AnalyticsDashboardPage() {
                     <span className="font-mono text-slate-300">{h.area}</span>
                     <div className="flex items-center gap-4">
                       <span className="text-slate-400">{h.count} incidents</span>
-                      <span className="font-semibold text-slate-200 w-12 text-right">{h.share}%</span>
+                      <span className="font-semibold text-slate-200 w-12 text-right">{h.share_percent}%</span>
                     </div>
                   </div>
                 ))
@@ -343,7 +344,7 @@ export default function AnalyticsDashboardPage() {
                     <span className="text-slate-300 capitalize">{c.category.replace(/_/g, " ")}</span>
                     <div className="flex items-center gap-4">
                       <span className="text-slate-400">{c.count} cases</span>
-                      <span className="font-semibold text-slate-200 w-12 text-right">{c.share}%</span>
+                      <span className="font-semibold text-slate-200 w-12 text-right">{c.share_percent}%</span>
                     </div>
                   </div>
                 ))

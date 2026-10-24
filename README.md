@@ -190,7 +190,7 @@ The last command prints your **ingest key** (`cw_ingest_…`) and **read key** (
 | Service | URL |
 |---|---|
 | API | http://localhost:8000 (`/healthz`, `/docs`) |
-| Dashboard | http://localhost:3000 (paste your read key in the top bar) |
+| Dashboard | http://localhost:3000 (enter your read key once on **Settings**; every page uses it) |
 
 <details>
 <summary><b>Want to try it without a real app?</b> Simulate deploys.</summary>

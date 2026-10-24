@@ -839,3 +839,25 @@ This document records key decisions made during development to ensure transparen
   - The digest was queued once for 2026-W43.
   - Two escalation levels were delivered, then stopped; after the spacing fix, the levels were exactly 120 s apart with `ESCALATE_AFTER_MIN=2`.
   - A new incident stored `app/billing.py`; the incident page showed the code excerpt and the AI evidence named the repo file.
+
+### 71. Dashboard: Settings and Trust pages, and frontend/API mismatches found by using it
+- **Context:** The dashboard had never been built or clicked through against a live API. It was built with Node 24 (official tarball, checksum verified), served exactly as the Docker image runs it (standalone `server.js`), and every page was used in a browser against the harness API.
+- **Fixed:**
+  1. **The Docker dashboard could not reach the API.** Next.js fixes `next.config.js` rewrites at build time, and the image was built without `API_URL`, so `/api` and `/v1` were proxied to `localhost:8000` inside the dashboard container. `API_URL` is now a build arg (`http://api:8000` in compose).
+  2. **Image.** Node 20 is end-of-life (2026-04-30), so the image moves to Node 24 LTS (supported to 2028-04-30). No lock file meant unpinned installs; `package-lock.json` was added and the image uses `npm ci`. It ran `npm start` with `output: standalone`; it now runs `node server.js` as the non-root `node` user, multi-stage.
+  3. **The read key was stored under three names** (`cw_read_key`, `cw_api_key`, `changewatch_api_key`), and analytics fell back to the placeholder `cw_read_test_key` and `http://localhost:8000` (wrong behind a domain). `app/lib/session.ts` is now the single store, migrating legacy names and ignoring the placeholder.
+  4. **Analytics showed empty tiles and charts.** It stored the whole overview instead of `kpis`, expected wrapped lists where the API returns plain lists, read `median_ttf_min`/`share` instead of `median_minutes`/`share_percent`, and called a non-existent `/v1/analytics/usage-summary` (404).
+  5. **Incident page.** The AI section required status `completed` (the API sends `done`) and read fields at the wrong level, so it always said "Not enabled" and claimed the AI "can autonomously clone the repository" (it never writes to or clones a repo). The timeline read `timestamp` instead of `at`. Code-excerpt line numbers were guessed (the failing line 42 was labelled 49); the API now returns `code_excerpt_start`.
+  6. **Usage page never loaded** ("Loading usage ledger…" forever) unless an explicit API address was set; the owner pages had the same guard.
+  7. **CSV exports** (usage, analytics) were plain links or `window.open`, which cannot send `X-API-Key` (401). They now download via `fetch` + blob.
+  8. **Navigation.** Every page hand-wrote a different nav, and on the home and incident pages it was `hidden lg:flex`, so below 1024 px there was no way to move between pages. A shared `NavLinks` (teal `#0F5F58` active state from the brief) now wraps on small screens.
+  9. **`.gitignore` hid the dashboard's `app/lib/`** (generic Python `lib/` rule), which would have broken every build once committed. The rule is now anchored to `/lib/`; a scan found no other hidden source files.
+- **New:** `/settings` (key entry, channels, members, critical routes, quiet hours; read-only, no secrets) and `/trust` (precision with coverage, median alert speed, median time to resolve, uptime, calibration table, feedback counts, honest empty states). CI gains a `dashboard` job (`npm ci` + `next build`, which type-checks).
+- **Verification:**
+  - A clean build reproducing the Dockerfile steps baked the given `API_URL` into the rewrites; all 10 routes returned 200, and API calls proxied through the dashboard returned 200.
+  - In the browser, the key saved once on Settings was used by Trust, Analytics, Usage and Incidents.
+  - Analytics showed 6 releases, 1.1 s detection, 100% uptime, verdict/hotspot/category charts and no 404s.
+  - The incident page showed the AI result, timeline times, and line 42 correctly numbered.
+  - Usage loaded; both CSV exports returned 200 `text/csv` with the key (401 without).
+  - At 375 px, all 7 nav links were visible and wrapped.
+- **Not changed (decision for the owner):** the dashboard keeps its dark slate design. The brief's "plain, light, teal" look is a redesign of about 3,500 lines of UI; the teal accent is introduced for active states and new pages.

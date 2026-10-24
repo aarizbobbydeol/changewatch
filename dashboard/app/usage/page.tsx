@@ -2,6 +2,8 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
+import { apiUrl, downloadWithKey, loadEndpoint, loadReadKey, saveEndpoint, saveReadKey } from "../lib/session";
+import NavLinks from "../components/NavLinks";
 
 interface UsageItem {
   meter: string;
@@ -91,18 +93,15 @@ export default function UsagePage() {
   const [estimating, setEstimating] = useState<boolean>(false);
 
   useEffect(() => {
-    const savedKey = localStorage.getItem("changewatch_api_key") || "";
+    const savedKey = loadReadKey();
     const savedEndpoint =
-      localStorage.getItem("changewatch_endpoint") ||
-      (typeof window !== "undefined" && window.location.hostname === "localhost"
-        ? "http://localhost:8000"
-        : "");
+      loadEndpoint();
     setApiKey(savedKey);
     setEndpoint(savedEndpoint);
   }, []);
 
   const fetchData = async () => {
-    if (!endpoint || !apiKey) {
+    if (!apiKey) {
       setLoading(false);
       return;
     }
@@ -156,21 +155,21 @@ export default function UsagePage() {
   };
 
   useEffect(() => {
-    if (apiKey && endpoint) {
+    if (apiKey) {
       fetchData();
     }
   }, [apiKey, endpoint]);
 
   const handleSaveConfig = (e: React.FormEvent) => {
     e.preventDefault();
-    localStorage.setItem("changewatch_api_key", apiKey);
-    localStorage.setItem("changewatch_endpoint", endpoint);
+    saveReadKey(apiKey);
+    saveEndpoint(endpoint);
     fetchData();
   };
 
   const handleUpdateBudget = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!endpoint || !apiKey) return;
+    if (!apiKey) return;
     setSavingBudget(true);
     setBudgetSavedMsg(null);
 
@@ -208,7 +207,7 @@ export default function UsagePage() {
 
   const handleRunEstimate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!endpoint || !apiKey) return;
+    if (!apiKey) return;
     setEstimating(true);
     try {
       const res = await fetch(
@@ -252,25 +251,8 @@ export default function UsagePage() {
           </p>
         </div>
 
-        <nav className="flex items-center gap-2">
-          <Link
-            href="/"
-            className="px-3 py-1.5 text-sm rounded bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition"
-          >
-            ← Releases & Issues
-          </Link>
-          <Link
-            href="/usage"
-            className="px-3 py-1.5 text-sm rounded bg-emerald-950 text-emerald-300 border border-emerald-700/50 font-medium transition"
-          >
-            Usage & Budgets
-          </Link>
-          <Link
-            href="/owner/margin"
-            className="px-3 py-1.5 text-sm rounded bg-slate-900 hover:bg-slate-800 text-slate-400 border border-slate-800 transition"
-          >
-            Owner Margin
-          </Link>
+        <nav className="flex flex-wrap items-center gap-2">
+          <NavLinks />
         </nav>
       </header>
 
@@ -425,14 +407,17 @@ export default function UsagePage() {
                   Real recorded units and free tier allowances applied
                 </p>
               </div>
-              <a
-                href={`${endpoint.replace(/\/$/, "")}/v1/usage/export.csv`}
-                target="_blank"
-                rel="noreferrer"
+              <button
+                type="button"
+                onClick={() =>
+                  downloadWithKey(apiUrl(endpoint, "/v1/usage/export.csv"), apiKey, "changewatch-usage.csv").catch((err) =>
+                    setErrorMsg(err.message)
+                  )
+                }
                 className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded border border-slate-700 transition"
               >
                 Export CSV
-              </a>
+              </button>
             </div>
 
             <div className="overflow-x-auto">

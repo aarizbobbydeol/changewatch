@@ -172,6 +172,6 @@ cw = changewatch.init(
 app.add_middleware(ASGIMiddleware, client=cw)
 ```
 
-**c. Open the dashboard** at `https://changewatch.yourdomain.com` and paste the read key (`cw_read_…`) into the top bar. The dashboard shows deploy markers on the error timeline, incidents tagged with file, line and author, AI root-cause investigations, and one-click actions (*I'm on it*, *Mute*, *False alarm*).
+**c. Open the dashboard** at `https://changewatch.yourdomain.com`, go to **Settings** and enter the read key (`cw_read_…`) once; every page uses it. The dashboard shows deploy markers on the error timeline, incidents tagged with file, line and owner, AI root-cause investigations, a **Trust** page (alert precision, speed, calibration) and CSV exports.
 
 **d. Smoke test.** Raise an exception from any endpoint. An incident alert arrives in the team's channel, and the first release verdict follows at the +10 minute checkpoint.

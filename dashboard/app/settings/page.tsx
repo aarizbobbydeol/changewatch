@@ -1,0 +1,213 @@
+"use client";
+
+import React, { useEffect, useState } from "react";
+import NavLinks from "../components/NavLinks";
+import { apiUrl, loadEndpoint, loadReadKey, saveEndpoint, saveReadKey } from "../lib/session";
+
+interface Channel {
+  id: number;
+  type: string;
+  enabled: boolean;
+}
+
+interface Member {
+  id: number;
+  name: string;
+  git_emails: string[] | null;
+  slack_user_id: string | null;
+  discord_user_id: string | null;
+  email: string | null;
+}
+
+interface ProjectSettings {
+  id: number;
+  name: string;
+  critical_routes: string[];
+  notify_quiet: boolean;
+  channels: Channel[];
+  team_members: Member[];
+}
+
+const CHANNEL_LABELS: Record<string, string> = {
+  slack: "Slack",
+  discord: "Discord",
+  teams: "Microsoft Teams",
+  email: "Email",
+  webhook: "Signed webhook",
+};
+
+export default function SettingsPage() {
+  const [readKey, setReadKey] = useState("");
+  const [endpoint, setEndpoint] = useState("");
+  const [draftKey, setDraftKey] = useState("");
+  const [draftEndpoint, setDraftEndpoint] = useState("");
+  const [settings, setSettings] = useState<ProjectSettings | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const key = loadReadKey();
+    const ep = loadEndpoint();
+    setReadKey(key);
+    setEndpoint(ep);
+    setDraftKey(key);
+    setDraftEndpoint(ep);
+  }, []);
+
+  useEffect(() => {
+    if (!readKey) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetch(apiUrl(endpoint, "/api/settings"), { headers: { "X-API-Key": readKey } })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(res.status === 401 || res.status === 403 ? "That read key was not accepted." : `The API answered ${res.status}.`);
+        return res.json();
+      })
+      .then((data: ProjectSettings) => !cancelled && setSettings(data))
+      .catch((err: Error) => !cancelled && setError(err.message))
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [readKey, endpoint]);
+
+  const save = (e: React.FormEvent) => {
+    e.preventDefault();
+    saveReadKey(draftKey);
+    saveEndpoint(draftEndpoint);
+    setReadKey(draftKey.trim());
+    setEndpoint(draftEndpoint.trim());
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100">
+      <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-30 px-6 py-3.5 flex flex-wrap items-center gap-4 justify-between">
+        <h1 className="text-lg font-semibold">Settings</h1>
+        <nav className="flex flex-wrap items-center gap-2">
+          <NavLinks />
+        </nav>
+      </header>
+
+      <main className="max-w-4xl mx-auto px-4 sm:px-6 py-8 space-y-8">
+        <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
+          <h2 className="font-semibold mb-1">Dashboard access</h2>
+          <p className="text-sm text-slate-400 mb-4">
+            Saved in this browser only and used by every page. Use your project&apos;s read key (<code>cw_read_…</code>); it can only read.
+          </p>
+          <form onSubmit={save} className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] items-end">
+            <label className="text-xs text-slate-400">
+              Read key
+              <input
+                type="password"
+                value={draftKey}
+                onChange={(e) => setDraftKey(e.target.value)}
+                placeholder="cw_read_…"
+                autoComplete="off"
+                className="mt-1 w-full rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+              />
+            </label>
+            <label className="text-xs text-slate-400">
+              API address (leave empty to use this dashboard&apos;s address)
+              <input
+                value={draftEndpoint}
+                onChange={(e) => setDraftEndpoint(e.target.value)}
+                placeholder="same origin"
+                className="mt-1 w-full rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+              />
+            </label>
+            <button type="submit" className="rounded-md bg-brand hover:bg-teal-700 px-4 py-2 text-sm font-medium text-white">
+              Save
+            </button>
+          </form>
+        </section>
+
+        {!readKey && <p className="text-sm text-slate-400">Enter a read key above to see this project&apos;s settings.</p>}
+        {loading && <p className="text-sm text-slate-400">Loading settings…</p>}
+        {error && <p className="text-sm text-rose-400">{error}</p>}
+
+        {settings && !loading && (
+          <>
+            <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
+              <h2 className="font-semibold mb-3">Project</h2>
+              <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
+                <dt className="text-slate-400">Name</dt>
+                <dd>{settings.name}</dd>
+                <dt className="text-slate-400">Quiet hours</dt>
+                <dd>{settings.notify_quiet ? "On: low-severity items go to the weekly digest" : "Off"}</dd>
+              </dl>
+            </section>
+
+            <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
+              <h2 className="font-semibold mb-1">Alert channels</h2>
+              <p className="text-sm text-slate-400 mb-3">Where incidents, verdicts and AI explanations are posted. Secrets are stored encrypted and never shown here.</p>
+              {settings.channels.length === 0 ? (
+                <p className="text-sm text-slate-400">
+                  No channels yet: alerts go to the project&apos;s Slack webhook if one was set at creation. Add one with{" "}
+                  <code className="text-slate-300">python -m app.cli add-channel {settings.id} discord --config &apos;{"{"}&quot;webhook_url&quot;: &quot;…&quot;{"}"}&apos;</code>
+                </p>
+              ) : (
+                <ul className="divide-y divide-slate-800">
+                  {settings.channels.map((ch) => (
+                    <li key={ch.id} className="flex items-center justify-between py-2 text-sm">
+                      <span>{CHANNEL_LABELS[ch.type] || ch.type}</span>
+                      <span className={ch.enabled ? "text-emerald-400" : "text-slate-500"}>{ch.enabled ? "Enabled" : "Disabled"}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
+              <h2 className="font-semibold mb-1">Team members</h2>
+              <p className="text-sm text-slate-400 mb-3">Maps git authors to chat handles so alerts mention the right owner.</p>
+              {settings.team_members.length === 0 ? (
+                <p className="text-sm text-slate-400">
+                  No members yet: alerts show CODEOWNERS entries and git authors as plain text. Add one with{" "}
+                  <code className="text-slate-300">python -m app.cli add-member</code>.
+                </p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead className="text-left text-slate-400">
+                    <tr>
+                      <th className="py-1 font-normal">Name</th>
+                      <th className="py-1 font-normal">Git emails</th>
+                      <th className="py-1 font-normal">Chat</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800">
+                    {settings.team_members.map((m) => (
+                      <tr key={m.id}>
+                        <td className="py-2">{m.name}</td>
+                        <td className="py-2 text-slate-300">{(m.git_emails || []).join(", ") || "-"}</td>
+                        <td className="py-2 text-slate-300">
+                          {[m.slack_user_id && "Slack", m.discord_user_id && "Discord", m.email && "Email"].filter(Boolean).join(", ") || "-"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </section>
+
+            <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
+              <h2 className="font-semibold mb-1">Critical routes</h2>
+              <p className="text-sm text-slate-400 mb-3">A single error on these paths opens an incident immediately (otherwise 3 errors within 60 s).</p>
+              {settings.critical_routes.length === 0 ? (
+                <p className="text-sm text-slate-400">None configured.</p>
+              ) : (
+                <ul className="flex flex-wrap gap-2">
+                  {settings.critical_routes.map((route) => (
+                    <li key={route} className="rounded bg-slate-800 px-2 py-1 text-xs font-mono">
+                      {route}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </>
+        )}
+      </main>
+    </div>
+  );
+}

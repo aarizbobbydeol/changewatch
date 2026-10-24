@@ -80,3 +80,28 @@ jobs:
 
       - name: Run Chaos Test Suite
         run: python scripts/chaos.py
+
+  dashboard:
+    name: Dashboard build (types + production bundle)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js 24 LTS
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dependencies from the lock file
+        run: npm ci --no-audit --no-fund
+
+      - name: Build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build

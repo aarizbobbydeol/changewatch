@@ -1021,6 +1021,7 @@ async def get_incident(
         where_file = row["where_file"] or ""
         where_line = row["where_line"] or 0
         code_excerpt = None
+        code_excerpt_start = None
         if where_file:
             df_row = await conn.fetchrow(
                 """
@@ -1044,6 +1045,7 @@ async def get_incident(
                 start_l = max(0, where_line - 15)
                 end_l = min(len(lines), where_line + 15)
                 code_excerpt = "\n".join(lines[start_l:end_l])
+                code_excerpt_start = start_l + 1
 
         # Check for real AI investigation record under RLS
         inv_row = None
@@ -1123,6 +1125,7 @@ async def get_incident(
         commit_author=row["commit_author"],
         commit_message=row["commit_message"],
         code_excerpt=code_excerpt,
+        code_excerpt_start=code_excerpt_start,
         ai_investigation=ai_investigation,
         timeline=timeline,
     )

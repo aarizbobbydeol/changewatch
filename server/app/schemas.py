@@ -215,6 +215,7 @@ class IncidentDetailResponse(BaseModel):
     commit_author: Optional[str] = None
     commit_message: Optional[str] = None
     code_excerpt: Optional[str] = None
+    code_excerpt_start: Optional[int] = None  # line number of the excerpt's first line
     ai_investigation: Dict[str, Any] = Field(default_factory=dict)
     timeline: List[Dict[str, Any]] = Field(default_factory=list)
 

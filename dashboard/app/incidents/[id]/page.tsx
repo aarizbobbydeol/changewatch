@@ -3,11 +3,23 @@
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import { loadEndpoint, loadReadKey } from "../../lib/session";
+import NavLinks from "../../components/NavLinks";
 
 interface TimelineEvent {
   event: string;
-  timestamp: string;
+  at: string; // ISO time from the API
   detail?: string;
+}
+
+interface InvestigationResult {
+  summary?: string;
+  what_broke?: string;
+  cause?: string;
+  evidence?: { source?: string; detail?: string }[];
+  suggested_fix?: { description?: string; rollback_recommended?: boolean; warning_label?: string };
+  confidence?: "high" | "medium" | "low";
+  not_sure_reason?: string | null;
 }
 
 interface IncidentDetail {
@@ -32,13 +44,76 @@ interface IncidentDetail {
   commit_message: string | null;
   deployed_at: string | null;
   code_excerpt: string | null;
+  code_excerpt_start: number | null; // line number of the excerpt's first line
   timeline: TimelineEvent[];
   ai_investigation?: {
-    status: string;
-    summary?: string;
-    hypothesis?: string;
-    suggested_fix?: string;
+    enabled?: boolean;
+    status?: string; // running | done | partial | failed | paused
+    model?: string;
+    result?: InvestigationResult | null;
+    not_sure_reason?: string | null;
   };
+}
+
+function aiStatusLabel(ai?: IncidentDetail["ai_investigation"]): string {
+  if (!ai || !ai.enabled) return "No investigation yet";
+  if (ai.status === "done") return "Completed";
+  if (ai.status === "running") return "Investigating…";
+  if (ai.status === "paused") return "Paused (budget limit)";
+  return "Investigation failed";
+}
+
+const CONFIDENCE_STYLE: Record<string, string> = {
+  high: "bg-emerald-950 text-emerald-300 border-emerald-800",
+  medium: "bg-amber-950 text-amber-300 border-amber-800",
+  low: "bg-slate-800 text-slate-300 border-slate-700",
+};
+
+function InvestigationView({ result }: { result: InvestigationResult }) {
+  const fix = result.suggested_fix;
+  return (
+    <div className="space-y-3 text-xs">
+      {result.confidence && (
+        <span className={`inline-block px-2 py-0.5 rounded border ${CONFIDENCE_STYLE[result.confidence] || CONFIDENCE_STYLE.low}`}>
+          Confidence: {result.confidence}
+        </span>
+      )}
+      {result.summary && (
+        <div>
+          <span className="text-slate-400 font-medium block">Summary</span>
+          <p className="text-slate-200 mt-1">{result.summary}</p>
+        </div>
+      )}
+      {result.cause && (
+        <div>
+          <span className="text-slate-400 font-medium block">Likely cause</span>
+          <p className="text-slate-300 mt-1">{result.cause}</p>
+        </div>
+      )}
+      {result.evidence && result.evidence.length > 0 && (
+        <div>
+          <span className="text-slate-400 font-medium block">Evidence</span>
+          <ul className="mt-1 list-disc pl-4 text-slate-300 space-y-0.5">
+            {result.evidence.map((e, i) => (
+              <li key={i}>
+                {e.source && <span className="text-slate-500">[{e.source}] </span>}
+                {e.detail}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {fix?.description && (
+        <div>
+          <span className="text-slate-400 font-medium block">Suggested fix</span>
+          <p className="text-slate-300 mt-1">{fix.description}</p>
+          {fix.rollback_recommended && <p className="text-rose-300 mt-1">Rolling back this deploy is recommended.</p>}
+          {fix.warning_label && <p className="text-amber-300 mt-1">{fix.warning_label}</p>}
+        </div>
+      )}
+      {result.not_sure_reason && <p className="text-slate-400">Why not sure: {result.not_sure_reason}</p>}
+    </div>
+  );
 }
 
 const formatDateTime = (d?: string | null): string => {
@@ -59,8 +134,8 @@ export default function IncidentDetailPage() {
   const [actionStatus, setActionStatus] = useState<string | null>(null);
 
   useEffect(() => {
-    const savedKey = localStorage.getItem("cw_read_key") || "";
-    const savedEp = localStorage.getItem("cw_endpoint") || "";
+    const savedKey = loadReadKey();
+    const savedEp = loadEndpoint();
     setApiKey(savedKey);
     setEndpoint(savedEp);
   }, []);
@@ -124,8 +199,8 @@ export default function IncidentDetailPage() {
     }
 
     const lines = incident.code_excerpt.split("\n");
-    // Center line highlight around where_line
-    const startLine = Math.max(1, incident.where_line - Math.floor(lines.length / 2));
+    // The API says which line the excerpt starts at; fall back to centring on where_line
+    const startLine = incident.code_excerpt_start ?? Math.max(1, incident.where_line - Math.floor(lines.length / 2));
 
     return (
       <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden font-mono text-xs">
@@ -159,7 +234,7 @@ export default function IncidentDetailPage() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
       {/* Top Navbar */}
-      <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-30 px-6 py-3.5 flex items-center justify-between">
+      <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-30 px-6 py-3.5 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center space-x-3">
           <div className="h-8 w-8 rounded-lg bg-indigo-600 flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/30">
             CW
@@ -176,31 +251,8 @@ export default function IncidentDetailPage() {
         </div>
 
         {/* Global Navigation */}
-        <nav className="hidden lg:flex items-center gap-2">
-          <Link
-            href="/"
-            className="px-3 py-1.5 text-xs rounded bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700 transition"
-          >
-            Releases & Timeline
-          </Link>
-          <Link
-            href="/incidents"
-            className="px-3 py-1.5 text-xs rounded bg-indigo-950 text-indigo-300 border border-indigo-700/50 font-medium transition"
-          >
-            Incidents
-          </Link>
-          <Link
-            href="/analytics"
-            className="px-3 py-1.5 text-xs rounded bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700 transition"
-          >
-            Analytics
-          </Link>
-          <Link
-            href="/usage"
-            className="px-3 py-1.5 text-xs rounded bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700 transition"
-          >
-            Usage & Budgets
-          </Link>
+        <nav className="flex flex-wrap items-center gap-2">
+          <NavLinks />
         </nav>
 
         <div className="flex items-center space-x-3">
@@ -357,7 +409,7 @@ export default function IncidentDetailPage() {
                             {item.event.replace(/_/g, " ")}
                           </span>
                           <span className="text-[11px] text-slate-400 block font-mono">
-                            {formatDateTime(item.timestamp)}
+                            {formatDateTime(item.at)}
                           </span>
                           {item.detail && <p className="text-xs text-slate-400">{item.detail}</p>}
                         </div>
@@ -374,42 +426,21 @@ export default function IncidentDetailPage() {
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-slate-200">AI Root-Cause Investigation</h3>
                   <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700 text-xs">
-                    {incident.ai_investigation?.status === "completed"
-                      ? "Completed"
-                      : "Not enabled"}
+                    {aiStatusLabel(incident.ai_investigation)}
                   </span>
                 </div>
 
-                {incident.ai_investigation?.status === "completed" ? (
-                  <div className="space-y-3 text-xs">
-                    <div>
-                      <span className="text-slate-400 font-medium block">Summary</span>
-                      <p className="text-slate-200 mt-1">{incident.ai_investigation.summary}</p>
-                    </div>
-                    {incident.ai_investigation.hypothesis && (
-                      <div>
-                        <span className="text-slate-400 font-medium block">Hypothesis</span>
-                        <p className="text-slate-300 mt-1">{incident.ai_investigation.hypothesis}</p>
-                      </div>
-                    )}
-                    {incident.ai_investigation.suggested_fix && (
-                      <div>
-                        <span className="text-slate-400 font-medium block">Suggested Fix</span>
-                        <pre className="bg-slate-950 p-2 rounded border border-slate-800 text-slate-300 mt-1 font-mono">
-                          {incident.ai_investigation.suggested_fix}
-                        </pre>
-                      </div>
-                    )}
-                  </div>
+                {incident.ai_investigation?.status === "done" && incident.ai_investigation.result ? (
+                  <InvestigationView result={incident.ai_investigation.result} />
                 ) : (
                   <div className="p-5 rounded-lg bg-slate-950 border border-slate-800/80 text-center space-y-2">
-                    <div className="text-slate-300 text-xs font-semibold">
-                      Autonomous Investigation Not Enabled
-                    </div>
+                    <div className="text-slate-300 text-xs font-semibold">{aiStatusLabel(incident.ai_investigation)}</div>
                     <p className="text-xs text-slate-500 max-w-md mx-auto">
-                      ChangeWatch AI SRE can autonomously clone the repository at the deploy commit,
-                      inspect diffs and dependency updates, and formulate a verifiable root cause
-                      within minutes of release anomaly detection.
+                      {incident.ai_investigation?.status === "paused"
+                        ? "The project's AI budget limit was reached. Instant alerts, verdicts and monitoring continue as normal."
+                        : incident.ai_investigation?.status === "running"
+                        ? "The read-only investigator is reading the deploy's changes and recent errors."
+                        : "New incidents are investigated automatically from the deploy's diff, changed files and recent errors. Nothing is ever written to your repository."}
                     </p>
                   </div>
                 )}

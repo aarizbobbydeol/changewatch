@@ -221,12 +221,13 @@ services:
     build:
       context: .
       dockerfile: dashboard/Dockerfile
+      args:
+        # Baked into the /api and /v1 proxy rules at build time (see dashboard/Dockerfile)
+        API_URL: http://api:8000
     container_name: changewatch-dashboard
     restart: unless-stopped
     ports:
       - "3000:3000"
-    environment:
-      - API_URL=http://api:8000
     depends_on:
       - api
 

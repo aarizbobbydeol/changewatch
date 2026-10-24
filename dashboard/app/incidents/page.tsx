@@ -2,6 +2,8 @@
 
 import React, { useEffect, useState, useMemo } from "react";
 import Link from "next/link";
+import { loadEndpoint, loadReadKey } from "../lib/session";
+import NavLinks from "../components/NavLinks";
 
 interface Incident {
   id: number;
@@ -75,8 +77,8 @@ export default function IncidentsPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    const savedKey = localStorage.getItem("cw_read_key") || "";
-    const savedEp = localStorage.getItem("cw_endpoint") || "";
+    const savedKey = loadReadKey();
+    const savedEp = loadEndpoint();
     setApiKey(savedKey);
     setEndpoint(savedEp);
   }, []);
@@ -140,7 +142,7 @@ export default function IncidentsPage() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
       {/* Top Navbar */}
-      <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-30 px-6 py-3.5 flex items-center justify-between">
+      <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-30 px-6 py-3.5 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center space-x-3">
           <div className="h-8 w-8 rounded-lg bg-indigo-600 flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/30">
             CW
@@ -157,37 +159,8 @@ export default function IncidentsPage() {
         </div>
 
         {/* Global Navigation */}
-        <nav className="hidden lg:flex items-center gap-2">
-          <Link
-            href="/"
-            className="px-3 py-1.5 text-xs rounded bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700 transition"
-          >
-            Releases & Timeline
-          </Link>
-          <Link
-            href="/incidents"
-            className="px-3 py-1.5 text-xs rounded bg-indigo-950 text-indigo-300 border border-indigo-700/50 font-medium transition"
-          >
-            Incidents
-          </Link>
-          <Link
-            href="/analytics"
-            className="px-3 py-1.5 text-xs rounded bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700 transition"
-          >
-            Analytics
-          </Link>
-          <Link
-            href="/usage"
-            className="px-3 py-1.5 text-xs rounded bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700 transition"
-          >
-            Usage & Budgets
-          </Link>
-          <Link
-            href="/owner/margin"
-            className="px-3 py-1.5 text-xs rounded bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700 transition"
-          >
-            Owner Margin
-          </Link>
+        <nav className="flex flex-wrap items-center gap-2">
+          <NavLinks />
         </nav>
 
         {/* API Key info */}

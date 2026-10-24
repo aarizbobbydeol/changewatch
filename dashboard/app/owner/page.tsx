@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
+import { loadAdminKey, loadEndpoint, saveAdminKey, saveEndpoint } from "../lib/session";
 
 interface FleetStats {
   opted_in_installs: number;
@@ -41,12 +42,9 @@ export default function OwnerDashboardPage() {
   const [togglingOptIn, setTogglingOptIn] = useState<boolean>(false);
 
   useEffect(() => {
-    const savedAdminKey = localStorage.getItem("changewatch_admin_key") || "";
+    const savedAdminKey = loadAdminKey();
     const savedEndpoint =
-      localStorage.getItem("changewatch_endpoint") ||
-      (typeof window !== "undefined" && window.location.hostname === "localhost"
-        ? "http://localhost:8000"
-        : "");
+      loadEndpoint();
     setAdminKey(savedAdminKey);
     setEndpoint(savedEndpoint);
 
@@ -105,7 +103,7 @@ export default function OwnerDashboardPage() {
   };
 
   const handleToggleOptIn = async () => {
-    if (!endpoint) return;
+    if (!adminKey) return;
     setTogglingOptIn(true);
     try {
       const res = await fetch(`${endpoint}/v1/telemetry/opt-in`, {
@@ -194,7 +192,7 @@ export default function OwnerDashboardPage() {
               value={endpoint}
               onChange={(e) => {
                 setEndpoint(e.target.value);
-                localStorage.setItem("changewatch_endpoint", e.target.value);
+                saveEndpoint(e.target.value);
               }}
               placeholder="http://localhost:8000"
               className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
@@ -210,7 +208,7 @@ export default function OwnerDashboardPage() {
               value={adminKey}
               onChange={(e) => {
                 setAdminKey(e.target.value);
-                localStorage.setItem("changewatch_admin_key", e.target.value);
+                saveAdminKey(e.target.value);
               }}
               placeholder="cw_adm_..."
               className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"

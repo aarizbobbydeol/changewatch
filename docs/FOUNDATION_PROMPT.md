@@ -56,7 +56,10 @@ server/sql/            schema.sql + numbered migrations
 server/tests/          server test suite
 sdk/changewatch/       zero-dependency SDK + ASGIMiddleware
 sdk/tests/             SDK tests
-dashboard/app/         /, /incidents, /incidents/[id], /analytics, /usage, /owner, /owner/margin
+dashboard/app/         /, /incidents, /incidents/[id], /analytics, /trust, /settings, /usage, /owner, /owner/margin
+  lib/session.ts       the one place for the saved read/admin key and API address (empty = same origin via next.config.js rewrites); downloadWithKey for CSV exports
+  components/NavLinks  shared navigation on every page
+dashboard/Dockerfile   Node 24 LTS, npm ci from package-lock.json, API_URL build arg (rewrites are fixed at build time), standalone server as non-root
 action/                composite GitHub Action + standalone workflow
 evals/                 12 root-cause scenarios (python -m evals.run)
 scripts/               demo_app, simulate_deploy, load_test, chaos, bench, security_check

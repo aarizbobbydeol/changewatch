@@ -13,6 +13,8 @@ import {
   CartesianGrid,
   Legend,
 } from "recharts";
+import { loadEndpoint, loadReadKey, saveEndpoint, saveReadKey } from "./lib/session";
+import NavLinks from "./components/NavLinks";
 
 interface Deploy {
   id: number;
@@ -105,8 +107,8 @@ export default function DashboardPage() {
   // Initialize from localStorage or defaults
   useEffect(() => {
     setIsMounted(true);
-    const savedKey = localStorage.getItem("cw_read_key") || "";
-    const savedEp = localStorage.getItem("cw_endpoint") || "";
+    const savedKey = loadReadKey();
+    const savedEp = loadEndpoint();
     setApiKey(savedKey);
     setEndpoint(savedEp);
   }, []);
@@ -114,8 +116,8 @@ export default function DashboardPage() {
   const saveSettings = (newKey: string, newEp: string) => {
     setApiKey(newKey);
     setEndpoint(newEp);
-    localStorage.setItem("cw_read_key", newKey);
-    localStorage.setItem("cw_endpoint", newEp);
+    saveReadKey(newKey);
+    saveEndpoint(newEp);
   };
 
   const getApiUrl = (path: string) => {
@@ -273,7 +275,7 @@ export default function DashboardPage() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
       {/* Top Navbar */}
-      <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-30 px-6 py-3.5 flex items-center justify-between">
+      <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-30 px-6 py-3.5 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center space-x-3">
           <div className="h-8 w-8 rounded-lg bg-indigo-600 flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/30">
             CW
@@ -290,52 +292,12 @@ export default function DashboardPage() {
         </div>
 
         {/* Global Navigation */}
-        <nav className="hidden lg:flex items-center gap-2">
-          <Link
-            href="/"
-            className="px-3 py-1.5 text-xs rounded bg-indigo-950 text-indigo-300 border border-indigo-700/50 font-medium transition"
-          >
-            Releases & Timeline
-          </Link>
-          <Link
-            href="/incidents"
-            className="px-3 py-1.5 text-xs rounded bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700 transition flex items-center gap-1.5"
-          >
-            <span>Incidents</span>
-            {incidents.filter((i) => i.status === "possible" || i.status === "confirmed").length > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px] font-bold">
-                {incidents.filter((i) => i.status === "possible" || i.status === "confirmed").length}
-              </span>
-            )}
-          </Link>
-          <Link
-            href="/analytics"
-            className="px-3 py-1.5 text-xs rounded bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700 transition"
-          >
-            Analytics
-          </Link>
-          <Link
-            href="/usage"
-            className="px-3 py-1.5 text-xs rounded bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700 transition"
-          >
-            Usage & Budgets
-          </Link>
-          <Link
-            href="/owner"
-            className="px-3 py-1.5 text-xs rounded bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700 transition"
-          >
-            Owner View
-          </Link>
-          <Link
-            href="/owner/margin"
-            className="px-3 py-1.5 text-xs rounded bg-slate-800/80 hover:bg-slate-800 text-slate-300 border border-slate-700 transition"
-          >
-            Owner Margin
-          </Link>
+        <nav className="flex flex-wrap items-center gap-2">
+          <NavLinks openIncidents={incidents.filter((i) => i.status === "possible" || i.status === "confirmed").length} />
         </nav>
 
         {/* API Key & Controls */}
-        <div className="flex items-center space-x-4">
+        <div className="flex flex-wrap items-center gap-4">
           <div className="flex items-center space-x-2 bg-slate-800/80 rounded-lg px-3 py-1.5 border border-slate-700">
             <span className="text-xs text-slate-400 font-medium">Read Key:</span>
             <input
