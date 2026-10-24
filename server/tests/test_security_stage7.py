@@ -138,9 +138,9 @@ async def test_export_endpoint_requires_read_key_and_returns_data(auth_keys):
 
     mock_conn.fetchrow = AsyncMock(side_effect=mock_fetchrow)
     mock_conn.fetch.side_effect = [
-        [{"id": 10, "commit_sha": "abc1234", "author": "Alice", "message": "feat", "environment": "prod", "deployed_at": datetime.now(timezone.utc), "verdict": "safe", "verdict_reasons": ["ok"], "diff": "diff --git", "diff_enc": None}], # deploys
-        [{"id": 20, "title": "ZeroDivisionError", "fingerprint": "fp1", "status": "unresolved", "first_seen": datetime.now(timezone.utc), "last_seen": datetime.now(timezone.utc), "count": 5}], # issues
-        [{"id": 30, "event_id": "ev1", "type": "error", "exc_type": "ZeroDivisionError", "message": "div by zero", "request_path": "/calc", "duration_ms": 10.0, "release": "v1.0", "environment": "prod", "occurred_at": datetime.now(timezone.utc), "stack_trace": "tb", "stack_trace_enc": None, "extra": {}, "extra_enc": None}], # events
+        [{"id": 10, "commit_sha": "abc1234", "author": "Alice", "message": "feat", "environment": "prod", "deployed_at": datetime.now(timezone.utc), "verdict": "safe", "verdict_reasons": ["ok"], "verdict_final": True, "diff": "diff --git", "diff_enc": None}], # deploys
+        [{"id": 20, "title": "ZeroDivisionError", "fingerprint": "fp1", "status": "unresolved", "first_seen": datetime.now(timezone.utc), "last_seen": datetime.now(timezone.utc), "event_count": 5}], # issues
+        [{"id": 30, "event_id": "ev1", "issue_id": 20, "deploy_id": 10, "request_path": "/calc", "duration_ms": 10.0, "occurred_at": datetime.now(timezone.utc), "stack_trace": "tb", "stack_trace_enc": None, "extra": "{}", "extra_enc": None}], # events
         [{"bucket": datetime.now(timezone.utc), "requests": 100, "errors": 2}], # traffic
     ]
 
@@ -186,6 +186,7 @@ async def test_purge_endpoint_requires_read_key_and_deletes_project_data(auth_ke
         "DELETE 2",   # deploy_analysis
         "DELETE 1",   # alerts
         "DELETE 0",   # outbox
+        "DELETE 0",   # ingest_dedupe
         "DELETE 5",   # issues
         "DELETE 2",   # deploys
         "DELETE 0",   # deploy_files

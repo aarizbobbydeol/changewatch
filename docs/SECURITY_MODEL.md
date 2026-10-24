@@ -25,7 +25,7 @@ ChangeWatch is designed for developer teams who care about security, transparenc
 
 4. **We collect the minimum and the customer controls retention and purging.**
    - Ingestion excludes request bodies, headers, and secrets (`.env*`, `*.pem`, `*.key`, `id_rsa`).
-   - Automatic secret scrubbing redacts API keys, cloud tokens, and passwords.
+   - Automatic secret scrubbing redacts API keys, cloud tokens, and passwords. It runs in the SDK before sending and again in the worker before anything is fingerprinted or stored, because any HTTP client can call the ingest API.
    - Configurable PII scrubbing (`SCRUB_PII=1`) redacts emails, IPv4/IPv6 addresses, JWT tokens, and card numbers.
    - Automated retention pruning removes code diffs after `CODE_RETENTION_DAYS` (default 7 days) and events after `RETENTION_DAYS` (default 30 days).
    - Customers can export (`GET /v1/export`) or purge (`DELETE /v1/project-data`) their data at any time under tenant-isolated API keys.

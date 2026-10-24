@@ -453,18 +453,18 @@ async def ingest_events(
                     else:
                         dropped_count += 1
 
-            try:
-                await redis.incrby("counter:events_dropped", dropped_count)
-                await redis.incrby("stats:dropped_count", dropped_count)
-            except Exception:
-                pass
-            logger.warning(
-                "Backpressure shedding active (queue_len=%d > limit=%d): dropped=%d, accepted=%d",
-                queue_len,
-                settings.QUEUE_SOFT_LIMIT,
-                dropped_count,
-                len(events_to_queue),
-            )
+        try:
+            await redis.incrby("counter:events_dropped", dropped_count)
+            await redis.incrby("stats:dropped_count", dropped_count)
+        except Exception:
+            pass
+        logger.warning(
+            "Backpressure shedding active (queue_len=%d > limit=%d): dropped=%d, accepted=%d",
+            queue_len,
+            settings.QUEUE_SOFT_LIMIT,
+            dropped_count,
+            len(events_to_queue),
+        )
     else:
         events_to_queue = list(batch.events)
 
@@ -1232,22 +1232,24 @@ async def export_project_data(
         if not proj_row:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        # Deploys
+        # Deploys, with their latest verdict (stored in deploy_analysis)
         deploy_rows = await conn.fetch(
             """
-            SELECT id, commit_sha, author, message, environment, deployed_at, verdict, verdict_reasons, diff, diff_enc
-            FROM deploys
-            ORDER BY deployed_at DESC
+            SELECT d.id, d.commit_sha, d.author, d.message, d.environment, d.deployed_at, d.diff, d.diff_enc,
+                   a.verdict, a.verdict_reasons, a.verdict_final
+            FROM deploys d
+            LEFT JOIN LATERAL (
+                SELECT verdict, verdict_reasons, verdict_final
+                FROM deploy_analysis
+                WHERE deploy_id = d.id
+                ORDER BY id DESC
+                LIMIT 1
+            ) a ON true
+            ORDER BY d.deployed_at DESC
             """
         )
         deploys_out = []
         for dr in deploy_rows:
-            diff_val = dr["diff"]
-            if not diff_val and dr["diff_enc"]:
-                try:
-                    diff_val = await decrypt(project_id, "deploys", "diff", dr["diff_enc"])
-                except Exception:
-                    diff_val = "[ENCRYPTED_VALUE_UNAVAILABLE]"
             deploys_out.append({
                 "id": dr["id"],
                 "commit_sha": dr["commit_sha"],
@@ -1257,13 +1259,14 @@ async def export_project_data(
                 "deployed_at": dr["deployed_at"].isoformat() if dr["deployed_at"] else None,
                 "verdict": dr["verdict"],
                 "verdict_reasons": dr["verdict_reasons"],
-                "diff": diff_val,
+                "verdict_final": dr["verdict_final"],
+                "diff": await decrypt_or_plain(project_id, "deploys", "diff", dr["diff_enc"], dr["diff"]),
             })
 
         # Issues
         issue_rows = await conn.fetch(
             """
-            SELECT id, title, fingerprint, status, first_seen, last_seen, count
+            SELECT id, title, fingerprint, status, first_seen, last_seen, event_count
             FROM issues
             ORDER BY last_seen DESC
             """
@@ -1276,15 +1279,16 @@ async def export_project_data(
                 "status": ir["status"],
                 "first_seen": ir["first_seen"].isoformat() if ir["first_seen"] else None,
                 "last_seen": ir["last_seen"].isoformat() if ir["last_seen"] else None,
-                "count": ir["count"],
+                "event_count": ir["event_count"],
             }
             for ir in issue_rows
         ]
 
-        # Events (sample up to 1000)
+        # Events (latest 1000 stored rows; storm control keeps at most STORE_FULL_PER_MIN per issue per minute)
         event_rows = await conn.fetch(
             """
-            SELECT id, event_id, type, exc_type, message, request_path, duration_ms, release, environment, occurred_at, stack_trace, stack_trace_enc, extra, extra_enc
+            SELECT id, event_id, issue_id, deploy_id, request_path, duration_ms, occurred_at,
+                   stack_trace, stack_trace_enc, extra, extra_enc
             FROM events
             ORDER BY occurred_at DESC
             LIMIT 1000
@@ -1292,33 +1296,22 @@ async def export_project_data(
         )
         events_out = []
         for er in event_rows:
-            st_val = er["stack_trace"]
-            if not st_val and er["stack_trace_enc"]:
-                try:
-                    st_val = await decrypt(project_id, "events", "stack_trace", er["stack_trace_enc"])
-                except Exception:
-                    st_val = "[ENCRYPTED_VALUE_UNAVAILABLE]"
-
-            extra_val = er["extra"]
-            if not extra_val and er["extra_enc"]:
-                try:
-                    extra_str = await decrypt(project_id, "events", "extra", er["extra_enc"])
-                    extra_val = json.loads(extra_str)
-                except Exception:
-                    extra_val = {}
-
+            extra_str = await decrypt_or_plain(project_id, "events", "extra", er["extra_enc"], er["extra"])
+            try:
+                extra_val = extra_str if isinstance(extra_str, dict) else json.loads(extra_str or "{}")
+            except (TypeError, ValueError):
+                extra_val = {}
             events_out.append({
                 "id": er["id"],
                 "event_id": er["event_id"],
-                "type": er["type"],
-                "exc_type": er["exc_type"],
-                "message": er["message"],
+                "issue_id": er["issue_id"],
+                "deploy_id": er["deploy_id"],
                 "request_path": er["request_path"],
                 "duration_ms": er["duration_ms"],
-                "release": er["release"],
-                "environment": er["environment"],
                 "occurred_at": er["occurred_at"].isoformat() if er["occurred_at"] else None,
-                "stack_trace": st_val,
+                "stack_trace": await decrypt_or_plain(
+                    project_id, "events", "stack_trace", er["stack_trace_enc"], er["stack_trace"]
+                ),
                 "extra": extra_val,
             })
 
@@ -1367,6 +1360,7 @@ async def purge_project_data(
         await conn.execute("DELETE FROM deploy_analysis WHERE deploy_id IN (SELECT id FROM deploys)")
         await conn.execute("DELETE FROM alerts WHERE project_id = $1", project_id)
         await conn.execute("DELETE FROM outbox WHERE project_id = $1", project_id)
+        await conn.execute("DELETE FROM ingest_dedupe WHERE project_id = $1", project_id)
 
         is_res = await conn.execute("DELETE FROM issues")
         is_count = int(is_res.split()[-1]) if is_res else 0

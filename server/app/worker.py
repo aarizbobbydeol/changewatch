@@ -22,6 +22,7 @@ from app.db import close_db_pool, init_db_pool, project_transaction
 from app.fingerprint import compute_fingerprint
 from app.metering import record_stored_event_metric
 from app.queue import close_redis, get_redis, init_redis
+from app.scrub import scrub_text
 
 logger = logging.getLogger("changewatch.worker")
 
@@ -85,6 +86,62 @@ async def find_deploy(
     return None
 
 
+def _scrub_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return scrub_text(value)
+    if isinstance(value, dict):
+        return {k: _scrub_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub_value(v) for v in value]
+    return value
+
+
+def scrub_event(ev: Dict[str, Any]) -> None:
+    """Redact secrets and PII before fingerprinting and storage.
+
+    The SDK already scrubs, but events can come from any HTTP client, and the issue title
+    (exception type plus message) is stored in plaintext.
+    """
+    for field in ("message", "stack_trace", "request_path"):
+        if isinstance(ev.get(field), str):
+            ev[field] = scrub_text(ev[field])
+    if ev.get("extra"):
+        ev["extra"] = _scrub_value(ev["extra"])
+
+
+async def claim_new_events(conn: Any, project_id: int, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return only events whose event_id has not been processed before (SDK or worker retries).
+
+    The claim runs in the caller's transaction, so a batch that rolls back releases its
+    claims and its retry is still counted. Events without an event_id cannot be deduplicated.
+    """
+    ids = sorted({str(ev["event_id"]) for ev in events if ev.get("event_id")})
+    if not ids:
+        return events
+    rows = await conn.fetch(
+        """
+        INSERT INTO ingest_dedupe (project_id, event_id)
+        SELECT $1, u.event_id FROM unnest($2::text[]) AS u(event_id)
+        ON CONFLICT DO NOTHING
+        RETURNING event_id
+        """,
+        project_id,
+        ids,
+    )
+    claimed = {r["event_id"] for r in rows}
+    fresh: List[Dict[str, Any]] = []
+    for ev in events:
+        eid = ev.get("event_id")
+        if not eid:
+            fresh.append(ev)
+        elif str(eid) in claimed:
+            claimed.discard(str(eid))  # a second copy inside the same batch is a duplicate too
+            fresh.append(ev)
+    if len(fresh) < len(events):
+        logger.info("Skipped %d already-processed event(s) for project=%d", len(events) - len(fresh), project_id)
+    return fresh
+
+
 async def process_single_event(payload: Dict[str, Any]) -> None:
     """Process an event from the Redis queue with RLS enforcement and idempotency."""
     project_id = int(payload["project_id"])
@@ -96,6 +153,10 @@ async def process_single_event(payload: Dict[str, Any]) -> None:
     release = payload.get("release")
 
     async with project_transaction(project_id) as conn:
+        if not await claim_new_events(conn, project_id, [payload]):
+            return
+        scrub_event(payload)
+
         deploy_id = await find_deploy(
             conn=conn,
             project_id=project_id,
@@ -409,10 +470,14 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
 
     for project_id, events in by_project.items():
         async with project_transaction(project_id) as conn:
+            events = await claim_new_events(conn, project_id, events)
+            if not events:
+                continue
             heartbeats: List[Dict[str, Any]] = []
             error_events: List[Dict[str, Any]] = []
 
             for ev in events:
+                scrub_event(ev)
                 etype = ev.get("type", "error")
                 occurred_at = float(ev["occurred_at"])
                 ev["occurred_at_dt"] = datetime.fromtimestamp(occurred_at, tz=timezone.utc)

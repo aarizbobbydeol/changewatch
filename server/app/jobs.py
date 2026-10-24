@@ -100,6 +100,15 @@ async def ensure_event_partitions(conn: asyncpg.Connection, weeks_ahead: int = P
     return created
 
 
+async def expire_dedupe_ledger(conn: asyncpg.Connection, window_hours: Optional[int] = None) -> int:
+    """Forget event_ids older than the dedupe window (retries arrive within minutes)."""
+    hours = settings.DEDUPE_WINDOW_HOURS if window_hours is None else window_hours
+    status = await conn.execute(
+        "DELETE FROM ingest_dedupe WHERE seen_at < now() - make_interval(hours => $1)", hours
+    )
+    return int(status.split()[-1]) if status else 0
+
+
 async def run_maintenance(pool: asyncpg.Pool, force: bool = False) -> Dict[str, Any]:
     """Hourly: partitions for the coming weeks, then retention (events and code)."""
     global _last_maintenance
@@ -112,6 +121,7 @@ async def run_maintenance(pool: asyncpg.Pool, force: bool = False) -> Dict[str, 
     result: Dict[str, Any] = {}
     async with pool.acquire() as conn:
         result["partitions_created"] = await ensure_event_partitions(conn)
+        result["dedupe_ids_expired"] = await expire_dedupe_ledger(conn)
     result["retention"] = await cleanup_old_records(
         pool, retention_days=settings.RETENTION_DAYS, code_retention_days=settings.CODE_RETENTION_DAYS
     )

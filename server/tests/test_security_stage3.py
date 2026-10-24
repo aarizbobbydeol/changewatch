@@ -118,13 +118,14 @@ async def test_create_deploy_encrypts_diff():
 
 
 @pytest.mark.asyncio
-async def test_worker_encrypts_stack_trace_and_extra():
+async def test_worker_encrypts_stack_trace_and_extra(accept_event_claims):
     """Worker must encrypt stack_trace and extra before writing to events table."""
     project_id = 7
     marker_trace = "Traceback (most recent call last):\n  MARKER_SECRET_STACK_TRACE_XYZ_54321"
     marker_extra = {"api_token": "MARKER_SECRET_EXTRA_TOKEN_11223"}
 
     mock_conn = AsyncMock()
+    accept_event_claims(mock_conn)
     mock_conn.fetchrow.side_effect = [
         {"id": 10},               # 1. for find_deploy
         {"id": 201},              # 2. for issues insert

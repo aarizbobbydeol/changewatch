@@ -73,6 +73,7 @@ async def test_migration_runner_idempotent():
             {"version": "018_restricted_tenant_role.sql"},
             {"version": "019_first_and_final_verdicts.sql"},
             {"version": "020_system_alert_dedupe.sql"},
+            {"version": "021_ingest_dedupe.sql"},
         ],
         [],  # unhashed projects
 

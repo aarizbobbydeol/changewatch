@@ -16,6 +16,7 @@ if str(sdk_dir) not in sys.path:
 
 
 import pytest
+from unittest.mock import DEFAULT
 from app.cache import api_key_cache, deploy_lookup_cache, issue_lookup_cache, codeowners_cache
 
 
@@ -43,3 +44,21 @@ def reset_in_memory_caches():
 
 
 
+
+
+@pytest.fixture
+def accept_event_claims():
+    """Make a mocked connection treat every event_id as new in worker.claim_new_events.
+
+    Other fetch calls keep returning the mock's return_value.
+    """
+    def _apply(conn):
+        def _fetch(query, *args, **kwargs):
+            if "INSERT INTO ingest_dedupe" in query:
+                return [{"event_id": eid} for eid in args[1]]
+            return DEFAULT
+
+        conn.fetch.side_effect = _fetch
+        return conn
+
+    return _apply

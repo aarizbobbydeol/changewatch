@@ -25,7 +25,8 @@
   <a href="#-performance">Performance</a> ·
   <a href="docs/SELF_HOSTING.md">Self-hosting</a> ·
   <a href="#-privacy--security">Privacy</a> ·
-  <a href="docs/VERIFICATION.md">Verification guide</a>
+  <a href="docs/VERIFICATION.md">Verification guide</a> ·
+  <a href="docs/DATA_PIPELINE.md">Data pipeline</a>
 </p>
 
 ---
@@ -261,7 +262,7 @@ Uncaught exceptions on any thread are captured automatically. You can also call 
 | Survives `fork()` | `os.register_at_fork` restarts the worker thread |
 | Backs off when the server is down | Circuit breaker trips after 5 failures, exponential backoff up to 10 min |
 | Can be switched off instantly | `CHANGEWATCH_DISABLED=1` turns it into a zero-overhead no-op |
-| Doesn't leak secrets | Tokens, keys, emails, IPs, JWTs and card numbers are scrubbed client-side |
+| Doesn't leak secrets | Tokens, keys, emails, IPs, JWTs and card numbers are scrubbed in the SDK, and again on the server |
 
 ### 2. Add the deploy hook
 
@@ -378,7 +379,7 @@ changewatch/
 ├── scripts/       Demo app, deploy simulator, load test, chaos, security audit
 ├── caddy/         Optional automatic-TLS reverse proxy
 ├── collector/     Opt-in telemetry collector service
-└── docs/          Self-hosting, security model, metrics, pricing, verification guide
+└── docs/          Self-hosting, security model, data pipeline, metrics, pricing, verification guide
 ```
 
 ## 🧪 Testing

@@ -68,9 +68,10 @@ async def test_pull_batch_from_queue_empty():
 
 
 @pytest.mark.asyncio
-async def test_process_event_batch_groups_issues_and_events():
+async def test_process_event_batch_groups_issues_and_events(accept_event_claims):
     """Verify process_event_batch performs exactly ONE issue upsert and ONE event insert for distinct issues."""
     mock_conn = AsyncMock()
+    accept_event_claims(mock_conn)
     mock_pool = MagicMock()
     mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
 
@@ -120,8 +121,8 @@ async def test_process_event_batch_groups_issues_and_events():
          patch("app.crypto.encrypt", return_value=b"mock_enc"):
         await process_event_batch(batch)
 
-        # 1. conn.fetch called for issues upsert with exactly 2 fingerprints
-        assert mock_conn.fetch.call_count == 1
+        # 1. conn.fetch called once to claim event_ids, then once for the issues upsert with exactly 2 fingerprints
+        assert mock_conn.fetch.call_count == 2
         issues_call = mock_conn.fetch.call_args[0]
         assert "INSERT INTO issues" in issues_call[0]
         fps_arg = issues_call[2]
@@ -142,9 +143,10 @@ async def test_process_event_batch_groups_issues_and_events():
 
 
 @pytest.mark.asyncio
-async def test_process_event_batch_heartbeat_aggregation():
+async def test_process_event_batch_heartbeat_aggregation(accept_event_claims):
     """Verify multiple heartbeats in the same minute bucket are merged into a single traffic upsert."""
     mock_conn = AsyncMock()
+    accept_event_claims(mock_conn)
     mock_pool = MagicMock()
     mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
 
@@ -187,9 +189,10 @@ async def test_process_event_batch_heartbeat_aggregation():
 
 
 @pytest.mark.asyncio
-async def test_incident_check_called_once_per_distinct_deploy_issue():
+async def test_incident_check_called_once_per_distinct_deploy_issue(accept_event_claims):
     """Verify check_incident_for_issue is invoked once per distinct (deploy, issue) in the batch."""
     mock_conn = AsyncMock()
+    accept_event_claims(mock_conn)
     mock_pool = MagicMock()
     mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
 

@@ -365,7 +365,7 @@ async def test_usage_daily_equals_sum_of_usage_events(sample_price_book):
 
 
 @pytest.mark.asyncio
-async def test_crash_loop_storm_control_caps_stored_events():
+async def test_crash_loop_storm_control_caps_stored_events(accept_event_claims):
     """Verify that during a crash loop of 100,000 errors, stored_events is capped by storm control."""
     from app.config import settings
     from app.worker import process_single_event
@@ -390,6 +390,7 @@ async def test_crash_loop_storm_control_caps_stored_events():
         stored_metric_calls.append(count)
 
     mock_conn = AsyncMock()
+    accept_event_claims(mock_conn)
     mock_conn.fetchrow.return_value = {"id": 1}
 
     mock_ptx = MagicMock()

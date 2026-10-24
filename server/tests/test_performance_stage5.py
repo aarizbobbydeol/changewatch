@@ -53,7 +53,7 @@ def auth_keys():
 
 
 @pytest.mark.asyncio
-async def test_storm_control_caps_full_event_rows_and_keeps_counters_exact():
+async def test_storm_control_caps_full_event_rows_and_keeps_counters_exact(accept_event_claims):
     """
     Simulate a crash loop burst of 50 events for a single fingerprint with STORE_FULL_PER_MIN=5.
     Verify:
@@ -63,6 +63,7 @@ async def test_storm_control_caps_full_event_rows_and_keeps_counters_exact():
     4. Redis sliding-window counter total is 50.
     """
     mock_conn = AsyncMock()
+    accept_event_claims(mock_conn)
     mock_pool = MagicMock()
     mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
 
@@ -236,8 +237,9 @@ async def test_backpressure_shedding_order(auth_keys):
             assert data["accepted"] == 2
             assert data["dropped"] == 1
 
-            # Verify dropped counter was incremented in Redis
-            mock_redis.incrby.assert_any_call("counter:events_dropped", 1)
+            # Verify dropped counter was incremented in Redis once per request, with the total
+            dropped_calls = [c.args for c in mock_redis.incrby.call_args_list if c.args[0] == "counter:events_dropped"]
+            assert dropped_calls == [("counter:events_dropped", 1)]
 
 
 @pytest.mark.asyncio

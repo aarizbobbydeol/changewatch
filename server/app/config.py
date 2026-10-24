@@ -163,6 +163,10 @@ class Settings(BaseModel):
     QUEUE_SOFT_LIMIT: int = Field(
         default_factory=lambda: int(os.getenv("QUEUE_SOFT_LIMIT", "10000"))
     )
+    # How long an event_id is remembered, so a re-sent event is not counted twice
+    DEDUPE_WINDOW_HOURS: int = Field(
+        default_factory=lambda: int(os.getenv("DEDUPE_WINDOW_HOURS", "24"))
+    )
 
     # Usage Metering Settings (Usage Metering Addendum Section I)
     METER_ENVIRONMENTS: str = Field(

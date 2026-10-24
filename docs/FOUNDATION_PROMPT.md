@@ -19,7 +19,7 @@ You are working on **ChangeWatch**, an open-source, self-hosted release monitor 
 
 ## 2. Stack
 
-- Python 3.12, FastAPI, asyncpg (no ORM, no Alembic). SQL migrations live in `server/sql/migrations/001…016` and apply automatically on API startup.
+- Python 3.12, FastAPI, asyncpg (no ORM, no Alembic). SQL migrations live in `server/sql/migrations/001…021` and apply automatically on API startup (or with `python -m app.cli migrate`).
 - Postgres 16 (events table partitioned by time) and Redis 7 (AOF).
 - Next.js 14 dashboard.
 - Docker Compose services: `postgres`, `redis`, `api`, `worker`, `detector`, `investigator`, `notifier`, `dashboard`, plus `caddy` (automatic TLS) under `--profile tls`. App services load `.env` (`env_file`), so every setting in `config.py` reaches them.
@@ -32,7 +32,7 @@ server/app/
   config.py            settings from env
   auth.py              key hashing and role checks
   crypto.py            AES-256-GCM envelope encryption
-  queue.py, worker.py  reliable queue, batched multi-process worker, reaper
+  queue.py, worker.py  reliable queue, batched multi-process worker, reaper; claims each event_id in ingest_dedupe (exactly-once counts) and scrubs events before storage (docs/DATA_PIPELINE.md)
   fingerprint.py       issue grouping
   detector.py          verdict engine (10 / 30 min checkpoints), runs every 60 s
   incident_manager.py  instant incident alerts, triggered from the worker; stores the repo-relative path (app/billing.py) when the frame matches a deploy file
@@ -124,4 +124,4 @@ Other CLI subcommands: `list-projects`, `generate-master-key`, `rotate-master-ke
 - Instant alerts: measured 1.9 s from first error to delivery in Discord/webhook in a local end-to-end run; not yet benchmarked under burst load. `incidents.first_alert_ms` measures time to queue (delivery adds up to ~1 s).
 - Outbox payloads (alert text: error title, file path, AI summary) and `deploy_analysis.likely_cause` are stored as plaintext.
 
-More detail: [README](../README.md), [SELF_HOSTING](SELF_HOSTING.md), [SECURITY_MODEL](SECURITY_MODEL.md), [VERIFICATION](VERIFICATION.md), [DECISIONS](../DECISIONS.md).
+More detail: [README](../README.md), [SELF_HOSTING](SELF_HOSTING.md), [SECURITY_MODEL](SECURITY_MODEL.md), [DATA_PIPELINE](DATA_PIPELINE.md), [VERIFICATION](VERIFICATION.md), [DECISIONS](../DECISIONS.md).
