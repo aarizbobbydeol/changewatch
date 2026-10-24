@@ -561,6 +561,31 @@ async def list_members_cmd(project_id: int):
         await close_db_pool()
 
 
+async def requeue_dead_cmd(limit: int = 0) -> int:
+    """Move dead-lettered events back to the events queue with a fresh retry count."""
+    import json
+
+    from app.queue import close_redis, init_redis
+    from app.worker import DEAD_LETTER_QUEUE, EVENTS_QUEUE
+
+    redis = await init_redis()
+    moved = 0
+    try:
+        while not limit or moved < limit:
+            raw = await redis.lpop(DEAD_LETTER_QUEUE)
+            if raw is None:
+                break
+            payload = json.loads(raw)
+            payload["_tries"] = 0
+            await redis.rpush(EVENTS_QUEUE, json.dumps(payload))
+            moved += 1
+        left = await redis.llen(DEAD_LETTER_QUEUE)
+        print(f"Re-queued {moved} dead-lettered event(s); {left} left in {DEAD_LETTER_QUEUE}.")
+    finally:
+        await close_redis()
+    return moved
+
+
 def main():
 
     parser = argparse.ArgumentParser(description="ChangeWatch CLI Management Utility")
@@ -666,6 +691,12 @@ def main():
     mem_list_parser = subparsers.add_parser("list-members", help="List team members for a project")
     mem_list_parser.add_argument("project_id", type=int, help="Project ID")
 
+    # Subcommand: requeue-dead
+    rq_parser = subparsers.add_parser(
+        "requeue-dead", help="Replay events that failed 3 times (events:dead), for example after fixing their cause"
+    )
+    rq_parser.add_argument("--limit", type=int, default=0, help="At most this many (default: all)")
+
     args = parser.parse_args()
 
     if args.command == "create-project":
@@ -714,6 +745,8 @@ def main():
         )
     elif args.command == "list-members":
         asyncio.run(list_members_cmd(args.project_id))
+    elif args.command == "requeue-dead":
+        asyncio.run(requeue_dead_cmd(args.limit))
     else:
         parser.print_help()
         sys.exit(1)

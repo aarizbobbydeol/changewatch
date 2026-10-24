@@ -384,6 +384,13 @@ async def test_crash_loop_storm_control_caps_stored_events(accept_event_claims):
         return storm_counter
 
     mock_redis.incr.side_effect = fake_redis_incr
+    storm_counts = {}
+
+    async def fake_redis_incrby(key, n):
+        storm_counts[key] = storm_counts.get(key, 0) + n
+        return storm_counts[key]
+
+    mock_redis.incrby.side_effect = fake_redis_incrby
     stored_metric_calls = []
 
     async def fake_stored_metric(redis, project_id, occurred_at, count=1):

@@ -83,9 +83,11 @@ async def check_and_trigger_incident(
     payload: Dict[str, Any],
     occurred_at_dt: datetime,
     first_event_dt: Optional[datetime] = None,
+    new_events: int = 1,
 ) -> Optional[int]:
     """
-    Event-driven check called immediately after inserting an error event.
+    Event-driven check called immediately after inserting error events; `new_events` is how many
+    events of this issue and deploy arrived since the last check.
     Target latency: < 50ms for check + dispatch.
     """
     # 1. Fetch deploy metadata (deployed_at, commit_sha, author, message, codeowners)
@@ -113,7 +115,7 @@ async def check_and_trigger_incident(
 
     # 2. Check issue first_seen: must be after or at deployed_at (new regression)
     issue_row = await conn.fetchrow(
-        "SELECT title, first_seen, event_count FROM issues WHERE id = $1 AND project_id = $2",
+        "SELECT title, fingerprint, first_seen, event_count FROM issues WHERE id = $1 AND project_id = $2",
         issue_id,
         project_id,
     )
@@ -155,6 +157,14 @@ async def check_and_trigger_incident(
 
     should_open = is_critical_route or (recent_count >= min_events)
 
+    # A mute rule (fingerprint, path prefix or exception type) silences alerts; mutes expire
+    from app.trust.calm import is_issue_muted
+    muted, mute_reason = await is_issue_muted(
+        conn, project_id, issue_row["fingerprint"] or "", request_path, payload.get("exc_type") or ""
+    )
+    if muted:
+        logger.info("Issue %d is muted (%s): no alert", issue_id, mute_reason)
+
     # 4. Check if incident already exists
     existing = await conn.fetchrow(
         """
@@ -170,11 +180,11 @@ async def check_and_trigger_incident(
     if existing:
         inc_id = int(existing["id"])
         current_status = existing["status"]
-        cur_count = int(existing["event_count"]) + 1
+        cur_count = int(existing["event_count"]) + new_events
 
         # Check upgrade condition: possible -> confirmed at >= CONFIRM_MIN_EVENTS (default 10)
         confirm_min = getattr(settings, "CONFIRM_MIN_EVENTS", 10)
-        if current_status == "possible" and cur_count >= confirm_min:
+        if current_status == "possible" and cur_count >= confirm_min and not muted:
             await conn.execute(
                 """
                 UPDATE incidents
@@ -215,9 +225,10 @@ async def check_and_trigger_incident(
             )
         else:
             await conn.execute(
-                "UPDATE incidents SET event_count = event_count + 1, last_event_at = $1 WHERE id = $2",
+                "UPDATE incidents SET event_count = event_count + $3, last_event_at = $1 WHERE id = $2",
                 occurred_at_dt,
                 inc_id,
+                new_events,
             )
         return inc_id
 
@@ -313,7 +324,7 @@ async def check_and_trigger_incident(
         )
         VALUES ($1, $2, $3, 'possible', $4, $5, $6, $7, $8, $9, $10, now(), $11, $12, $13)
         ON CONFLICT (deploy_id, issue_id) DO UPDATE SET
-            event_count = incidents.event_count + 1,
+            event_count = incidents.event_count + $14,
             last_event_at = EXCLUDED.last_event_at
         RETURNING id, (xmax = 0) AS is_new
         """,
@@ -330,6 +341,7 @@ async def check_and_trigger_incident(
         first_event_dt or occurred_at_dt,
         occurred_at_dt,
         category_str,
+        new_events,
     )
     if not inc_row:
         return None
@@ -340,21 +352,25 @@ async def check_and_trigger_incident(
     if not is_new:
         return incident_id
 
-    # 8. Persist decisions if available
+    # 8. Persist decisions if available (savepoint: a failure must not abort the transaction)
     if answers and decision_state:
         try:
-            await persist_decisions(
-                conn=conn,
-                project_id=project_id,
-                incident_id=incident_id,
-                state=decision_state,
-                answers=answers,
-                latency_ms=t_latency,
-            )
+            async with conn.transaction():
+                await persist_decisions(
+                    conn=conn,
+                    project_id=project_id,
+                    incident_id=incident_id,
+                    state=decision_state,
+                    answers=answers,
+                    latency_ms=t_latency,
+                )
         except Exception as exc:
             logger.warning("Failed persisting decisions for incident %d: %s", incident_id, exc)
 
         await meter_decision_call(conn, project_id, incident_id, answers)
+
+    if muted:
+        return incident_id
 
     # 9. Dispatch instant alert
     await dispatch_incident_alert(

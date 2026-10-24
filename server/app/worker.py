@@ -13,7 +13,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import asyncpg
 from app.cache import (
     deploy_lookup_cache,
-    increment_sliding_window_counter,
     issue_lookup_cache,
 )
 from app.config import resolve_worker_processes, settings
@@ -50,22 +49,31 @@ async def find_deploy(
     if release:
         cache_key = (project_id, environment, release)
         cached = deploy_lookup_cache.get(cache_key)
-        if cached is not None:
-            return cached
+        # Cached (deploy id, deployed_at): valid for events at or after that deploy
+        if cached is not None and occurred_at_dt >= cached[1]:
+            return cached[0]
 
+        # The same SHA can be deployed again (a rollback to it): use its latest deploy at or
+        # before the event, or its first one when the event is older than every deploy of it
         row = await conn.fetchrow(
             """
-            SELECT id FROM deploys
+            SELECT id, deployed_at FROM deploys
             WHERE project_id = $1 AND commit_sha = $2 AND environment = $3
+            ORDER BY (deployed_at <= $4) DESC,
+                     CASE WHEN deployed_at <= $4 THEN deployed_at END DESC,
+                     deployed_at ASC
             LIMIT 1
             """,
             project_id,
             release,
             environment,
+            occurred_at_dt,
         )
         if row:
             dep_id = int(row["id"])
-            deploy_lookup_cache.set(cache_key, dep_id, ttl=300.0)
+            deployed_at = row.get("deployed_at")
+            if deployed_at is not None and deployed_at <= occurred_at_dt:
+                deploy_lookup_cache.set(cache_key, (dep_id, deployed_at), ttl=30.0)
             return dep_id
 
     # 2. Latest deploy before or at occurred_at
@@ -96,12 +104,26 @@ def _scrub_value(value: Any) -> Any:
     return value
 
 
+def _no_nul(value: Any) -> Any:
+    """Postgres text and jsonb cannot store NUL characters, and any client can send one."""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {_no_nul(k): _no_nul(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_no_nul(v) for v in value]
+    return value
+
+
 def scrub_event(ev: Dict[str, Any]) -> None:
     """Redact secrets and PII before fingerprinting and storage.
 
     The SDK already scrubs, but events can come from any HTTP client, and the issue title
     (exception type plus message) is stored in plaintext.
     """
+    for key, value in list(ev.items()):
+        if isinstance(value, (str, dict, list)):
+            ev[key] = _no_nul(value)
     for field in ("message", "stack_trace", "request_path"):
         if isinstance(ev.get(field), str):
             ev[field] = scrub_text(ev[field])
@@ -143,211 +165,8 @@ async def claim_new_events(conn: Any, project_id: int, events: List[Dict[str, An
 
 
 async def process_single_event(payload: Dict[str, Any]) -> None:
-    """Process an event from the Redis queue with RLS enforcement and idempotency."""
-    project_id = int(payload["project_id"])
-    event_id = payload.get("event_id")
-    event_type = payload.get("type", "error")
-    occurred_at = float(payload["occurred_at"])
-    occurred_at_dt = datetime.fromtimestamp(occurred_at, tz=timezone.utc)
-    environment = payload.get("environment", "prod")
-    release = payload.get("release")
-
-    async with project_transaction(project_id) as conn:
-        if not await claim_new_events(conn, project_id, [payload]):
-            return
-        scrub_event(payload)
-
-        deploy_id = await find_deploy(
-            conn=conn,
-            project_id=project_id,
-            environment=environment,
-            occurred_at_dt=occurred_at_dt,
-            release=release,
-        )
-
-        if event_type == "heartbeat":
-            # Addendum C1: Upsert into traffic table
-            requests_count = int(payload.get("requests") or 0)
-            errors_count = int(payload.get("errors") or 0)
-            minute_bucket = occurred_at_dt.replace(second=0, microsecond=0)
-
-            await conn.execute(
-                """
-                INSERT INTO traffic (project_id, deploy_id, bucket, requests, errors)
-                VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT (project_id, bucket)
-                DO UPDATE SET
-                  requests = traffic.requests + EXCLUDED.requests,
-                  errors = traffic.errors + EXCLUDED.errors,
-                  deploy_id = COALESCE(traffic.deploy_id, EXCLUDED.deploy_id)
-                """,
-                project_id,
-                deploy_id,
-                minute_bucket,
-                requests_count,
-                errors_count,
-            )
-            from app.sources import record_source_activity
-            try:
-                await record_source_activity(
-                    conn=conn,
-                    project_id=project_id,
-                    environment=payload.get("environment") or "prod",
-                    app_name=payload.get("app_name") or "default",
-                    is_heartbeat=True,
-                    occurred_at=occurred_at_dt,
-                )
-            except Exception as sexc:
-                logger.debug("Failed recording source activity for heartbeat: %s", sexc)
-
-            return
-
-        # For error and slow_request events
-        fingerprint = compute_fingerprint(
-            event_type=event_type,
-            exc_type=payload.get("exc_type"),
-            stack_trace=payload.get("stack_trace"),
-            request_path=payload.get("request_path"),
-            message=payload.get("message"),
-        )
-
-        if event_type == "slow_request":
-            title = f"Slow: {payload.get('request_path') or 'Unknown'}"
-        else:
-            exc = payload.get("exc_type") or "Error"
-            msg = (payload.get("message") or "")[:100]
-            title = f"{exc}: {msg}".strip(": ")
-
-        # Upsert issue with atomic event_count tracking (Storm Control Section 3)
-        issue_row = await conn.fetchrow(
-            """
-            INSERT INTO issues (project_id, fingerprint, title, first_seen, last_seen, status, event_count)
-            VALUES ($1, $2, $3, $4, $4, 'open', 1)
-            ON CONFLICT (project_id, fingerprint)
-            DO UPDATE SET
-              last_seen = GREATEST(issues.last_seen, EXCLUDED.last_seen),
-              event_count = issues.event_count + 1
-            RETURNING id
-            """,
-            project_id,
-            fingerprint,
-            title,
-            occurred_at_dt,
-        )
-        issue_id = int(issue_row["id"])
-        issue_lookup_cache.set((project_id, fingerprint), issue_id, ttl=300.0)
-
-        # Storm control: cap full event rows to STORE_FULL_PER_MIN per (project, fingerprint) per minute
-        m_epoch = int(occurred_at_dt.replace(second=0, microsecond=0).timestamp())
-        storm_key = f"storm:{project_id}:{fingerprint}:{m_epoch}"
-        store_full = True
-        try:
-            redis = get_redis()
-            if redis:
-                val = await redis.incr(storm_key)
-                await redis.expire(storm_key, 120)
-                if val > settings.STORE_FULL_PER_MIN:
-                    store_full = False
-        except Exception:
-            store_full = True
-
-        if store_full:
-            # Store stack_trace and extra encrypted only (plaintext kept only if encryption fails)
-            raw_extra = payload.get("extra") or {}
-            raw_trace, stack_trace_enc = await encrypt_or_keep(
-                project_id, "events", "stack_trace", payload.get("stack_trace")
-            )
-            extra_plain, extra_enc = await encrypt_or_keep(
-                project_id, "events", "extra", json.dumps(raw_extra) if raw_extra else None
-            )
-            extra_json = extra_plain or "{}"
-
-            # Insert event linked to issue and deploy (idempotent via event_id unique constraint)
-            await conn.execute(
-                """
-                INSERT INTO events (
-                  event_id, issue_id, project_id, deploy_id, occurred_at,
-                  stack_trace, stack_trace_enc, request_path, duration_ms, extra, extra_enc
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
-                ON CONFLICT (project_id, event_id, occurred_at) WHERE event_id IS NOT NULL DO NOTHING
-                """,
-                event_id,
-                issue_id,
-                project_id,
-                deploy_id,
-                occurred_at_dt,
-                raw_trace,
-                stack_trace_enc,
-                payload.get("request_path"),
-                payload.get("duration_ms"),
-                extra_json,
-                extra_enc,
-            )
-
-        # Update event_rollups table (Performance Addendum Section 4)
-        minute_bucket = occurred_at_dt.replace(second=0, microsecond=0)
-        try:
-            await conn.execute(
-                """
-                INSERT INTO event_rollups (project_id, issue_id, deploy_id, bucket, count)
-                VALUES ($1, $2, $3, $4, 1)
-                ON CONFLICT (project_id, issue_id, COALESCE(deploy_id, -1), bucket)
-                DO UPDATE SET count = event_rollups.count + EXCLUDED.count
-                """,
-                project_id,
-                issue_id,
-                deploy_id,
-                minute_bucket,
-            )
-        except Exception as e:
-            logger.warning("Failed updating event_rollups: %s", e)
-
-        # Record customer app source activity (Trust Addendum Section A2)
-        try:
-            from app.sources import record_source_activity
-            await record_source_activity(
-                conn=conn,
-                project_id=project_id,
-                environment=payload.get("environment") or "prod",
-                app_name=payload.get("app_name") or "default",
-                is_heartbeat=False,
-                occurred_at=occurred_at_dt,
-            )
-        except Exception as sexc:
-            logger.debug("Failed recording source activity for event: %s", sexc)
-
-        # Update Redis sliding-window counter (Performance Addendum Section 4)
-        try:
-            redis = get_redis()
-        except Exception:
-            redis = None
-
-        if redis:
-            try:
-                await increment_sliding_window_counter(
-                    redis, project_id=project_id, deploy_id=deploy_id, issue_id=issue_id, count=1
-                )
-            except Exception as e:
-                logger.warning("Failed incrementing sliding window counter: %s", e)
-
-            if store_full:
-                try:
-                    await record_stored_event_metric(redis, project_id=project_id, occurred_at=occurred_at_dt, count=1)
-                except Exception as e:
-                    logger.warning("Failed recording stored event usage metric: %s", e)
-
-        logger.info(
-            "Event processed: project=%d, event_id=%s, type=%s, issue=%d, deploy=%s",
-            project_id,
-            str(event_id),
-            event_type,
-            issue_id,
-            str(deploy_id),
-        )
-
-        if deploy_id is not None and event_type == "error":
-            await check_incident_for_issue(conn, project_id, deploy_id, issue_id)
+    """Process one event: the same code path as a batch of one."""
+    await process_event_batch([payload])
 
 
 async def check_incident_for_issue(
@@ -355,64 +174,22 @@ async def check_incident_for_issue(
     project_id: int,
     deploy_id: Optional[int],
     issue_id: int,
+    new_events: int = 1,
 ) -> None:
     """
     Incident check hook (Performance Addendum Stage 2 & AI SRE Phase 2).
-    Executed once per distinct (deploy, issue) in the batch, rather than once per event.
+    Executed once per distinct (deploy, issue) in the batch, rather than once per event;
+    `new_events` is how many of the batch's events it covers.
+
+    Runs in a savepoint: a database error here is logged and rolled back on its own instead of
+    aborting the batch transaction (which would then silently roll back on COMMIT).
     """
     if deploy_id is None:
         return
 
     try:
-        ev_row = await conn.fetchrow(
-            """
-            SELECT occurred_at, request_path, stack_trace, stack_trace_enc
-            FROM events
-            WHERE project_id = $1 AND deploy_id = $2 AND issue_id = $3
-            ORDER BY occurred_at DESC
-            LIMIT 1
-            """,
-            project_id,
-            deploy_id,
-            issue_id,
-        )
-        if not ev_row:
-            return
-
-        occurred_at_dt = ev_row["occurred_at"]
-        # Alert latency and time-to-detect are measured from the first event, not the latest
-        first_event_dt = await conn.fetchval(
-            "SELECT min(occurred_at) FROM events WHERE project_id = $1 AND deploy_id = $2 AND issue_id = $3",
-            project_id,
-            deploy_id,
-            issue_id,
-        )
-        payload = {
-            "request_path": ev_row["request_path"],
-            "stack_trace": await decrypt_or_plain(
-                project_id, "events", "stack_trace", ev_row.get("stack_trace_enc"), ev_row.get("stack_trace")
-            ),
-        }
-        iss_row = await conn.fetchrow(
-            "SELECT title FROM issues WHERE id = $1 AND project_id = $2",
-            issue_id,
-            project_id,
-        )
-        if iss_row and iss_row["title"]:
-            title_parts = iss_row["title"].split(":", 1)
-            payload["exc_type"] = title_parts[0].strip()
-
-        from app.incident_manager import check_and_trigger_incident
-
-        await check_and_trigger_incident(
-            conn=conn,
-            project_id=project_id,
-            deploy_id=deploy_id,
-            issue_id=issue_id,
-            payload=payload,
-            occurred_at_dt=occurred_at_dt,
-            first_event_dt=first_event_dt,
-        )
+        async with conn.transaction():
+            await _check_incident(conn, project_id, deploy_id, issue_id, new_events)
     except Exception as exc:
         logger.warning(
             "check_incident_for_issue failed for project=%d, deploy=%s, issue=%d: %s",
@@ -422,6 +199,58 @@ async def check_incident_for_issue(
             exc,
         )
 
+
+async def _check_incident(conn: asyncpg.Connection, project_id: int, deploy_id: int, issue_id: int, new_events: int) -> None:
+    ev_row = await conn.fetchrow(
+        """
+        SELECT occurred_at, request_path, stack_trace, stack_trace_enc
+        FROM events
+        WHERE project_id = $1 AND deploy_id = $2 AND issue_id = $3
+        ORDER BY occurred_at DESC
+        LIMIT 1
+        """,
+        project_id,
+        deploy_id,
+        issue_id,
+    )
+    if not ev_row:
+        return
+
+    occurred_at_dt = ev_row["occurred_at"]
+    # Alert latency and time-to-detect are measured from the first event, not the latest
+    first_event_dt = await conn.fetchval(
+        "SELECT min(occurred_at) FROM events WHERE project_id = $1 AND deploy_id = $2 AND issue_id = $3",
+        project_id,
+        deploy_id,
+        issue_id,
+    )
+    payload = {
+        "request_path": ev_row["request_path"],
+        "stack_trace": await decrypt_or_plain(
+            project_id, "events", "stack_trace", ev_row.get("stack_trace_enc"), ev_row.get("stack_trace")
+        ),
+    }
+    iss_row = await conn.fetchrow(
+        "SELECT title FROM issues WHERE id = $1 AND project_id = $2",
+        issue_id,
+        project_id,
+    )
+    if iss_row and iss_row["title"]:
+        title_parts = iss_row["title"].split(":", 1)
+        payload["exc_type"] = title_parts[0].strip()
+
+    from app.incident_manager import check_and_trigger_incident
+
+    await check_and_trigger_incident(
+        conn=conn,
+        project_id=project_id,
+        deploy_id=deploy_id,
+        issue_id=issue_id,
+        payload=payload,
+        occurred_at_dt=occurred_at_dt,
+        first_event_dt=first_event_dt,
+        new_events=new_events,
+    )
 
 
 async def _record_batch_sources(
@@ -458,6 +287,9 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
     """
     Process a batch of events with RLS enforcement, in-memory grouping,
     and batched multi-row database operations (Performance Addendum Stage 2).
+
+    Each project's events are written in one transaction. Redis counters (spike detection,
+    stored-event metering) are updated only after that transaction commits.
     """
     if not batch:
         return
@@ -468,7 +300,9 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
         pid = int(item["project_id"])
         by_project.setdefault(pid, []).append(item)
 
+    meter_envs = {e.strip() for e in settings.METER_ENVIRONMENTS.split(",") if e.strip()}
     for project_id, events in by_project.items():
+        after_commit: Dict[str, Any] = {"rollups": {}, "stored": []}
         async with project_transaction(project_id) as conn:
             events = await claim_new_events(conn, project_id, events)
             if not events:
@@ -479,6 +313,7 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
             for ev in events:
                 scrub_event(ev)
                 etype = ev.get("type", "error")
+                ev["environment"] = ev.get("environment") or "prod"
                 occurred_at = float(ev["occurred_at"])
                 ev["occurred_at_dt"] = datetime.fromtimestamp(occurred_at, tz=timezone.utc)
                 if etype == "heartbeat":
@@ -490,7 +325,7 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
             deploy_cache: Dict[Tuple[str, Optional[str]], Optional[int]] = {}
 
             async def _resolve_deploy(ev: Dict[str, Any]) -> Optional[int]:
-                env = ev.get("environment", "prod")
+                env = ev["environment"]
                 rel = ev.get("release")
                 key = (env, rel)
                 if rel and key in deploy_cache:
@@ -506,40 +341,36 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
                     deploy_cache[key] = dep_id
                 return dep_id
 
-            # 1. Process Heartbeats
+            # 1. Process Heartbeats: one traffic row per (environment, minute), summed across deploys
             if heartbeats:
-                hb_aggregates: Dict[Tuple[datetime, Optional[int]], Dict[str, int]] = {}
+                hb_aggregates: Dict[Tuple[str, datetime], Dict[str, Any]] = {}
                 for hb in heartbeats:
                     dep_id = await _resolve_deploy(hb)
                     m_bucket = hb["occurred_at_dt"].replace(second=0, microsecond=0)
-                    k = (m_bucket, dep_id)
-                    if k not in hb_aggregates:
-                        hb_aggregates[k] = {"requests": 0, "errors": 0}
-                    hb_aggregates[k]["requests"] += int(hb.get("requests") or 0)
-                    hb_aggregates[k]["errors"] += int(hb.get("errors") or 0)
+                    agg = hb_aggregates.setdefault((hb["environment"], m_bucket), {"requests": 0, "errors": 0, "deploy_id": None})
+                    agg["requests"] += int(hb.get("requests") or 0)
+                    agg["errors"] += int(hb.get("errors") or 0)
+                    agg["deploy_id"] = agg["deploy_id"] or dep_id
 
-                dep_ids = [k[1] for k in hb_aggregates]
-                buckets = [k[0] for k in hb_aggregates]
-                reqs = [v["requests"] for v in hb_aggregates.values()]
-                errs = [v["errors"] for v in hb_aggregates.values()]
-
+                keys = list(hb_aggregates)
                 await conn.execute(
                     """
-                    INSERT INTO traffic (project_id, deploy_id, bucket, requests, errors)
-                    SELECT $1, u.deploy_id, u.bucket, u.requests, u.errors
-                    FROM unnest($2::int[], $3::timestamptz[], $4::int[], $5::int[])
-                      AS u(deploy_id, bucket, requests, errors)
-                    ON CONFLICT (project_id, bucket)
+                    INSERT INTO traffic (project_id, environment, deploy_id, bucket, requests, errors)
+                    SELECT $1, u.environment, u.deploy_id, u.bucket, u.requests, u.errors
+                    FROM unnest($2::text[], $3::int[], $4::timestamptz[], $5::int[], $6::int[])
+                      AS u(environment, deploy_id, bucket, requests, errors)
+                    ON CONFLICT (project_id, environment, bucket)
                     DO UPDATE SET
                       requests = traffic.requests + EXCLUDED.requests,
                       errors = traffic.errors + EXCLUDED.errors,
                       deploy_id = COALESCE(traffic.deploy_id, EXCLUDED.deploy_id)
                     """,
                     project_id,
-                    dep_ids,
-                    buckets,
-                    reqs,
-                    errs,
+                    [k[0] for k in keys],
+                    [hb_aggregates[k]["deploy_id"] for k in keys],
+                    [k[1] for k in keys],
+                    [hb_aggregates[k]["requests"] for k in keys],
+                    [hb_aggregates[k]["errors"] for k in keys],
                 )
                 logger.debug(
                     "Processed batch heartbeats: project=%d, distinct_buckets=%d, total_heartbeats=%d",
@@ -672,77 +503,50 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
                 if full_events_to_store:
                     enc_results = await asyncio.gather(*[_enc_ev(ev) for ev in full_events_to_store])
 
-                    event_ids = []
-                    issue_ids = []
-                    deploy_ids = []
-                    occurred_ats = []
-                    raw_traces = []
-                    trace_encs = []
-                    req_paths = []
-                    durations = []
-                    extra_jsons = []
-                    extra_encs = []
-
+                    cols: Dict[str, List[Any]] = {k: [] for k in (
+                        "event_id", "issue_id", "deploy_id", "occurred_at", "stack_trace", "stack_trace_enc",
+                        "request_path", "duration_ms", "extra", "extra_enc", "environment", "type",
+                    )}
                     for ev, (raw_trace, trace_enc, extra_json, extra_enc) in zip(full_events_to_store, enc_results):
-                        event_ids.append(str(ev.get("event_id") or uuid.uuid4().hex))
-                        issue_ids.append(ev["issue_id"])
-                        deploy_ids.append(ev["deploy_id"])
-                        occurred_ats.append(ev["occurred_at_dt"])
-                        raw_traces.append(raw_trace)
-                        trace_encs.append(trace_enc)
-                        req_paths.append(ev.get("request_path"))
-                        durations.append(float(ev["duration_ms"]) if ev.get("duration_ms") is not None else None)
-                        extra_jsons.append(extra_json)
-                        extra_encs.append(extra_enc)
+                        cols["event_id"].append(str(ev.get("event_id") or uuid.uuid4().hex))
+                        cols["issue_id"].append(ev["issue_id"])
+                        cols["deploy_id"].append(ev["deploy_id"])
+                        cols["occurred_at"].append(ev["occurred_at_dt"])
+                        cols["stack_trace"].append(raw_trace)
+                        cols["stack_trace_enc"].append(trace_enc)
+                        cols["request_path"].append(ev.get("request_path"))
+                        cols["duration_ms"].append(float(ev["duration_ms"]) if ev.get("duration_ms") is not None else None)
+                        cols["extra"].append(extra_json)
+                        cols["extra_enc"].append(extra_enc)
+                        cols["environment"].append(ev["environment"])
+                        cols["type"].append(ev.get("type", "error"))
 
                     # Single multi-row insert for stored error events in batch
                     await conn.execute(
                         """
                         INSERT INTO events (
                           event_id, issue_id, project_id, deploy_id, occurred_at,
-                          stack_trace, stack_trace_enc, request_path, duration_ms, extra, extra_enc
+                          stack_trace, stack_trace_enc, request_path, duration_ms, extra, extra_enc,
+                          environment, type
                         )
                         SELECT
-                          u.event_id,
-                          u.issue_id,
-                          $1,
-                          u.deploy_id,
-                          u.occurred_at,
-                          u.stack_trace,
-                          u.stack_trace_enc,
-                          u.request_path,
-                          u.duration_ms,
-                          COALESCE(NULLIF(u.extra, '')::jsonb, '{}'::jsonb),
-                          u.extra_enc
+                          u.event_id, u.issue_id, $1, u.deploy_id, u.occurred_at,
+                          u.stack_trace, u.stack_trace_enc, u.request_path, u.duration_ms,
+                          COALESCE(NULLIF(u.extra, '')::jsonb, '{}'::jsonb), u.extra_enc,
+                          u.environment, u.type
                         FROM unnest(
-                          $2::text[],
-                          $3::int[],
-                          $4::int[],
-                          $5::timestamptz[],
-                          $6::text[],
-                          $7::bytea[],
-                          $8::text[],
-                          $9::double precision[],
-                          $10::text[],
-                          $11::bytea[]
+                          $2::text[], $3::int[], $4::int[], $5::timestamptz[], $6::text[], $7::bytea[],
+                          $8::text[], $9::double precision[], $10::text[], $11::bytea[], $12::text[], $13::text[]
                         ) AS u(
-                          event_id, issue_id, deploy_id, occurred_at,
-                          stack_trace, stack_trace_enc, request_path, duration_ms, extra, extra_enc
+                          event_id, issue_id, deploy_id, occurred_at, stack_trace, stack_trace_enc,
+                          request_path, duration_ms, extra, extra_enc, environment, type
                         )
                         ON CONFLICT (project_id, event_id, occurred_at) WHERE event_id IS NOT NULL DO NOTHING
                         """,
                         project_id,
-                        event_ids,
-                        issue_ids,
-                        deploy_ids,
-                        occurred_ats,
-                        raw_traces,
-                        trace_encs,
-                        req_paths,
-                        durations,
-                        extra_jsons,
-                        extra_encs,
+                        *cols.values(),
                     )
+                    after_commit["stored"] = [ev for ev in full_events_to_store if ev["environment"] in meter_envs]
 
                 # 3. Update event_rollups table for the batch (Performance Addendum Section 4)
                 rollup_aggregates: Dict[Tuple[int, Optional[int], datetime], int] = {}
@@ -756,59 +560,32 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
                     rollup_aggregates[k] = rollup_aggregates.get(k, 0) + 1
 
                 if rollup_aggregates:
-                    r_issue_ids = [k[0] for k in rollup_aggregates]
-                    r_deploy_ids = [k[1] for k in rollup_aggregates]
-                    r_buckets = [k[2] for k in rollup_aggregates]
-                    r_counts = list(rollup_aggregates.values())
+                    await conn.execute(
+                        """
+                        INSERT INTO event_rollups (project_id, issue_id, deploy_id, bucket, count)
+                        SELECT $1, u.issue_id, u.deploy_id, u.bucket, u.count
+                        FROM unnest($2::int[], $3::int[], $4::timestamptz[], $5::int[])
+                          AS u(issue_id, deploy_id, bucket, count)
+                        ON CONFLICT (project_id, issue_id, COALESCE(deploy_id, -1), bucket)
+                        DO UPDATE SET count = event_rollups.count + EXCLUDED.count
+                        """,
+                        project_id,
+                        [k[0] for k in rollup_aggregates],
+                        [k[1] for k in rollup_aggregates],
+                        [k[2] for k in rollup_aggregates],
+                        list(rollup_aggregates.values()),
+                    )
+                    after_commit["rollups"] = rollup_aggregates
 
-                    try:
-                        await conn.execute(
-                            """
-                            INSERT INTO event_rollups (project_id, issue_id, deploy_id, bucket, count)
-                            SELECT $1, u.issue_id, u.deploy_id, u.bucket, u.count
-                            FROM unnest($2::int[], $3::int[], $4::timestamptz[], $5::int[])
-                              AS u(issue_id, deploy_id, bucket, count)
-                            ON CONFLICT (project_id, issue_id, COALESCE(deploy_id, -1), bucket)
-                            DO UPDATE SET count = event_rollups.count + EXCLUDED.count
-                            """,
-                            project_id,
-                            r_issue_ids,
-                            r_deploy_ids,
-                            r_buckets,
-                            r_counts,
-                        )
-                    except Exception as e:
-                        logger.warning("Failed updating event_rollups in batch: %s", e)
-
-                    # Update Redis sliding-window counters across the batch in one pipeline
-                    try:
-                        redis = get_redis()
-                    except Exception:
-                        redis = None
-
-                    if redis:
-                        try:
-                            pipe = redis.pipeline()
-                            if asyncio.iscoroutine(pipe):
-                                pipe = await pipe
-                            now_ts = int(time.time())
-                            bucket_id = now_ts // 10
-                            for (iss_id, dep_id, _), count in rollup_aggregates.items():
-                                key = f"counter:{project_id}:{dep_id or 0}:{iss_id}:{bucket_id}"
-                                pipe.incrby(key, count)
-                                pipe.expire(key, 120)
-                            await pipe.execute()
-                        except Exception as e:
-                            logger.warning("Failed updating Redis sliding-window counters in batch: %s", e)
-
-                # Incident check hook: runs once per distinct (deploy, issue) in batch
-                distinct_deploy_issues = {
-                    (ev["deploy_id"], ev["issue_id"])
-                    for ev in error_events
-                    if ev.get("deploy_id") and ev.get("issue_id")
-                }
-                for dep_id, iss_id in distinct_deploy_issues:
-                    await check_incident_for_issue(conn, project_id, dep_id, iss_id)
+                # Incident check: once per distinct (deploy, issue) of real errors (slow requests only
+                # affect the verdict), with the number of new events
+                deploy_issue_counts: Dict[Tuple[int, int], int] = {}
+                for ev in error_events:
+                    if ev.get("type", "error") == "error" and ev.get("deploy_id") and ev.get("issue_id"):
+                        key = (ev["deploy_id"], ev["issue_id"])
+                        deploy_issue_counts[key] = deploy_issue_counts.get(key, 0) + 1
+                for (dep_id, iss_id), n in deploy_issue_counts.items():
+                    await check_incident_for_issue(conn, project_id, dep_id, iss_id, new_events=n)
 
                 logger.info(
                     "Processed batch events: project=%d, total_events=%d, distinct_issues=%d",
@@ -817,6 +594,37 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
                     len(fp_groups),
                 )
 
+        await _after_commit(project_id, after_commit)
+
+
+async def _after_commit(project_id: int, done: Dict[str, Any]) -> None:
+    """Redis side effects of a committed batch: spike counters and stored-event metering."""
+    if not done["rollups"] and not done["stored"]:
+        return
+    try:
+        redis = get_redis()
+    except Exception:
+        return
+    if done["rollups"]:
+        try:
+            pipe = redis.pipeline()
+            if asyncio.iscoroutine(pipe):
+                pipe = await pipe
+            bucket_id = int(time.time()) // 10
+            for (iss_id, dep_id, _), count in done["rollups"].items():
+                key = f"counter:{project_id}:{dep_id or 0}:{iss_id}:{bucket_id}"
+                pipe.incrby(key, count)
+                pipe.expire(key, 120)
+            await pipe.execute()
+        except Exception as e:
+            logger.warning("Failed updating Redis sliding-window counters in batch: %s", e)
+    by_minute: Dict[datetime, int] = {}
+    for ev in done["stored"]:
+        minute = ev["occurred_at_dt"].replace(second=0, microsecond=0)
+        by_minute[minute] = by_minute.get(minute, 0) + 1
+    for minute, count in by_minute.items():
+        await record_stored_event_metric(redis, project_id=project_id, occurred_at=minute, count=count)
+
 
 def _dump_payload(payload: Dict[str, Any]) -> str:
     """Serialize an event for re-queueing, dropping values computed during processing."""
@@ -824,35 +632,15 @@ def _dump_payload(payload: Dict[str, Any]) -> str:
 
 
 async def handle_event_with_retry(payload: Dict[str, Any]) -> None:
-    """Handle event with exponential retry and dead-letter queue dispatch."""
+    """Handle one event with retries and dead-letter dispatch (same rules as a batch)."""
     redis = get_redis()
-    tries = int(payload.get("_tries", 0))
-
     try:
         await process_single_event(payload)
+    except TRANSIENT_ERRORS:
+        await redis.rpush(EVENTS_QUEUE, _dump_payload(payload))
     except Exception as exc:
-        tries += 1
-        payload["_tries"] = tries
-        logger.error(
-            "Failed processing event (attempt %d/%d): %s",
-            tries,
-            MAX_RETRIES,
-            exc,
-            exc_info=True,
-        )
-
-        if tries < MAX_RETRIES:
-            # Re-queue for retry
-            await redis.rpush(EVENTS_QUEUE, _dump_payload(payload))
-        else:
-            # Dispatch to dead-letter queue
-            logger.critical(
-                "Event exceeded max retries (%d). Pushing to %s: %s",
-                MAX_RETRIES,
-                DEAD_LETTER_QUEUE,
-                payload,
-            )
-            await redis.rpush(DEAD_LETTER_QUEUE, _dump_payload(payload))
+        logger.error("Event failed: %s: %s", _describe(payload), type(exc).__name__)
+        await _retry_or_dead_letter(redis, payload, exc)
 
 
 async def reap_stuck_processing_events(timeout_sec: Optional[int] = None) -> int:
@@ -949,11 +737,55 @@ async def pull_batch_from_queue(
     return batch
 
 
+class TransientBatchError(Exception):
+    """The database or network was unavailable: the batch should be re-queued as is, later."""
+
+
+# Errors that say nothing about the events themselves (outage, restart, deadlock): never count
+# them toward MAX_RETRIES, or a short Postgres restart would dead-letter every event meanwhile.
+TRANSIENT_ERRORS = (
+    asyncpg.PostgresConnectionError,
+    asyncpg.InterfaceError,
+    asyncpg.TooManyConnectionsError,
+    asyncpg.CannotConnectNowError,
+    asyncpg.AdminShutdownError,
+    asyncpg.TransactionRollbackError,
+    ConnectionError,
+    OSError,
+    asyncio.TimeoutError,
+)
+
+
+def _describe(payload: Dict[str, Any]) -> str:
+    """Identify an event in logs without its content (messages and traces can hold user data)."""
+    return f"project={payload.get('project_id')} event_id={payload.get('event_id')} type={payload.get('type')}"
+
+
+async def _retry_or_dead_letter(r: Any, payload: Dict[str, Any], exc: Exception) -> None:
+    tries = int(payload.get("_tries", 0)) + 1
+    payload["_tries"] = tries
+    if tries < MAX_RETRIES:
+        await r.rpush(EVENTS_QUEUE, _dump_payload(payload))
+    else:
+        logger.critical(
+            "Event failed %d times, moved to %s (python -m app.cli requeue-dead replays it): %s: %s",
+            MAX_RETRIES,
+            DEAD_LETTER_QUEUE,
+            _describe(payload),
+            type(exc).__name__,
+        )
+        await r.rpush(DEAD_LETTER_QUEUE, _dump_payload(payload))
+
+
 async def handle_event_batch_with_retry(
     batch: List[Tuple[str, Dict[str, Any]]],
     redis: Optional[Any] = None,
 ) -> None:
-    """Process a batch of events with fallback to individual retries on failure."""
+    """Process a batch; if it fails, process each event on its own so one bad event only affects itself.
+
+    Raises TransientBatchError when the database is unavailable, so the caller re-queues the
+    batch unchanged and backs off.
+    """
     if not batch:
         return
 
@@ -961,26 +793,27 @@ async def handle_event_batch_with_retry(
     payloads = [item[1] for item in batch]
     try:
         await process_event_batch(payloads)
+        return
+    except TRANSIENT_ERRORS as exc:
+        raise TransientBatchError(str(exc)) from exc
     except Exception as exc:
         logger.error(
-            "Batch processing of %d events failed: %s; falling back to individual retry",
+            "Batch of %d events failed (%s: %s); processing each event on its own",
             len(batch),
+            type(exc).__name__,
             exc,
-            exc_info=True,
         )
-        for _, payload in batch:
-            tries = int(payload.get("_tries", 0)) + 1
-            payload["_tries"] = tries
-            if tries < MAX_RETRIES:
-                await r.rpush(EVENTS_QUEUE, _dump_payload(payload))
-            else:
-                logger.critical(
-                    "Event exceeded max retries (%d). Pushing to %s: %s",
-                    MAX_RETRIES,
-                    DEAD_LETTER_QUEUE,
-                    payload,
-                )
-                await r.rpush(DEAD_LETTER_QUEUE, _dump_payload(payload))
+
+    for _, payload in batch:
+        try:
+            await process_event_batch([payload])
+        except TRANSIENT_ERRORS as exc:
+            # The database went away mid-way: keep this event as is for a later attempt
+            logger.warning("Re-queueing %s after a transient error: %s", _describe(payload), type(exc).__name__)
+            await r.rpush(EVENTS_QUEUE, _dump_payload(payload))
+        except Exception as exc:
+            logger.error("Event failed: %s: %s: %s", _describe(payload), type(exc).__name__, exc)
+            await _retry_or_dead_letter(r, payload, exc)
 
 
 def check_memory_limit() -> bool:
@@ -1032,6 +865,7 @@ async def run_worker(worker_id: Optional[str] = None):
             pass
 
     last_hb_time = 0.0
+    backoff = 0.0
     try:
         while is_running:
             if check_memory_limit():
@@ -1058,7 +892,21 @@ async def run_worker(worker_id: Optional[str] = None):
                 if not batch:
                     continue
 
-                await handle_event_batch_with_retry(batch, redis=redis)
+                try:
+                    await handle_event_batch_with_retry(batch, redis=redis)
+                    backoff = 0.0
+                except TransientBatchError as exc:
+                    # Database unavailable: put the batch back unchanged and wait (1 s doubling to 30 s)
+                    backoff = min(30.0, backoff * 2 or 1.0)
+                    logger.warning("Database unavailable (%s); re-queueing %d events, retrying in %.0f s",
+                                   exc, len(batch), backoff)
+                    pipe = redis.pipeline()
+                    for raw_data, _ in batch:
+                        pipe.lrem(processing_queue, 1, raw_data)
+                        pipe.rpush(EVENTS_QUEUE, raw_data)
+                    await pipe.execute()
+                    await asyncio.sleep(backoff)
+                    continue
 
                 # Atomically remove successfully processed items from processing queue
                 pipe = redis.pipeline()

@@ -38,15 +38,16 @@ class EventItem(BaseModel):
     exc_type: Optional[str] = Field(None, max_length=200)
     stack_trace: Optional[str] = Field(None, max_length=20000)
     request_path: Optional[str] = Field(None, max_length=500)
-    duration_ms: Optional[float] = None
+    duration_ms: Optional[float] = Field(None, ge=0, allow_inf_nan=False)
     release: Optional[str] = Field(None, max_length=64)
     environment: str = Field(default="prod", max_length=20)
-    occurred_at: float  # Unix epoch timestamp in seconds
+    occurred_at: float = Field(allow_inf_nan=False)  # Unix epoch timestamp in seconds
     extra: Dict[str, Any] = Field(default_factory=dict)
 
     # Heartbeat specific fields (Addendum C1)
-    requests: Optional[int] = Field(None, ge=0)
-    errors: Optional[int] = Field(None, ge=0)
+    # Stored as Postgres integer
+    requests: Optional[int] = Field(None, ge=0, le=2_147_483_647)
+    errors: Optional[int] = Field(None, ge=0, le=2_147_483_647)
 
     @field_validator("extra")
     @classmethod

@@ -265,7 +265,7 @@ async def get_error_rate(
 ) -> Dict[str, Any]:
     """Calculate error rate before and after deploy from traffic table."""
     dep = await conn.fetchrow(
-        "SELECT deployed_at FROM deploys WHERE id = $1 AND project_id = $2",
+        "SELECT deployed_at, environment FROM deploys WHERE id = $1 AND project_id = $2",
         deploy_id,
         project_id,
     )
@@ -278,21 +278,23 @@ async def get_error_rate(
         """
         SELECT COALESCE(SUM(requests), 0) AS reqs, COALESCE(SUM(errors), 0) AS errs
         FROM traffic
-        WHERE project_id = $1 AND bucket >= $2 AND bucket < $3
+        WHERE project_id = $1 AND environment = $4 AND bucket >= $2 AND bucket < $3
         """,
         project_id,
         dep_at - timedelta(minutes=30),
         dep_at,
+        dep.get("environment") or "prod",
     )
     after_row = await conn.fetchrow(
         """
         SELECT COALESCE(SUM(requests), 0) AS reqs, COALESCE(SUM(errors), 0) AS errs
         FROM traffic
-        WHERE project_id = $1 AND bucket >= $2 AND bucket <= $3
+        WHERE project_id = $1 AND environment = $4 AND bucket >= $2 AND bucket <= $3
         """,
         project_id,
         dep_at,
         dep_at + timedelta(minutes=30),
+        dep.get("environment") or "prod",
     )
 
     b_reqs = int(before_row["reqs"]) if before_row else 0

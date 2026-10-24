@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncGenerator, Dict, List, Literal, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
@@ -143,6 +144,14 @@ app.add_middleware(
 )
 
 app.include_router(analytics_router)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """422 that says what is wrong without echoing the submitted values back: they may hold
+    secrets, and a NaN cannot be written as JSON at all (the default handler failed with a 500)."""
+    errors = [{"loc": list(e.get("loc", ())), "msg": e.get("msg"), "type": e.get("type")} for e in exc.errors()]
+    return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"detail": errors})
 
 
 
@@ -807,9 +816,10 @@ async def get_timeline(
         # 1. Fetch traffic in time window
         traffic_rows = await conn.fetch(
             """
-            SELECT bucket, requests, errors
+            SELECT bucket, SUM(requests)::bigint AS requests, SUM(errors)::bigint AS errors
             FROM traffic
             WHERE project_id = $1 AND bucket >= $2 AND bucket <= $3
+            GROUP BY bucket
             ORDER BY bucket ASC
             """,
             project_id,
@@ -1259,8 +1269,10 @@ async def export_project_data(
                 ORDER BY id DESC
                 LIMIT 1
             ) a ON true
+            WHERE d.project_id = $1
             ORDER BY d.deployed_at DESC
-            """
+            """,
+            project_id,
         )
         deploys_out = []
         for dr in deploy_rows:
@@ -1282,8 +1294,10 @@ async def export_project_data(
             """
             SELECT id, title, fingerprint, status, first_seen, last_seen, event_count
             FROM issues
+            WHERE project_id = $1
             ORDER BY last_seen DESC
-            """
+            """,
+            project_id,
         )
         issues_out = [
             {
@@ -1301,12 +1315,14 @@ async def export_project_data(
         # Events (latest 1000 stored rows; storm control keeps at most STORE_FULL_PER_MIN per issue per minute)
         event_rows = await conn.fetch(
             """
-            SELECT id, event_id, issue_id, deploy_id, request_path, duration_ms, occurred_at,
+            SELECT id, event_id, issue_id, deploy_id, environment, type, request_path, duration_ms, occurred_at,
                    stack_trace, stack_trace_enc, extra, extra_enc
             FROM events
+            WHERE project_id = $1
             ORDER BY occurred_at DESC
             LIMIT 1000
-            """
+            """,
+            project_id,
         )
         events_out = []
         for er in event_rows:
@@ -1320,6 +1336,8 @@ async def export_project_data(
                 "event_id": er["event_id"],
                 "issue_id": er["issue_id"],
                 "deploy_id": er["deploy_id"],
+                "environment": er["environment"],
+                "type": er["type"],
                 "request_path": er["request_path"],
                 "duration_ms": er["duration_ms"],
                 "occurred_at": er["occurred_at"].isoformat() if er["occurred_at"] else None,
@@ -1331,10 +1349,13 @@ async def export_project_data(
 
         # Traffic
         traffic_rows = await conn.fetch(
-            "SELECT bucket, requests, errors FROM traffic ORDER BY bucket DESC LIMIT 1000"
+            "SELECT environment, bucket, requests, errors FROM traffic WHERE project_id = $1 "
+            "ORDER BY bucket DESC LIMIT 1000",
+            project_id,
         )
         traffic_out = [
             {
+                "environment": tr["environment"],
                 "bucket": tr["bucket"].isoformat() if tr["bucket"] else None,
                 "requests": tr["requests"],
                 "errors": tr["errors"],
@@ -1369,21 +1390,24 @@ async def purge_project_data(
     The project shell and credentials remain intact; all historical activity and code data is deleted.
     """
     async with project_transaction(project_id) as conn:
-        ev_res = await conn.execute("DELETE FROM events")
+        # Every statement names the project: row-level security is the second line of defence, not the only one
+        ev_res = await conn.execute("DELETE FROM events WHERE project_id = $1", project_id)
         ev_count = int(ev_res.split()[-1]) if ev_res else 0
 
-        tr_res = await conn.execute("DELETE FROM traffic")
+        tr_res = await conn.execute("DELETE FROM traffic WHERE project_id = $1", project_id)
         tr_count = int(tr_res.split()[-1]) if tr_res else 0
 
-        await conn.execute("DELETE FROM deploy_analysis WHERE deploy_id IN (SELECT id FROM deploys)")
+        await conn.execute(
+            "DELETE FROM deploy_analysis WHERE deploy_id IN (SELECT id FROM deploys WHERE project_id = $1)", project_id
+        )
         await conn.execute("DELETE FROM alerts WHERE project_id = $1", project_id)
         await conn.execute("DELETE FROM outbox WHERE project_id = $1", project_id)
         await conn.execute("DELETE FROM ingest_dedupe WHERE project_id = $1", project_id)
 
-        is_res = await conn.execute("DELETE FROM issues")
+        is_res = await conn.execute("DELETE FROM issues WHERE project_id = $1", project_id)
         is_count = int(is_res.split()[-1]) if is_res else 0
 
-        dp_res = await conn.execute("DELETE FROM deploys")
+        dp_res = await conn.execute("DELETE FROM deploys WHERE project_id = $1", project_id)
         dp_count = int(dp_res.split()[-1]) if dp_res else 0
 
         try:

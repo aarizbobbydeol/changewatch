@@ -126,11 +126,14 @@ async def test_worker_encrypts_stack_trace_and_extra(accept_event_claims):
 
     mock_conn = AsyncMock()
     accept_event_claims(mock_conn)
-    mock_conn.fetchrow.side_effect = [
-        {"id": 10},               # 1. for find_deploy
-        {"id": 201},              # 2. for issues insert
-        {"data_key_enc": None},   # 3. for crypto get_or_create_project_data_key
-    ]
+    async def fake_fetchrow(query, *args):
+        if "FROM deploys" in query:
+            return {"id": 10}
+        if "data_key_enc" in query:
+            return {"data_key_enc": None}
+        return None
+
+    mock_conn.fetchrow.side_effect = fake_fetchrow
     mock_pool = build_mock_pool(mock_conn)
 
     payload = {
@@ -158,9 +161,11 @@ async def test_worker_encrypts_stack_trace_and_extra(accept_event_claims):
                 break
 
         assert events_call is not None, "INSERT INTO events must be executed"
+        # Batch insert: one array per column (stack_trace_enc is $7, extra_enc is $11)
         args = events_call[0]
-        stack_trace_enc_arg = args[7]
-        extra_enc_arg = args[11]
+        stack_trace_enc_arg = args[7][0]
+        extra_enc_arg = args[11][0]
+        assert args[6] == [None]  # no plaintext stack trace
 
         assert isinstance(stack_trace_enc_arg, bytes)
         assert b"MARKER_SECRET_STACK_TRACE_XYZ_54321" not in stack_trace_enc_arg

@@ -179,10 +179,12 @@ async def test_process_event_batch_heartbeat_aggregation(accept_event_claims):
 
         assert traffic_call is not None, "INSERT INTO traffic must be executed"
         args = traffic_call[0]
-        reqs = args[4]
-        errs = args[5]
+        envs = args[2]
+        reqs = args[5]
+        errs = args[6]
 
-        # 4 heartbeats aggregated into 1 distinct bucket
+        # 4 heartbeats aggregated into 1 distinct (environment, minute)
+        assert envs == ["prod"]
         assert len(reqs) == 1
         assert reqs[0] == 200  # 4 * 50
         assert errs[0] == 8    # 4 * 2
@@ -238,8 +240,8 @@ async def test_incident_check_called_once_per_distinct_deploy_issue(accept_event
 
     incident_calls = []
 
-    async def _mock_check_incident(conn, project_id, deploy_id, issue_id):
-        incident_calls.append((deploy_id, issue_id))
+    async def _mock_check_incident(conn, project_id, deploy_id, issue_id, new_events=1):
+        incident_calls.append((deploy_id, issue_id, new_events))
 
     with patch("app.worker.project_transaction", return_value=mock_pool.acquire.return_value), \
          patch("app.worker.find_deploy", side_effect=_mock_find_deploy), \
@@ -247,10 +249,10 @@ async def test_incident_check_called_once_per_distinct_deploy_issue(accept_event
          patch("app.worker.check_incident_for_issue", side_effect=_mock_check_incident):
         await process_event_batch(batch)
 
-        # 8 events total, but only 2 distinct (deploy, issue) tuples: (10, 1001) and (20, 2002)
+        # 8 events total, but only 2 distinct (deploy, issue) tuples, each told it covers 4 events
         assert len(incident_calls) == 2
-        assert (10, 1001) in incident_calls
-        assert (20, 2002) in incident_calls
+        assert (10, 1001, 4) in incident_calls
+        assert (20, 2002, 4) in incident_calls
 
 
 @pytest.mark.asyncio

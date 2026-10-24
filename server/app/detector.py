@@ -62,12 +62,13 @@ async def evaluate_deploy(
         """
         SELECT COALESCE(SUM(requests), 0) AS reqs, COALESCE(SUM(errors), 0) AS errs
         FROM traffic
-        WHERE project_id = $1 AND (deploy_id = $2 OR (bucket >= $3 AND bucket <= $4))
+        WHERE project_id = $1 AND environment = $5 AND (deploy_id = $2 OR (bucket >= $3 AND bucket <= $4))
         """,
         project_id,
         deploy_id,
         deployed_at,
         window_after_end,
+        source_env,
     )
     reqs_after = int(traffic_after_row["reqs"])
     errs_after = int(traffic_after_row["errs"])
@@ -76,11 +77,12 @@ async def evaluate_deploy(
         """
         SELECT COALESCE(SUM(requests), 0) AS reqs, COALESCE(SUM(errors), 0) AS errs
         FROM traffic
-        WHERE project_id = $1 AND bucket >= $2 AND bucket < $3
+        WHERE project_id = $1 AND environment = $4 AND bucket >= $2 AND bucket < $3
         """,
         project_id,
         window_before_start,
         deployed_at,
+        source_env,
     )
     reqs_before = int(traffic_before_row["reqs"])
     errs_before = int(traffic_before_row["errs"])
@@ -90,12 +92,13 @@ async def evaluate_deploy(
         """
         SELECT COUNT(*)
         FROM events
-        WHERE project_id = $1 AND (deploy_id = $2 OR (occurred_at >= $3 AND occurred_at <= $4))
+        WHERE project_id = $1 AND environment = $5 AND (deploy_id = $2 OR (occurred_at >= $3 AND occurred_at <= $4))
         """,
         project_id,
         deploy_id,
         deployed_at,
         window_after_end,
+        source_env,
     )
     events_after_count = int(events_after_count or 0)
 
@@ -103,13 +106,14 @@ async def evaluate_deploy(
         """
         SELECT COUNT(*)
         FROM events
-        WHERE project_id = $1 AND (deploy_id = $2 OR (occurred_at >= $3 AND occurred_at <= $4))
-          AND (stack_trace IS NOT NULL OR request_path IS NULL)
+        WHERE project_id = $1 AND environment = $5 AND type = 'error'
+          AND (deploy_id = $2 OR (occurred_at >= $3 AND occurred_at <= $4))
         """,
         project_id,
         deploy_id,
         deployed_at,
         window_after_end,
+        source_env,
     )
     errors_after_count = int(errors_after_count or 0)
 
@@ -117,12 +121,13 @@ async def evaluate_deploy(
         """
         SELECT COUNT(*)
         FROM events
-        WHERE project_id = $1 AND occurred_at >= $2 AND occurred_at < $3
-          AND (stack_trace IS NOT NULL OR request_path IS NULL)
+        WHERE project_id = $1 AND environment = $4 AND type = 'error'
+          AND occurred_at >= $2 AND occurred_at < $3
         """,
         project_id,
         window_before_start,
         deployed_at,
+        source_env,
     )
     errors_before_count = int(errors_before_count or 0)
 
@@ -133,6 +138,7 @@ async def evaluate_deploy(
         FROM issues i
         JOIN events e ON e.issue_id = i.id
         WHERE i.project_id = $1 AND i.first_seen >= $2 AND i.first_seen <= $4
+          AND e.environment = $5 AND e.type = 'error'
           AND (e.deploy_id = $3 OR (e.occurred_at >= $2 AND e.occurred_at <= $4))
         GROUP BY i.id
         """,
@@ -140,6 +146,7 @@ async def evaluate_deploy(
         deployed_at,
         deploy_id,
         window_after_end,
+        source_env,
     )
     new_issues_count = len(new_issues)
     new_issue_events = sum(int(r["ev_count"]) for r in new_issues)
@@ -148,25 +155,29 @@ async def evaluate_deploy(
     dur_after_rows = await conn.fetch(
         """
         SELECT duration_ms FROM events
-        WHERE project_id = $1 AND (deploy_id = $2 OR (occurred_at >= $3 AND occurred_at <= $4))
+        WHERE project_id = $1 AND environment = $5 AND type = 'slow_request'
+          AND (deploy_id = $2 OR (occurred_at >= $3 AND occurred_at <= $4))
           AND duration_ms IS NOT NULL
         """,
         project_id,
         deploy_id,
         deployed_at,
         window_after_end,
+        source_env,
     )
     samples_after = [float(r["duration_ms"]) for r in dur_after_rows]
 
     dur_before_rows = await conn.fetch(
         """
         SELECT duration_ms FROM events
-        WHERE project_id = $1 AND occurred_at >= $2 AND occurred_at < $3
+        WHERE project_id = $1 AND environment = $4 AND type = 'slow_request'
+          AND occurred_at >= $2 AND occurred_at < $3
           AND duration_ms IS NOT NULL
         """,
         project_id,
         window_before_start,
         deployed_at,
+        source_env,
     )
     samples_before = [float(r["duration_ms"]) for r in dur_before_rows]
 

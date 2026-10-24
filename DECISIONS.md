@@ -945,3 +945,27 @@ This document records key decisions made during development to ensure transparen
 - **Found by running the investigator with `LLM_PROVIDER=anthropic` against a local stand-in for the Messages API** (`ANTHROPIC_BASE_URL`, no real calls): the request still named `claude-3-5-sonnet-20241022`. Every install made from the old `.env.example` has `LLM_MODEL=claude-3-5-sonnet-20241022`, and the new defaults never applied. The retired-model warning was also logged only by the API process, not by the investigator or detector that make the calls.
 - **Fix:** a configured model from a retired family (Claude 3.x and earlier) is replaced by the current default (`claude-sonnet-5-5` fast, `claude-opus-5-5` deep), and the API, detector and investigator each log which variable named it and what is used instead.
 - **Verified live:** with the old `.env`, the investigator logged the replacement, sent `claude-sonnet-5-5` with `max_tokens` 8000, effort `medium`, `fallbacks: "default"`, API version 2026-10-21 and a bearer key, parsed the thinking + text reply, stored the real 4,321 / 876 tokens and metered 17,402 micro-USD (4,321 × 2 + 876 × 10). Before the fix the same run sent the retired model (priced at the highest configured rate, 34,804).
+
+### 80. Ingest robustness: one bad event, an outage or a second environment no longer costs other events
+- **Found by an independent review and reproduced live** (three cases, each batched with another tenant's valid event): a request path with a NUL byte (Postgres text cannot store it), a NaN `occurred_at` (accepted by the API, crashes the worker), and prod plus staging heartbeats in the same minute (the traffic upsert failed with "cannot affect row a second time"). In all three, the whole batch was retried three times and moved to `events:dead`, including the other tenant's good event, which was never stored. A short Postgres outage did the same to every event received meanwhile: connection errors counted toward the three tries, with no backoff.
+- **Fixes:**
+  - A failed batch is now processed one event at a time, so only the event that fails is retried and dead-lettered.
+  - Database or network errors (connection lost, restart, too many connections, deadlock) are not counted: the batch goes back unchanged and the worker backs off from 1 s to 30 s.
+  - `python -m app.cli requeue-dead` replays dead-lettered events; nothing could before.
+  - The worker strips NUL characters before storage. The API rejects NaN or infinite timestamps and durations, and counts above the integer column.
+  - The 422 response no longer echoes submitted values: it failed with a 500 on NaN, and could reflect secrets.
+  - Database errors inside the batch transaction are no longer swallowed. The incident check and decision persistence run in savepoints; previously a swallowed error aborted the transaction, COMMIT silently rolled back, and the batch was still acknowledged.
+  - Event rollup errors now fail the batch instead of being ignored.
+- **Environments kept apart (migration 023):** events get `environment` and `type`; traffic is keyed by (project, environment, minute). The detector counts only the deploy's own environment, so a staging deploy's errors or heartbeats no longer change a prod verdict. Errors are told from slow requests by `type`: the old test (`stack_trace IS NOT NULL`) dropped every HTTP error once stack traces were stored only encrypted. The timeline sums environments; export includes them.
+- **Also fixed:**
+  - Incidents counted batches, not events (1,000 errors in 5 batches showed as about 24); they now add the batch's event count.
+  - Slow-request issues no longer open incidents (they only affect the verdict, as the single-event path already did).
+  - A redeployed SHA (a rollback to it) is matched to its latest deploy at or before the event, not an arbitrary one. The cache is checked against the event time.
+  - Mute rules now apply: the incident is recorded but no alert or AI investigation is sent. `is_issue_muted` had no callers.
+  - Spike counters and stored-event metering are updated only after the batch commits; the stored-events meter was never recorded by the batch path at all.
+  - Dead-letter logs carry ids only, not the payload.
+  - The single-event path now uses the batch code, removing ~200 duplicated lines that had already diverged.
+- **Verification:**
+  - Live tests: a bad event next to a good one; NUL storage; prod and staging heartbeats in one minute; redeployed SHA; a prod verdict that ignores staging errors while the staging deploy gets `rollback`, with encrypted HTTP errors counted; NaN gets 422 without echo; a transient error is not counted. 369 tests pass against Postgres 16.
+  - On the live harness, the three reproductions now store every valid event and dead-letter nothing new. Replaying the 7 events dead-lettered earlier recovered 6 (all of the other tenant's); the NaN event queued before the API fix failed alone.
+  - `verify_pipeline.py` 13/13; `api_contract_check.py` 281/281.

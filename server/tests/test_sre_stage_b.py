@@ -28,6 +28,13 @@ from app.notifiers.channels import (
 )
 
 
+@pytest.fixture(autouse=True)
+def no_mute_rules():
+    """These tests replay a fixed sequence of database answers; mute rules are tested on their own."""
+    with patch("app.trust.calm.is_issue_muted", new=AsyncMock(return_value=(False, None))):
+        yield
+
+
 # ==============================================================================
 # 1. Typed Decisions Layer Tests
 # ==============================================================================
@@ -161,7 +168,7 @@ async def test_incident_trigger_threshold_and_open():
         # deploy row
         {"deployed_at": deployed_at, "commit_sha": "sha_deploy_1", "author": "alice", "message": "fix issue", "codeowners": "* @team"},
         # issue row
-        {"title": "ZeroDivisionError: division by zero", "first_seen": deployed_at + timedelta(seconds=10), "event_count": 3},
+        {"title": "ZeroDivisionError: division by zero", "fingerprint": "fp-test", "first_seen": deployed_at + timedelta(seconds=10), "event_count": 3},
         # project critical_routes
         {"critical_routes": ["/checkout"]},
         # recent event count in window: 3 (meets min_events=3)
@@ -217,7 +224,7 @@ async def test_incident_trigger_critical_route_single_event():
         # deploy row
         {"deployed_at": deployed_at, "commit_sha": "sha_deploy_2", "author": "bob", "message": "update checkout", "codeowners": None},
         # issue row
-        {"title": "KeyError: 'cart_id'", "first_seen": deployed_at + timedelta(seconds=5), "event_count": 1},
+        {"title": "KeyError: 'cart_id'", "fingerprint": "fp-test", "first_seen": deployed_at + timedelta(seconds=5), "event_count": 1},
         # project critical_routes contains "/checkout"
         {"critical_routes": ["/checkout"]},
         # recent count: only 1 event
@@ -271,7 +278,7 @@ async def test_incident_upgrade_possible_to_confirmed():
         # deploy row
         {"deployed_at": deployed_at, "commit_sha": "sha_deploy_3", "author": "carol", "message": "msg", "codeowners": None},
         # issue row
-        {"title": "RuntimeError: db pool timeout", "first_seen": deployed_at + timedelta(seconds=1), "event_count": 10},
+        {"title": "RuntimeError: db pool timeout", "fingerprint": "fp-test", "first_seen": deployed_at + timedelta(seconds=1), "event_count": 10},
         # project critical_routes
         {"critical_routes": []},
         # recent count: 10
@@ -436,3 +443,30 @@ async def test_cli_add_and_list_members(capsys):
         out = capsys.readouterr().out
         assert "Alice | Slack=U999" in out
 
+
+
+@pytest.mark.asyncio
+async def test_muted_issue_opens_incident_without_alert_or_investigation():
+    """A mute rule silences the alert (and the AI investigation), but the incident is still recorded."""
+    mock_conn = AsyncMock()
+    now_dt = datetime.now(timezone.utc)
+    deployed_at = now_dt - timedelta(minutes=5)
+    mock_conn.fetchrow.side_effect = [
+        {"deployed_at": deployed_at, "commit_sha": "sha1", "author": "alice", "message": "m", "codeowners": ""},
+        {"title": "KeyError: 'x'", "fingerprint": "fp-muted", "first_seen": deployed_at, "event_count": 5},
+        {"critical_routes": []},
+        {"cnt": 5},
+        None,  # no existing incident
+        {"id": 77, "is_new": True},
+    ]
+    mock_conn.fetch.return_value = []
+    payload = {"request_path": "/x", "stack_trace": '  File "app/x.py", line 1, in f\n', "exc_type": "KeyError"}
+    with patch("app.trust.calm.is_issue_muted", new=AsyncMock(return_value=(True, "Muted by rule #3 (noisy)"))), \
+         patch("app.incident_manager.dispatch_incident_alert", new=AsyncMock()) as dispatch, \
+         patch("app.queue.get_redis") as get_redis:
+        inc_id = await check_and_trigger_incident(
+            conn=mock_conn, project_id=1, deploy_id=10, issue_id=20, payload=payload, occurred_at_dt=now_dt,
+        )
+    assert inc_id == 77
+    dispatch.assert_not_called()
+    get_redis.assert_not_called()

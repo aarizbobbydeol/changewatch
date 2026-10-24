@@ -46,9 +46,9 @@ async def test_live_errors_from_the_next_deploy_are_not_blamed_on_the_previous_o
                 f"fp-known-{run}", t0 - timedelta(hours=1),
             )
             await conn.execute(
-                "INSERT INTO events (event_id, issue_id, project_id, deploy_id, occurred_at, stack_trace) "
-                "SELECT $1 || g, $2, 1, $3, $4::timestamptz + g * interval '1 second', 'trace' FROM generate_series(1, 5) g",
-                f"{run}-ok-", known, a, t0 + timedelta(minutes=1),
+                "INSERT INTO events (event_id, issue_id, project_id, deploy_id, occurred_at, stack_trace, environment) "
+                "SELECT $1 || g, $2, 1, $3, $4::timestamptz + g * interval '1 second', 'trace', $5 FROM generate_series(1, 5) g",
+                f"{run}-ok-", known, a, t0 + timedelta(minutes=1), env,
             )
             issue = await conn.fetchval(
                 "INSERT INTO issues (project_id, fingerprint, title, first_seen, last_seen, status, event_count) "
@@ -56,9 +56,9 @@ async def test_live_errors_from_the_next_deploy_are_not_blamed_on_the_previous_o
                 f"fp-{run}", t0 + timedelta(minutes=6),
             )
             await conn.execute(
-                "INSERT INTO events (event_id, issue_id, project_id, deploy_id, occurred_at, stack_trace) "
-                "SELECT $1 || g, $2, 1, $3, $4::timestamptz + g * interval '1 second', 'trace' FROM generate_series(1, 25) g",
-                f"{run}-bad-", issue, b, t0 + timedelta(minutes=6),
+                "INSERT INTO events (event_id, issue_id, project_id, deploy_id, occurred_at, stack_trace, environment) "
+                "SELECT $1 || g, $2, 1, $3, $4::timestamptz + g * interval '1 second', 'trace', $5 FROM generate_series(1, 25) g",
+                f"{run}-bad-", issue, b, t0 + timedelta(minutes=6), env,
             )
 
             deploy_a = {"id": a, "deployed_at": t0, "environment": env, "next_deployed_at": t0 + timedelta(minutes=5)}
