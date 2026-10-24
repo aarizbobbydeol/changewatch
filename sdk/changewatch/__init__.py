@@ -113,6 +113,7 @@ class Client:
         self._circuit_open_until = 0.0
         self._backoff_seconds = 60.0
         self._max_backoff_seconds = 600.0  # 10 minutes
+        self._dropped_events = 0  # events lost because the bounded queue was full
 
         # Threading and queue state
         self._queue: queue.Queue = queue.Queue(maxsize=1000)
@@ -284,6 +285,12 @@ class Client:
 
         while self._running:
             try:
+                # While paused (circuit open / server asked to retry later) leave events queued
+                pause = self._circuit_open_until - time.monotonic()
+                if pause > 0:
+                    time.sleep(min(0.5, pause))
+                    continue
+
                 elapsed = time.monotonic() - last_flush
                 timeout = max(0.05, 2.0 - elapsed)
 
@@ -311,6 +318,8 @@ class Client:
         Enforces circuit breaker:
         - If circuit is open, drops send attempt without network cost.
         - After 5 consecutive failures, circuit opens for 60s with exponential backoff up to 10m.
+        - HTTP 429/503 pause sending for Retry-After seconds; the batch is re-queued.
+        - Network failures re-queue the batch (bounded queue, overflow dropped and counted).
         """
         if not batch or self.disabled:
             return
@@ -336,13 +345,44 @@ class Client:
             self._consecutive_failures = 0
             self._circuit_open_until = 0.0
             self._backoff_seconds = 60.0
-        except Exception:
+        except urllib.error.HTTPError as exc:
             self._internal_errors += 1
-            self._consecutive_failures += 1
-            if self._consecutive_failures >= 5:
-                # Trip circuit breaker
-                self._circuit_open_until = time.monotonic() + self._backoff_seconds
-                self._backoff_seconds = min(self._max_backoff_seconds, self._backoff_seconds * 2.0)
+            if exc.code in (429, 503):
+                # The server asked us to retry later (e.g. its queue is down): keep the
+                # events and pause sending for Retry-After seconds
+                self._circuit_open_until = time.monotonic() + self._retry_after_seconds(exc.headers)
+                self._requeue(batch)
+            else:
+                # Other HTTP errors mean this batch itself was rejected; do not retry it
+                self._record_failure()
+        except Exception:
+            # Network failure: the events are still good, keep them for the next attempt
+            self._internal_errors += 1
+            self._requeue(batch)
+            self._record_failure()
+
+    def _record_failure(self):
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= 5:
+            # Trip circuit breaker
+            self._circuit_open_until = time.monotonic() + self._backoff_seconds
+            self._backoff_seconds = min(self._max_backoff_seconds, self._backoff_seconds * 2.0)
+
+    def _retry_after_seconds(self, headers: Any) -> float:
+        """Seconds from a Retry-After header (1 s to the 10 min backoff cap; 30 s if absent)."""
+        try:
+            value = float(headers.get("Retry-After")) if headers is not None else 30.0
+        except (TypeError, ValueError):
+            value = 30.0
+        return max(1.0, min(self._max_backoff_seconds, value))
+
+    def _requeue(self, batch: List[Dict[str, Any]]):
+        """Put unsent events back; the queue stays bounded, overflow is counted and dropped."""
+        for event in batch:
+            try:
+                self._queue.put_nowait(event)
+            except queue.Full:
+                self._dropped_events += 1
 
     def flush(self):
         """Flush pending events and final heartbeats on exit (never raises)."""

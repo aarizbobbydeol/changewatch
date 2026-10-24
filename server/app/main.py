@@ -33,7 +33,7 @@ from app.sre_prep import classify_file
 
 from app.fingerprint import compute_fingerprint
 from app.llm import log_llm_privacy_notice
-from app.logging_filter import LogRedactionFilter, redact_sensitive_data
+from app.logging_filter import LogRedactionFilter, redact_delivery_error, redact_sensitive_data
 from app.migrations import run_migrations
 from app.metering import (
     Meter,
@@ -354,6 +354,9 @@ async def create_deploy(
     return DeployResponse(ok=True, deploy_id=deploy_id)
 
 
+QUEUE_RETRY_AFTER_SEC = 30
+
+
 @app.post("/v1/events", response_model=EventsResponse, tags=["Ingestion"])
 async def ingest_events(
     batch: EventsBatch,
@@ -467,17 +470,26 @@ async def ingest_events(
     else:
         events_to_queue = list(batch.events)
 
-    # Push kept events to Redis list 'events' using a pipeline
-    pipe = redis.pipeline()
-    if asyncio.iscoroutine(pipe):
-        pipe = await pipe
-    for event in events_to_queue:
-        item = event.model_dump()
-        item["project_id"] = project_id
-        item["_tries"] = 0
-        pipe.rpush("events", json.dumps(item))
+    # Push kept events to Redis list 'events' in one MULTI/EXEC: the batch is queued whole or not at all
+    try:
+        pipe = redis.pipeline(transaction=True)
+        if asyncio.iscoroutine(pipe):
+            pipe = await pipe
+        for event in events_to_queue:
+            item = event.model_dump()
+            item["project_id"] = project_id
+            item["_tries"] = 0
+            pipe.rpush("events", json.dumps(item))
 
-    await pipe.execute()
+        await pipe.execute()
+    except Exception as exc:
+        # Queue unavailable (Redis down): tell the SDK to keep the events and retry later (brief §9)
+        logger.error("Event queue unavailable, asking client to retry: %s", redact_delivery_error(str(exc)))
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Event queue temporarily unavailable; retry later",
+            headers={"Retry-After": str(QUEUE_RETRY_AFTER_SEC)},
+        )
     return EventsResponse(accepted=len(events_to_queue), dropped=dropped_count)
 
 
