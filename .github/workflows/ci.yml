@@ -70,6 +70,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
+      - name: Install the SDK the way users do (packaging must build)
+        run: |
+          pip install ./sdk
+          cd "$RUNNER_TEMP" && python -I -c "import changewatch; print('SDK installed from', changewatch.__file__)"
+
       - name: Apply migrations to a clean database (with dev seed)
         run: python -m app.cli migrate
 

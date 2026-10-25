@@ -107,19 +107,33 @@ def _json_safe_extra(extra: Dict[str, Any]) -> Dict[str, Any]:
     return json.loads(text)
 
 
+def _scrub_value(value: Any, depth: int = 0) -> Any:
+    """Scrub strings at any depth of dicts, lists and tuples (dicts inside lists too)."""
+    if isinstance(value, str):
+        return _scrub(value)
+    if depth > 20:
+        return "[TOO_DEEP]"
+    if isinstance(value, dict):
+        return {k: _scrub_value(v, depth + 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_scrub_value(v, depth + 1) for v in value]
+    return value
+
+
 def _scrub_dict(data: Dict[str, Any]) -> Dict[str, Any]:
     """Recursively scrub values in dictionaries."""
-    clean = {}
-    for k, v in data.items():
-        if isinstance(v, str):
-            clean[k] = _scrub(v)
-        elif isinstance(v, dict):
-            clean[k] = _scrub_dict(v)
-        elif isinstance(v, list):
-            clean[k] = [_scrub(x) if isinstance(x, str) else x for x in v]
-        else:
-            clean[k] = v
-    return clean
+    return _scrub_value(data)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow redirects: urllib would send the API key to the new host (even over plain
+    HTTP) and turn the POST into a GET without the events."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None  # urllib then raises HTTPError with the 3xx status
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 class Client:
@@ -136,8 +150,10 @@ class Client:
     ):
         self.disabled = os.getenv("CHANGEWATCH_DISABLED", "0").lower() in ("1", "true", "yes")
         self.api_key = api_key
-        self.release = release or os.getenv("GIT_SHA", "")
-        self.environment = environment
+        # Cut once to the server's limits: an over-long value in any event (heartbeats included)
+        # made the server reject the whole batch
+        self.release = (release or os.getenv("GIT_SHA", ""))[:64]
+        self.environment = (environment or "prod")[:50]
         self.slow_ms = float(slow_ms)
         self.allow_insecure = allow_insecure or (os.getenv("ALLOW_INSECURE_HTTP", "0").lower() in ("1", "true", "yes"))
 
@@ -176,7 +192,7 @@ class Client:
                 except Exception:
                     pass
 
-            atexit.register(self.flush)
+            atexit.register(self._flush_at_exit)
 
     def _validate_and_format_endpoint(self, endpoint: str) -> str:
         """Validate HTTPS requirement unless localhost or explicitly allowed."""
@@ -245,14 +261,14 @@ class Client:
                 "type": "heartbeat",
                 "requests": self._heartbeat_requests,
                 "errors": self._heartbeat_errors,
-                "release": self.release,
+                "release": self.release or None,
                 "environment": self.environment,
                 "occurred_at": now,
             }
             try:
                 self._queue.put_nowait(event)
             except queue.Full:
-                self._dropped_events += 1
+                return  # keep the counts: the next heartbeat carries them
             self._heartbeat_requests = 0
             self._heartbeat_errors = 0
             self._last_heartbeat_time = now
@@ -285,9 +301,9 @@ class Client:
                 "exc_type": exc_type,
                 "message": (message or "")[:2000],
                 "stack_trace": (stack_trace or "")[-20000:],
-                "request_path": (request_path or "")[:500] if request_path else None,
-                "release": self.release[:64] if self.release else None,
-                "environment": self.environment[:20],
+                "request_path": (_scrub(request_path[:500]) or "")[:500] if request_path else None,
+                "release": self.release or None,
+                "environment": self.environment,
                 "occurred_at": time.time(),
                 "extra": clean_extra,
             }
@@ -306,10 +322,10 @@ class Client:
             event = {
                 "event_id": uuid.uuid4().hex,
                 "type": "slow_request",
-                "request_path": request_path[:500],
+                "request_path": (_scrub(request_path[:500]) or "")[:500],  # markers can be longer than what they replace
                 "duration_ms": round(duration_ms, 2),
-                "release": self.release[:64] if self.release else None,
-                "environment": self.environment[:20],
+                "release": self.release or None,
+                "environment": self.environment,
                 "occurred_at": time.time(),
                 "extra": extra,
             }
@@ -355,9 +371,10 @@ class Client:
                 self._internal_errors += 1
 
         if batch:
-            self._send_batch(batch)
+            # Stopping (at exit): hand the batch back so the final flush sends it
+            self._requeue(batch)
 
-    def _send_batch(self, batch: List[Dict[str, Any]]):
+    def _send_batch(self, batch: List[Dict[str, Any]], final: bool = False) -> bool:
         """Send a batch of events via HTTP POST with 3s timeout. Never raises.
 
         Enforces circuit breaker:
@@ -365,14 +382,16 @@ class Client:
         - After 5 consecutive failures, circuit opens for 60s with exponential backoff up to 10m.
         - HTTP 429/503 pause sending for Retry-After seconds; the batch is re-queued.
         - Network failures re-queue the batch (bounded queue, overflow dropped and counted).
+        `final` (at exit) tries once even while paused and keeps nothing for later.
+        Returns True when the server accepted the batch.
         """
         if not batch or self.disabled:
-            return
+            return False
 
         # Check circuit breaker
         now = time.monotonic()
-        if now < self._circuit_open_until:
-            return  # Circuit open, drop batch
+        if now < self._circuit_open_until and not final:
+            return False  # Circuit open, drop batch
 
         # The server rejects a whole request if one event is older than 24 hours (after a long
         # outage, re-queued events can be): leave those out and count them
@@ -380,7 +399,7 @@ class Client:
         fresh = [e for e in batch if e.get("occurred_at", 0) >= cutoff]
         self._dropped_events += len(batch) - len(fresh)
         if not fresh:
-            return
+            return False
         batch = fresh
 
         url = f"{self.endpoint}/v1/events"
@@ -393,15 +412,19 @@ class Client:
         req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
 
         try:
-            with urllib.request.urlopen(req, timeout=3.0) as resp:
+            with _OPENER.open(req, timeout=3.0) as resp:
                 _ = resp.read()
             # Success: reset circuit breaker
             self._consecutive_failures = 0
             self._circuit_open_until = 0.0
             self._backoff_seconds = 60.0
+            return True
         except urllib.error.HTTPError as exc:
             self._internal_errors += 1
-            if exc.code in (429, 503):
+            if 300 <= exc.code < 400:
+                logger.warning("ChangeWatch endpoint answered with a redirect (%d); set endpoint to the final URL", exc.code)
+                self._record_failure()
+            elif exc.code in (429, 503) and not final:
                 # The server asked us to retry later (e.g. its queue is down): keep the
                 # events and pause sending for Retry-After seconds
                 self._circuit_open_until = time.monotonic() + self._retry_after_seconds(exc.headers)
@@ -412,8 +435,10 @@ class Client:
         except Exception:
             # Network failure: the events are still good, keep them for the next attempt
             self._internal_errors += 1
-            self._requeue(batch)
+            if not final:
+                self._requeue(batch)
             self._record_failure()
+        return False
 
     def _record_failure(self):
         self._consecutive_failures += 1
@@ -456,6 +481,31 @@ class Client:
             if events_to_send:
                 for i in range(0, len(events_to_send), 20):
                     self._send_batch(events_to_send[i : i + 20])
+        except Exception:
+            self._internal_errors += 1
+
+    def _flush_at_exit(self):
+        """At interpreter exit: stop the worker (it hands back the batch it holds), then send
+        everything once. Gives up at the first failure so a dead server cannot hold up exit."""
+        if self.disabled:
+            return
+        try:
+            with self._lock:
+                self._emit_heartbeat_locked(time.time())
+            self._running = False
+            worker = self._worker_thread
+            if worker is not None and worker.is_alive() and worker is not threading.current_thread():
+                worker.join(timeout=2.5)
+            pending: List[Dict[str, Any]] = []
+            while True:
+                try:
+                    pending.append(self._queue.get_nowait())
+                except queue.Empty:
+                    break
+            for i in range(0, len(pending), 20):
+                if not self._send_batch(pending[i : i + 20], final=True):
+                    self._dropped_events += len(pending) - i
+                    break
         except Exception:
             self._internal_errors += 1
 
@@ -537,7 +587,7 @@ def shutdown():
         _orig_threading_excepthook = None
 
     if _client is not None:
-        _client.flush()
+        _client._flush_at_exit()  # stops the worker, which hands back its batch, then sends all
         _client.stop()
         _client = None
 

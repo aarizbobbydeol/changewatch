@@ -9,3 +9,7 @@ description = "ChangeWatch Python SDK for error and performance monitoring"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = []
+
+[tool.setuptools]
+# Only the SDK itself: without this, setuptools also finds bench/ and refuses to build
+packages = ["changewatch"]

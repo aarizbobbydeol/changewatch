@@ -42,7 +42,8 @@ class EventItem(BaseModel):
     request_path: Optional[str] = Field(None, max_length=500)
     duration_ms: Optional[float] = Field(None, ge=0, allow_inf_nan=False)
     release: Optional[str] = Field(None, max_length=64)
-    environment: str = Field(default="prod", max_length=20)
+    # Same limit as deploys: a longer name would never match its deploy
+    environment: str = Field(default="prod", max_length=50)
     occurred_at: float = Field(allow_inf_nan=False)  # Unix epoch timestamp in seconds
     extra: Dict[str, Any] = Field(default_factory=dict)
 

@@ -101,7 +101,7 @@ def test_circuit_breaker_trips_after_5_failures():
 
     batch = [{"type": "error", "message": "test", "occurred_at": time.time()}]
 
-    with patch("urllib.request.urlopen", side_effect=Exception("Connection refused")) as mock_urlopen:
+    with patch("changewatch._OPENER.open", side_effect=Exception("Connection refused")) as mock_urlopen:
         # Send 4 times: consecutive_failures increases, circuit still closed
         for i in range(1, 5):
             client._send_batch(batch)
@@ -127,7 +127,7 @@ def test_circuit_breaker_trips_after_5_failures():
     mock_resp.read.return_value = b'{"status": "ok"}'
     mock_resp.__enter__.return_value = mock_resp
 
-    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen_success:
+    with patch("changewatch._OPENER.open", return_value=mock_resp) as mock_urlopen_success:
         client._send_batch(batch)
         assert mock_urlopen_success.call_count == 1
         # Circuit breaker reset on success
@@ -177,7 +177,7 @@ def test_unserializable_extra_does_not_stop_sending():
     client = Client(api_key="cw_test", endpoint="http://localhost:8000")
     ok = MagicMock()
     ok.__enter__.return_value.read.return_value = b"{}"
-    with patch("urllib.request.urlopen", return_value=ok) as mock_urlopen:
+    with patch("changewatch._OPENER.open", return_value=ok) as mock_urlopen:
         for tag, extra in (("bad", {"order_id": uuid.uuid4(), "when": object()}), ("after", {"n": 1})):
             try:
                 raise ValueError(tag)
@@ -206,7 +206,7 @@ def test_extra_is_capped_and_old_events_are_left_out():
     old = {"event_id": "old", "type": "error", "occurred_at": time.time() - 25 * 3600}
     new = {"event_id": "new", "type": "error", "occurred_at": time.time()}
     before = client._dropped_events
-    with patch("urllib.request.urlopen", return_value=ok) as mock_urlopen:
+    with patch("changewatch._OPENER.open", return_value=ok) as mock_urlopen:
         client._send_batch([old, new])
     assert [e["event_id"] for e in _sent_events(mock_urlopen)] == ["new"]
     assert client._dropped_events == before + 1
