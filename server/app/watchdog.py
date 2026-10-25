@@ -69,7 +69,7 @@ async def outbox_delivery_stats(conn: asyncpg.Connection, now: datetime) -> tupl
         """
         SELECT
             COUNT(*) FILTER (WHERE status = 'sent') AS delivered,
-            COUNT(*) FILTER (WHERE status <> 'sent' AND attempts >= 3) AS failed
+            COUNT(*) FILTER (WHERE status NOT IN ('sent', 'skipped') AND attempts >= 3) AS failed
         FROM outbox
         WHERE created_at >= $1::timestamptz - INTERVAL '1 hour'
         """,

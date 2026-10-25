@@ -1,4 +1,5 @@
 """Time to first alert is set by the first alert; the later "confirmed" alert must not overwrite it."""
+import json
 import time
 import uuid
 
@@ -58,10 +59,12 @@ async def test_live_confirmed_alert_keeps_the_first_alert_time():
             # 35 s later the incident is confirmed and alerted again
             await dispatch_incident_alert(conn, 1, incident, "confirmed", first_event_at=first_event_at - 35, **args)
             again = await conn.fetchrow("SELECT alerted_at, first_alert_ms FROM incidents WHERE id = $1", incident)
-            links = await conn.fetch(
-                "SELECT payload::text AS payload FROM outbox WHERE project_id = 1 AND dedupe_key LIKE $1",
+            from app.outbox import read_payload
+
+            links = [{"payload": json.dumps(await read_payload(r))} for r in await conn.fetch(
+                "SELECT * FROM outbox WHERE project_id = 1 AND dedupe_key LIKE $1",
                 f"incident:{incident}:%",
-            )
+            )]
 
             await conn.execute("DELETE FROM outbox WHERE project_id = 1 AND dedupe_key LIKE $1", f"incident:{incident}:%")
             await conn.execute("DELETE FROM deploys WHERE id = $1", deploy)

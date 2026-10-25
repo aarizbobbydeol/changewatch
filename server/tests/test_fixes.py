@@ -202,9 +202,11 @@ async def test_live_incident_api_and_rollback_verdict_carry_the_suggestions(proj
                                      reasons=["error rate 25.0% vs 0.0% before"], kind="verdict_first")
         await dispatch_verdict_alert(conn=conn, project_id=pid, deploy_id=watch_dep, verdict="watch",
                                      reasons=["a new error"], kind="verdict_first")
-        payloads = {r["dedupe_key"]: r["payload"] for r in await conn.fetch(
-            "SELECT dedupe_key, payload FROM outbox WHERE project_id = $1 AND dedupe_key LIKE 'alert:%'", pid)}
-    texts = {k.split(":")[1]: (json.loads(v) if isinstance(v, str) else v)["text"] for k, v in payloads.items()}
+        from app.outbox import read_payload
+
+        payloads = {r["dedupe_key"]: await read_payload(r) for r in await conn.fetch(
+            "SELECT * FROM outbox WHERE project_id = $1 AND dedupe_key LIKE 'alert:%'", pid)}
+    texts = {k.split(":")[1]: v["text"] for k, v in payloads.items()}
     assert f"Undo: redeploy 111111111111 or `git revert --no-edit --no-merges {PREV}..{SHA}`" in texts[str(dep)]
     assert "Undo:" not in texts[str(watch_dep)]  # only on ROLLBACK
 

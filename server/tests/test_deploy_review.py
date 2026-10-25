@@ -208,8 +208,11 @@ async def test_live_verdict_alert_carries_the_review_line(deploy):
         await run_deploy_review(conn, pid, dep)
         await dispatch_verdict_alert(conn=conn, project_id=pid, deploy_id=dep, verdict="watch",
                                      reasons=["error count jumped to 12 vs 0 before"], kind="verdict_first")
-        payload = await conn.fetchval("SELECT payload FROM outbox WHERE project_id = $1 AND dedupe_key LIKE $2", pid, f"alert:{dep}:%")
-    text = json.loads(payload)["text"] if isinstance(payload, str) else payload["text"]
+        from app.outbox import read_payload
+
+        payload = await read_payload(await conn.fetchrow(
+            "SELECT * FROM outbox WHERE project_id = $1 AND dedupe_key LIKE $2", pid, f"alert:{dep}:%"))
+    text = payload["text"]
     assert "Risk review: HIGH: " in text
 
 

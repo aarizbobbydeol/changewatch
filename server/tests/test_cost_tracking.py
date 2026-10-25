@@ -106,7 +106,10 @@ async def test_live_release_that_doubles_ai_spend_per_request_is_called_out_once
         cost = await ai_cost_for_deploy(conn, project, dep)
         await _maybe_alert_ai_cost(conn, project, dep, "aicost1234")
         await _maybe_alert_ai_cost(conn, project, dep, "aicost1234")
-        messages = await conn.fetch("SELECT payload FROM outbox WHERE project_id = $1 AND dedupe_key LIKE 'ai_cost:%'", project)
+        from app.outbox import read_payload
+
+        messages = [{"payload": await read_payload(r)} for r in await conn.fetch(
+            "SELECT * FROM outbox WHERE project_id = $1 AND dedupe_key LIKE 'ai_cost:%'", project)]
     assert cost["before"]["per_1k_requests_micros"] == 20_000 and cost["after"]["per_1k_requests_micros"] == 90_000
     assert cost["change"] == "4.5x" and cost["jumped"] is True
     assert cost["before"]["per_1k_requests"] == "$0.02" and cost["after"]["cost"] == "$0.14"

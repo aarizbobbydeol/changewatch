@@ -3,15 +3,47 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 import asyncpg
 import httpx
 from app.config import settings
-from app.crypto import decrypt_or_plain
+from app.crypto import decrypt, decrypt_or_plain, encrypt_or_keep
 from app.logging_filter import redact_delivery_error
 from app.db import get_connection
 
 logger = logging.getLogger("changewatch.outbox")
+
+ENCRYPT_TIMEOUT_SEC = 5.0  # an alert waits at most this long for encryption, then goes in plain text
+
+
+async def _encrypted_payload(project_id: int, payload: Dict[str, Any]) -> Tuple[str, Optional[bytes]]:
+    """(payload column, payload_enc) for a new message.
+
+    Messages can quote customer code (a risk review finding, the AI's suggested change), so only
+    the ciphertext is stored. If encryption fails or hangs the message is stored in plain text:
+    an alert is never held back by encryption.
+    """
+    text = json.dumps(payload)
+    try:
+        _, payload_enc = await asyncio.wait_for(encrypt_or_keep(project_id, "outbox", "payload", text), ENCRYPT_TIMEOUT_SEC)
+    except Exception as exc:
+        logger.warning(
+            "Could not encrypt a notification for project %d, queued as plain text: %s",
+            project_id,
+            exc or type(exc).__name__,
+        )
+        return text, None
+    return "{}", payload_enc
+
+
+async def read_payload(item: Any) -> Dict[str, Any]:
+    """The message of an outbox row (it needs project_id, payload and payload_enc): decrypted, or
+    the plain payload of a row queued before encryption (or while it failed). Empty once the
+    message was sent, skipped or permanently failed."""
+    if item.get("payload_enc"):
+        return json.loads(await decrypt(item["project_id"], "outbox", "payload", item["payload_enc"]))
+    raw = item["payload"]
+    return raw if isinstance(raw, dict) else json.loads(raw)
 
 
 async def queue_notification(
@@ -42,17 +74,19 @@ async def queue_notification(
             ]
             return any(queued)
 
+    stored, payload_enc = await _encrypted_payload(project_id, payload)
     row = await conn.fetchrow(
         """
-        INSERT INTO outbox (project_id, channel_id, dedupe_key, payload, next_attempt_at, status)
-        VALUES ($1, $2, $3, $4::jsonb, now(), 'pending')
+        INSERT INTO outbox (project_id, channel_id, dedupe_key, payload, payload_enc, next_attempt_at, status)
+        VALUES ($1, $2, $3, $4::jsonb, $5, now(), 'pending')
         ON CONFLICT (dedupe_key) DO NOTHING
         RETURNING id
         """,
         project_id,
         channel_id,
         dedupe_key,
-        json.dumps(payload),
+        stored,
+        payload_enc,
     )
     if row:
         logger.info(
@@ -103,8 +137,9 @@ def to_chat_message(payload: Dict[str, Any]) -> Dict[str, Any]:
     return message
 
 
-async def _send_to_channel(conn: asyncpg.Connection, project_id: int, channel_id: int, payload: Dict[str, Any]) -> None:
-    """Deliver through the project's configured channel (Slack, Discord, Teams, email or webhook)."""
+async def _send_to_channel(conn: asyncpg.Connection, project_id: int, channel_id: int, payload: Dict[str, Any]) -> Optional[bool]:
+    """Deliver through the project's configured channel (Slack, Discord, Teams, email or webhook).
+    False when there was nothing to send to."""
     from app.notifiers.channels import get_notifier
 
     ch = await conn.fetchrow(
@@ -114,7 +149,7 @@ async def _send_to_channel(conn: asyncpg.Connection, project_id: int, channel_id
     )
     if not ch or not ch["enabled"]:
         logger.warning("Channel %d for project %d is missing or disabled; skipping delivery", channel_id, project_id)
-        return
+        return False
     notifier = get_notifier(ch["type"])
     if notifier is None:
         raise ValueError(f"Unsupported channel type: {ch['type']}")
@@ -123,8 +158,8 @@ async def _send_to_channel(conn: asyncpg.Connection, project_id: int, channel_id
     await notifier.send(payload, config)
 
 
-async def _default_send(project_id: int, payload: Dict[str, Any]) -> None:
-    """Send payload to project's configured Slack webhook if present."""
+async def _default_send(project_id: int, payload: Dict[str, Any]) -> Optional[bool]:
+    """Send payload to project's configured Slack webhook if present (False when there is none)."""
     async with get_connection() as conn:
         row = await conn.fetchrow(
             "SELECT slack_webhook_url, slack_webhook_url_enc FROM projects WHERE id = $1",
@@ -136,8 +171,8 @@ async def _default_send(project_id: int, payload: Dict[str, Any]) -> None:
         else None
     )
     if not url:
-        logger.warning("Project %d has no webhook URL configured; marking notification delivered", project_id)
-        return
+        logger.warning("Project %d has no channel or webhook URL configured; notification not delivered", project_id)
+        return False
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(url, json=payload)
@@ -149,34 +184,48 @@ async def process_outbox_item(
     item: asyncpg.Record,
     sender_func: Optional[Callable[[int, Dict[str, Any]], Any]] = None,
 ) -> bool:
-    """Process a single outbox row with retry backoff and expiration."""
+    """Process a single outbox row with retry backoff and expiration.
+
+    Once a message is sent, skipped or permanently failed, its content is cleared (not kept)."""
     item_id = item["id"]
     project_id = item["project_id"]
     attempts = item["attempts"]
     created_at = item["created_at"]
-    payload = item["payload"] if isinstance(item["payload"], dict) else json.loads(item["payload"])
 
     now = datetime.now(timezone.utc)
     delay_sec = (now - created_at).total_seconds()
     max_age_sec = settings.OUTBOX_MAX_AGE_HOURS * 3600.0
 
     send_fn = sender_func or _default_send
-    annotated_payload = to_chat_message(annotate_delayed_message(payload, delay_sec))
     channel_id = item["channel_id"] if "channel_id" in item.keys() else None
 
     try:
+        annotated_payload = to_chat_message(annotate_delayed_message(await read_payload(item), delay_sec))
         if sender_func is None and channel_id is not None:
-            await _send_to_channel(conn, project_id, channel_id, annotated_payload)
+            res = await _send_to_channel(conn, project_id, channel_id, annotated_payload)
         else:
             res = send_fn(project_id, annotated_payload)
             if asyncio.iscoroutine(res):
-                await res
+                res = await res
+
+        if res is False:
+            # Nowhere to send it: recorded as skipped, never as delivered
+            await conn.execute(
+                """
+                UPDATE outbox
+                SET status = 'skipped', last_error = $2, payload = '{}'::jsonb, payload_enc = NULL
+                WHERE id = $1
+                """,
+                item_id,
+                "no channel configured" if channel_id is None else "the channel is turned off or was removed",
+            )
+            return False
 
         # Mark sent
         await conn.execute(
             """
             UPDATE outbox
-            SET status = 'sent', last_error = NULL, sent_at = now()
+            SET status = 'sent', last_error = NULL, sent_at = now(), payload = '{}'::jsonb, payload_enc = NULL
             WHERE id = $1
             """,
             item_id,
@@ -200,7 +249,7 @@ async def process_outbox_item(
             await conn.execute(
                 """
                 UPDATE outbox
-                SET status = 'failed', attempts = $1, last_error = $2
+                SET status = 'failed', attempts = $1, last_error = $2, payload = '{}'::jsonb, payload_enc = NULL
                 WHERE id = $3
                 """,
                 new_attempts,
@@ -251,7 +300,7 @@ async def _claim_and_deliver(sender_func, busy: set) -> Any:
         async with conn.transaction():
             item = await conn.fetchrow(
                 """
-                SELECT id, project_id, channel_id, dedupe_key, payload, attempts, created_at
+                SELECT id, project_id, channel_id, dedupe_key, payload, payload_enc, attempts, created_at
                 FROM outbox
                 WHERE status = 'pending' AND next_attempt_at <= now()
                   AND (project_id::text || ':' || COALESCE(channel_id::text, '*')) <> ALL($1::text[])

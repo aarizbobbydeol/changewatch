@@ -253,3 +253,23 @@ async def test_live_each_reopen_and_resolved_message_is_its_own_entry(incident):
         ("16:00:00", "Resolved message delivered to 1 channel"),
         ("16:30:00", "Alert: the error is back delivered to 1 channel"),
     ], alerts
+
+
+@pytest.mark.asyncio
+async def test_live_alert_with_no_channel_is_not_called_delivered(incident):
+    from app.outbox import process_outbox_item, queue_notification
+
+    pid, _, inc = incident
+    key = f"incident:{inc}:resolved:default"
+    async with project_transaction(pid) as conn:  # the project has no channel and no Slack webhook
+        await queue_notification(conn, pid, key, {"text": "Resolved"}, fan_out=False)
+        oid = await conn.fetchval("SELECT id FROM outbox WHERE dedupe_key = $1", key)
+    async with get_connection() as conn:
+        async with conn.transaction():
+            await process_outbox_item(conn, await conn.fetchrow("SELECT * FROM outbox WHERE id = $1 FOR UPDATE", oid))
+    async with project_transaction(pid) as conn:
+        timeline = await build_incident_timeline(conn, pid, inc)
+        draft = await build_postmortem(conn, pid, inc)
+    text = " | ".join(t["detail"] for t in timeline)
+    assert "Resolved message not delivered: no channel configured" in text
+    assert "Resolved message delivered" not in draft["markdown"]

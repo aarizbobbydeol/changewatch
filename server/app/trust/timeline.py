@@ -108,7 +108,7 @@ async def build_incident_timeline(
     # Each reopen and each resolution sends its own alert (the key carries its time)
     outbox_rows = await conn.fetch(
         """
-        SELECT dedupe_key, status, created_at, sent_at
+        SELECT dedupe_key, status, created_at, sent_at, last_error
         FROM outbox
         WHERE project_id = $1 AND dedupe_key LIKE $2
         ORDER BY created_at
@@ -131,6 +131,9 @@ async def build_incident_timeline(
             add(at, "alert_sent", f"{label} delivered to {len(sent)} channel{'s' if len(sent) != 1 else ''}")
         elif any(r["status"] == "failed" for r in rows):
             add(rows[0]["created_at"], "alert_sent", f"{label} could not be delivered")
+        elif all(r["status"] == "skipped" for r in rows):
+            # Nowhere to send it (last_error says why): not a delivery
+            add(rows[0]["created_at"], "alert_sent", f"{label} not delivered: {rows[0]['last_error'] or 'no channel configured'}")
         else:
             add(rows[0]["created_at"], "alert_sent", f"{label} waiting to be delivered")
 

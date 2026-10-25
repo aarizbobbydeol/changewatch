@@ -2,7 +2,6 @@
 events, price books that start on their date, budget warnings that are sent, unbilled AI
 fallbacks, and incident actions and ratings scoped to the caller's project."""
 import asyncio
-import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
@@ -158,8 +157,10 @@ async def test_live_crossing_a_budget_threshold_queues_a_readable_warning(projec
                                                 unit_price_micros=20000, margin_multiplier=1.0,
                                                 min_unit_price_micros=0, free_units_per_month=0)})):
             await record_usage(conn, pid, Meter.RELEASE_MONITORED, 1, idempotency_key="deploy:budget:1")
-        rows = await conn.fetch("SELECT dedupe_key, payload FROM outbox WHERE project_id = $1", pid)
-    payloads = [json.loads(r["payload"]) if isinstance(r["payload"], str) else r["payload"] for r in rows]
+        from app.outbox import read_payload
+
+        rows = await conn.fetch("SELECT * FROM outbox WHERE project_id = $1", pid)
+        payloads = [await read_payload(r) for r in rows]
     assert [r["dedupe_key"].split(":")[-1] for r in rows] == ["50"]  # 20,000 of 30,000 = 66%
     assert payloads[0]["title"].startswith("Budget: 50%") and "$0.02 of $0.03" in payloads[0]["body"]
 
