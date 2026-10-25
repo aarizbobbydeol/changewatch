@@ -14,7 +14,7 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import asyncpg
 
 from app.crypto import decrypt_or_plain
@@ -121,11 +121,15 @@ async def check_and_trigger_incident(
     occurred_at_dt: datetime,
     first_event_dt: Optional[datetime] = None,
     new_events: int = 1,
+    investigation_jobs: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[int]:
     """
     Event-driven check called immediately after inserting error events; `new_events` is how many
     events of this issue and deploy arrived since the last check.
     Target latency: < 50ms for check + dispatch.
+
+    With `investigation_jobs`, the AI investigation job is appended there for the caller to queue
+    after its transaction commits (the investigator cannot see an uncommitted incident).
     """
     # 1. Fetch deploy metadata (deployed_at, commit_sha, author, message, codeowners)
     dep_row = await conn.fetchrow(
@@ -436,22 +440,27 @@ async def check_and_trigger_incident(
     )
 
     # 10. Enqueue AI investigation job
+    job = {"project_id": project_id, "incident_id": incident_id, "deep_mode": False}
+    if investigation_jobs is not None:
+        investigation_jobs.append(job)
+    else:
+        await queue_investigations([job])
+
+    return incident_id
+
+
+async def queue_investigations(jobs: List[Dict[str, Any]]) -> None:
+    """Queue AI investigation jobs; call only once their incidents are committed."""
+    if not jobs:
+        return
     try:
         from app.queue import get_redis
         redis_client = get_redis()
         if redis_client:
-            await redis_client.lpush(
-                "investigations",
-                json.dumps({
-                    "project_id": project_id,
-                    "incident_id": incident_id,
-                    "deep_mode": False,
-                }),
-            )
+            for job in jobs:
+                await redis_client.lpush("investigations", json.dumps(job))
     except Exception as q_exc:
-        logger.debug("Investigation queue push skipped or unavailable: %s", q_exc)
-
-    return incident_id
+        logger.warning("Investigation queue push failed: %s", q_exc)
 
 
 async def auto_resolve_stale_incidents(conn: asyncpg.Connection, resolve_after_min: int = 30) -> int:

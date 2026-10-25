@@ -26,6 +26,7 @@
   <a href="docs/SELF_HOSTING.md">Self-hosting</a> ·
   <a href="#-privacy--security">Privacy</a> ·
   <a href="docs/VERIFICATION.md">Verification guide</a> ·
+  <a href="docs/ARCHITECTURE.md">How it works, end to end</a> ·
   <a href="docs/DATA_PIPELINE.md">Data pipeline</a> ·
   <a href="docs/DEMO.md">Demo</a>
 </p>
@@ -122,6 +123,8 @@ flowchart LR
 3. **Decide**: the detector compares the post-deploy window with the pre-deploy baseline and produces a verdict.
 4. **Explain**: for `watch` and `rollback`, the LLM matches stack frames against the changed lines and names a likely cause and owner.
 5. **Alert**: your channels receive the verdict, the reasons, the likely cause and the tagged owners.
+
+The full walk-through of one bad deploy, process by process, with what happens when something fails: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ### What an alert looks like
 

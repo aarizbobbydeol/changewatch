@@ -175,6 +175,7 @@ async def check_incident_for_issue(
     deploy_id: Optional[int],
     issue_id: int,
     new_events: int = 1,
+    investigation_jobs: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """
     Incident check hook (Performance Addendum Stage 2 & AI SRE Phase 2).
@@ -183,13 +184,20 @@ async def check_incident_for_issue(
 
     Runs in a savepoint: a database error here is logged and rolled back on its own instead of
     aborting the batch transaction (which would then silently roll back on COMMIT).
+    An investigation job for a new incident goes to `investigation_jobs` (queued after commit).
     """
     if deploy_id is None:
         return
 
+    jobs: List[Dict[str, Any]] = []
     try:
         async with conn.transaction():
-            await _check_incident(conn, project_id, deploy_id, issue_id, new_events)
+            await _check_incident(conn, project_id, deploy_id, issue_id, new_events, jobs)
+        if investigation_jobs is not None:
+            investigation_jobs.extend(jobs)  # only when the savepoint kept the incident
+        else:
+            from app.incident_manager import queue_investigations
+            await queue_investigations(jobs)
     except Exception as exc:
         logger.warning(
             "check_incident_for_issue failed for project=%d, deploy=%s, issue=%d: %s",
@@ -200,7 +208,10 @@ async def check_incident_for_issue(
         )
 
 
-async def _check_incident(conn: asyncpg.Connection, project_id: int, deploy_id: int, issue_id: int, new_events: int) -> None:
+async def _check_incident(
+    conn: asyncpg.Connection, project_id: int, deploy_id: int, issue_id: int, new_events: int,
+    investigation_jobs: List[Dict[str, Any]],
+) -> None:
     ev_row = await conn.fetchrow(
         """
         SELECT occurred_at, request_path, stack_trace, stack_trace_enc
@@ -250,6 +261,7 @@ async def _check_incident(conn: asyncpg.Connection, project_id: int, deploy_id: 
         occurred_at_dt=occurred_at_dt,
         first_event_dt=first_event_dt,
         new_events=new_events,
+        investigation_jobs=investigation_jobs,
     )
 
 
@@ -302,7 +314,7 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
 
     meter_envs = {e.strip() for e in settings.METER_ENVIRONMENTS.split(",") if e.strip()}
     for project_id, events in by_project.items():
-        after_commit: Dict[str, Any] = {"rollups": {}, "stored": []}
+        after_commit: Dict[str, Any] = {"rollups": {}, "stored": [], "investigations": []}
         async with project_transaction(project_id) as conn:
             events = await claim_new_events(conn, project_id, events)
             if not events:
@@ -585,7 +597,10 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
                         key = (ev["deploy_id"], ev["issue_id"])
                         deploy_issue_counts[key] = deploy_issue_counts.get(key, 0) + 1
                 for (dep_id, iss_id), n in deploy_issue_counts.items():
-                    await check_incident_for_issue(conn, project_id, dep_id, iss_id, new_events=n)
+                    await check_incident_for_issue(
+                        conn, project_id, dep_id, iss_id, new_events=n,
+                        investigation_jobs=after_commit["investigations"],
+                    )
 
                 logger.info(
                     "Processed batch events: project=%d, total_events=%d, distinct_issues=%d",
@@ -598,7 +613,11 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
 
 
 async def _after_commit(project_id: int, done: Dict[str, Any]) -> None:
-    """Redis side effects of a committed batch: spike counters and stored-event metering."""
+    """Redis side effects of a committed batch: spike counters, stored-event metering and the
+    AI investigation jobs of new incidents."""
+    if done.get("investigations"):
+        from app.incident_manager import queue_investigations
+        await queue_investigations(done["investigations"])
     if not done["rollups"] and not done["stored"]:
         return
     try:

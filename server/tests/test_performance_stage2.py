@@ -240,7 +240,8 @@ async def test_incident_check_called_once_per_distinct_deploy_issue(accept_event
 
     incident_calls = []
 
-    async def _mock_check_incident(conn, project_id, deploy_id, issue_id, new_events=1):
+    async def _mock_check_incident(conn, project_id, deploy_id, issue_id, new_events=1, investigation_jobs=None):
+        assert investigation_jobs is not None  # jobs are queued after the commit, not inside it
         incident_calls.append((deploy_id, issue_id, new_events))
 
     with patch("app.worker.project_transaction", return_value=mock_pool.acquire.return_value), \
