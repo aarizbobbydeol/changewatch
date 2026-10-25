@@ -209,6 +209,7 @@ The last command prints your **ingest key** (`cw_ingest_…`) and **read key** (
 <summary><b>Want to try it without a real app?</b> Simulate deploys.</summary>
 
 ```bash
+export CHANGEWATCH_API_KEY=cw_ingest_...   # the ingest key create-project printed
 python scripts/simulate_deploy.py   # bad deploy → rollback, healthy → safe, silent → no_data
 python scripts/demo_app.py          # FastAPI demo with /crash and /slow routes
 ```

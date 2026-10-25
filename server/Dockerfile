@@ -13,10 +13,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy server code and sql migrations
 COPY server /app/server
+# The default price book, so `python -m app.cli price-book publish config/price_book.default.yaml` works
+COPY config/price_book.default.yaml /app/server/config/price_book.default.yaml
 
 ENV PYTHONPATH=/app/server
 WORKDIR /app/server
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# API worker processes from API_WORKERS (see app/serve.py)
+CMD ["python", "-m", "app.serve"]

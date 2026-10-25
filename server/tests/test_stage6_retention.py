@@ -208,7 +208,8 @@ async def test_cleanup_retention_cli_cmd(capsys):
 
         assert res == fake_stats
         mock_init.assert_called_once()
-        mock_cleanup.assert_called_once_with(mock_pool, retention_days=14, batch_size=2500)
+        # Code is cleaned too, after CODE_RETENTION_DAYS, unless --code-days says otherwise
+        mock_cleanup.assert_called_once_with(mock_pool, retention_days=14, batch_size=2500, code_retention_days=7)
         mock_close.assert_called_once()
 
     captured = capsys.readouterr()
@@ -526,7 +527,7 @@ async def test_cleanup_retention_cli_cmd_defaults(capsys):
 
         assert res == fake_stats
         mock_init.assert_called_once()
-        mock_cleanup.assert_called_once_with(mock_pool, retention_days=None, batch_size=5000)
+        mock_cleanup.assert_called_once_with(mock_pool, retention_days=None, batch_size=5000, code_retention_days=7)
         mock_close.assert_called_once()
 
     captured = capsys.readouterr()

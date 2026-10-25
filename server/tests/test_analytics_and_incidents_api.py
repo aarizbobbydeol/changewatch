@@ -264,6 +264,7 @@ async def test_analytics_overview_unbuilt_features():
         [],  # deploys
         [],  # incidents
         [],  # status_logs
+        [],  # alert ratings
     ]
     mock_pool = build_mock_pool(mock_conn)
 
@@ -288,6 +289,7 @@ async def test_analytics_csv_export():
         [],  # deploys
         [],  # incidents
         [],  # status_logs
+        [],  # alert ratings
     ]
     mock_pool = build_mock_pool(mock_conn)
 

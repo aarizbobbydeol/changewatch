@@ -155,12 +155,12 @@ export default function DashboardPage() {
       }
       const deploysData: Deploy[] = await deploysRes.json();
       setDeploys(deploysData);
-      if (deploysData.length > 0 && !selectedDeploy) {
-        setSelectedDeploy(deploysData[0]);
-      } else if (selectedDeploy) {
-        const updated = deploysData.find((d) => d.id === selectedDeploy.id);
-        if (updated) setSelectedDeploy(updated);
-      }
+      // Use the current selection, not the one this function was created with: the 15 s refresh
+      // runs an older copy of fetchData and used to jump back to the newest deploy every time
+      setSelectedDeploy((current) => {
+        if (!current) return deploysData[0] ?? null;
+        return deploysData.find((d) => d.id === current.id) ?? current;
+      });
 
       // 3. Fetch Issues
       const issuesRes = await fetch(getApiUrl("/api/issues?limit=50"), { headers });
@@ -232,12 +232,14 @@ export default function DashboardPage() {
   const metrics = useMemo(() => {
     const totalRequests = timeline.reduce((acc, b) => acc + (b.requests || 0), 0);
     const totalErrors = timeline.reduce((acc, b) => acc + (b.errors || 0), 0);
+    // The rate uses only buckets with traffic counted: the newest one often has errors before its heartbeat
+    const errorsWithTraffic = timeline.reduce((acc, b) => acc + ((b.requests || 0) > 0 ? b.errors || 0 : 0), 0);
     const rollbackCount = deploys.filter((d) => d.verdict === "rollback").length;
     const watchCount = deploys.filter((d) => d.verdict === "watch").length;
     return {
       totalRequests,
       totalErrors,
-      errorRate: totalRequests > 0 ? ((totalErrors / totalRequests) * 100).toFixed(2) : "0.00",
+      errorRate: totalRequests > 0 ? ((errorsWithTraffic / totalRequests) * 100).toFixed(2) : "0.00",
       rollbackCount,
       watchCount,
     };
@@ -428,7 +430,7 @@ export default function DashboardPage() {
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-sm">
             <span className="text-xs text-slate-400 font-medium">Share of Real Alerts</span>
             <div className="text-xl font-bold mt-1 text-indigo-400">
-              {analyticsOverview?.kpis?.alerts_accuracy?.formatted ?? "Not enough data yet"}
+              {analyticsOverview?.kpis?.alerts_real?.formatted ?? "Not enough data yet"}
             </div>
           </div>
         </div>

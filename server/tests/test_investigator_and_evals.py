@@ -241,7 +241,8 @@ async def test_run_investigation_and_caching():
         # The fast model is used, and the real token counts are stored and metered (not fixed numbers)
         mock_llm_factory.assert_called_once_with(deep=False)
         insert_args = next(c.args for c in mock_conn.fetchrow.call_args_list if "insert into investigations" in c.args[0].lower())
-        assert insert_args[-2:] == (1234, 567)
+        assert insert_args[-3:] == (1234, 567, "done")  # tokens, and a real AI answer
+        assert mock_usage.call_args.kwargs["status"] == "done"
         assert mock_usage.call_args.kwargs["input_tokens"] == 1234
         assert mock_usage.call_args.kwargs["output_tokens"] == 567
 

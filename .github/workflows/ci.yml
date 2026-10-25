@@ -169,6 +169,12 @@ jobs:
           TELEMETRY_ENABLED=0
           EOF
 
+      - name: Check the HTTPS proxy config (Caddy, used by the tls profile)
+        run: |
+          docker run --rm -e PUBLIC_HOSTNAME=changewatch.example.com \
+            -v "$PWD/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine \
+            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
       - name: Build and start the stack
         run: docker compose up -d --build
 

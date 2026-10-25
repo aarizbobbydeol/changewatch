@@ -27,6 +27,15 @@ interface UsageResponse {
   };
 }
 
+/** "12.34" dollars to integer micro-dollars without floating point; "" is no limit. */
+function dollarsToMicros(input: string): number | null {
+  const text = input.trim();
+  if (!text) return null;
+  const match = /^(\d{1,9})(?:\.(\d{1,6}))?$/.exec(text);
+  if (!match) throw new Error(`"${text}" is not an amount in dollars (for example 25 or 12.50)`);
+  return Number(match[1]) * 1_000_000 + Number((match[2] || "").padEnd(6, "0"));
+}
+
 interface ForecastResponse {
   status: string;
   message?: string;
@@ -43,10 +52,11 @@ interface BudgetResponse {
   soft_limit_micros: number | null;
   hard_limit_micros: number | null;
   warn_at: number[];
-  current_spent_micros: number;
+  // Names as GET /v1/budget returns them (app/metering.py get_project_budget)
+  spent_micros: number;
   last_warned_pct: number;
   hard_limit_hit_at: string | null;
-  extras_paused: boolean;
+  optional_extras_paused: boolean;
 }
 
 interface EstimateResponse {
@@ -174,8 +184,8 @@ export default function UsagePage() {
     setBudgetSavedMsg(null);
 
     try {
-      const soft = softLimitInput.trim() ? Math.round(parseFloat(softLimitInput) * 1000000) : null;
-      const hard = hardLimitInput.trim() ? Math.round(parseFloat(hardLimitInput) * 1000000) : null;
+      const soft = dollarsToMicros(softLimitInput);
+      const hard = dollarsToMicros(hardLimitInput);
 
       const res = await fetch(`${endpoint.replace(/\/$/, "")}/v1/budget`, {
         method: "PUT",
@@ -186,7 +196,8 @@ export default function UsagePage() {
         body: JSON.stringify({
           soft_limit_micros: soft,
           hard_limit_micros: hard,
-          warn_at: [50, 80, 100],
+          // Keep the project's own warning levels (sending the defaults reset them)
+          warn_at: budget?.warn_at?.length ? budget.warn_at : [50, 80, 100],
         }),
       });
 
@@ -228,7 +239,7 @@ export default function UsagePage() {
   };
 
   // Budget progress math
-  const currentSpent = budget?.current_spent_micros || usage?.totals.billed_micros || 0;
+  const currentSpent = budget?.spent_micros ?? usage?.totals.billed_micros ?? 0;
   const hardLimit = budget?.hard_limit_micros;
   const softLimit = budget?.soft_limit_micros;
   const effectiveLimit = hardLimit || softLimit || 0;
@@ -301,7 +312,7 @@ export default function UsagePage() {
       )}
 
       {/* Paused Extras Banner */}
-      {budget?.extras_paused && (
+      {budget?.optional_extras_paused && (
         <div className="bg-amber-950/50 border border-amber-600 text-amber-200 p-4 rounded-lg mb-6 flex items-start gap-3">
           <span className="text-xl">⚠️</span>
           <div>

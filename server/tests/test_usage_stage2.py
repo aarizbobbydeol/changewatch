@@ -88,7 +88,7 @@ async def test_record_usage_idempotency_and_ledger(sample_price_book):
 
         # Check that usage_events, usage_daily, and budget_state were updated
         assert mock_conn.fetchrow.call_count == 1
-        assert mock_conn.execute.call_count == 2  # usage_daily and budget_state
+        assert mock_conn.execute.call_count == 3  # free-unit lock, usage_daily and budget_state
 
         # 2. Duplicate / replayed record: fetchrow returns None (ON CONFLICT DO NOTHING)
         mock_conn.fetchrow.return_value = None
@@ -105,8 +105,8 @@ async def test_record_usage_idempotency_and_ledger(sample_price_book):
             occurred_at=now_dt,
         )
         assert dup_id is None
-        # On duplicate, usage_daily and budget_state are NOT touched
-        assert mock_conn.execute.call_count == 0
+        # On duplicate, usage_daily and budget_state are NOT touched (only the lock was taken)
+        assert mock_conn.execute.call_count == 1
 
 
 @pytest.mark.asyncio
@@ -216,14 +216,15 @@ async def test_stored_events_redis_aggregation_and_flush(sample_price_book):
     mock_redis.incrby.assert_called_once_with(f"usage:events:7:{m_epoch}", 25)
     mock_redis.sadd.assert_called_once_with("usage:pending_event_buckets", f"7:{m_epoch}")
 
-    # 2. Flush aggregated bucket from Redis
+    # 2. Flush aggregated bucket from Redis: read, record, then take the recorded count off
     mock_conn = AsyncMock()
+    tx = MagicMock()
+    tx.__aenter__ = AsyncMock(return_value=None)
+    tx.__aexit__ = AsyncMock(return_value=None)
+    mock_conn.transaction = MagicMock(return_value=tx)
     mock_redis.smembers.return_value = {f"7:{m_epoch}".encode()}
-
-    # Pipeline returns [count_val, delete_res, srem_res]
-    mock_pipe = MagicMock()
-    mock_pipe.execute = AsyncMock(return_value=["25", 1, 1])
-    mock_redis.pipeline = MagicMock(return_value=mock_pipe)
+    mock_redis.get.return_value = "25"
+    mock_redis.decrby.return_value = 0
 
     mock_conn.fetchval.return_value = 0  # free units applied so far
     mock_conn.fetchrow.return_value = {"id": 301}
@@ -237,7 +238,9 @@ async def test_stored_events_redis_aggregation_and_flush(sample_price_book):
         assert insert_args[1] == 7  # project_id
         assert insert_args[2] == "stored_events"
         assert insert_args[3] == 25  # units
-        assert insert_args[11] == f"events:7:{m_epoch}"  # idempotency_key
+        # Each flush is its own record, so events of that minute that arrive later still count
+        assert insert_args[11].startswith(f"events:7:{m_epoch}:")  # idempotency_key
+        mock_redis.decrby.assert_awaited_once_with(f"usage:events:7:{m_epoch}", 25)
 
 
 @pytest.mark.asyncio

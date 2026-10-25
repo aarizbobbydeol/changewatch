@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import uuid
 from dataclasses import dataclass
 from decimal import Decimal
 from datetime import datetime, timedelta, timezone
@@ -211,6 +212,15 @@ def calculate_billed_micros(
     return (0, free_units_applied, billable_units)
 
 
+async def _effective_price_book_version(conn) -> Optional[int]:
+    """The newest price book already in effect. A version published with a future effective_from
+    applies from that date (customers get notice); before any is in effect, the first one."""
+    version = await conn.fetchval("SELECT MAX(version) FROM price_book WHERE effective_from <= now()")
+    if version is None:
+        version = await conn.fetchval("SELECT MIN(version) FROM price_book")
+    return version
+
+
 async def get_active_price_book(
     conn,
     project_id: Optional[int] = None,
@@ -238,7 +248,7 @@ async def get_active_price_book(
                 target_version = pinned_version
 
     if target_version is None:
-        target_version = await conn.fetchval("SELECT MAX(version) FROM price_book")
+        target_version = await _effective_price_book_version(conn)
 
     if target_version is None:
         # Fallback to version 1 default
@@ -279,7 +289,7 @@ async def set_price_lock(
     if days <= 0:
         raise ValueError("Price lock duration must be positive days")
 
-    latest_version = await conn.fetchval("SELECT MAX(version) FROM price_book")
+    latest_version = await _effective_price_book_version(conn)
     if latest_version is None:
         latest_version = 1
 
@@ -351,8 +361,14 @@ async def record_usage(
 
     pb_version = price_book_version or entry.version
 
-    # Check free units already applied in the current calendar month
+    # Check free units already applied in the current calendar month. Two records at the same
+    # moment (two API workers, the investigator and the API) would both see the same total and
+    # both take the last free unit: the lock (held until the caller's transaction ends) makes them
+    # take turns.
     month_start = occurred_at_dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1))", f"usage:{project_id}:{meter_str}:{month.isoformat()}"
+    )
     free_used_row = await conn.fetchval(
         """
         SELECT COALESCE(SUM(free_units_applied), 0)
@@ -444,6 +460,14 @@ async def record_usage(
         month,
         billed_micros,
     )
+
+    if billed_micros > 0:
+        # Budget warnings (50/80/100% by default). A failure here must not undo the usage record.
+        try:
+            async with conn.transaction():
+                await check_and_notify_budget_thresholds(conn, project_id, occurred_at=occurred_at_dt)
+        except Exception as exc:
+            logger.warning("Budget threshold check failed for project %d: %s", project_id, exc)
 
     return usage_event_id
 
@@ -547,41 +571,39 @@ async def flush_usage_events(conn, redis, force: bool = False) -> int:
 
         bucket_key = f"usage:events:{project_id}:{m_epoch}"
         try:
-            pipe = redis.pipeline()
-            if hasattr(pipe, "__await__"):
-                pipe = await pipe
-            pipe.get(bucket_key)
-            pipe.delete(bucket_key)
-            pipe.srem("usage:pending_event_buckets", b_str)
-            res = await pipe.execute()
-            val = res[0]
+            val = await redis.get(bucket_key)
+            count = int(val or 0)
+        except (ValueError, TypeError):
+            count = 0
         except Exception as exc:
             logger.warning("Error fetching bucket %s from Redis: %s", bucket_key, exc)
             continue
 
-        if val is None:
-            continue
-
-        try:
-            count = int(val)
-        except (ValueError, TypeError):
-            continue
-
         if count <= 0:
+            await redis.srem("usage:pending_event_buckets", b_str)
             continue
 
         occurred_at = datetime.fromtimestamp(m_epoch, tz=timezone.utc)
-        idempotency_key = f"events:{project_id}:{m_epoch}"
+        # Each flush is its own record: events of a minute that arrive after it was flushed (the
+        # SDK can deliver up to 24 h late) are a new record, not a duplicate of the first
+        idempotency_key = f"events:{project_id}:{m_epoch}:{uuid.uuid4().hex[:12]}"
 
-        await record_usage(
-            conn=conn,
-            project_id=project_id,
-            meter=Meter.STORED_EVENTS,
-            units=count,
-            ref_type="batch",
-            idempotency_key=idempotency_key,
-            occurred_at=occurred_at,
-        )
+        # Record first, then take exactly that many off the bucket: if the database write fails,
+        # the count stays in Redis for the next flush instead of being lost
+        async with conn.transaction():
+            await record_usage(
+                conn=conn,
+                project_id=project_id,
+                meter=Meter.STORED_EVENTS,
+                units=count,
+                ref_type="batch",
+                idempotency_key=idempotency_key,
+                occurred_at=occurred_at,
+            )
+        await redis.srem("usage:pending_event_buckets", b_str)
+        remaining = int(await redis.decrby(bucket_key, count))
+        if remaining > 0:
+            await redis.sadd("usage:pending_event_buckets", b_str)  # counted while we flushed
         total_flushed += count
 
     return total_flushed
@@ -763,30 +785,28 @@ async def check_and_notify_budget_thresholds(
 
     # Enqueue low-severity notification into outbox
     dedupe_key = f"budget_warn:{project_id}:{month_date.isoformat()}:{crossed_threshold}"
+    spent_usd = (Decimal(spent) / Decimal(1_000_000)).quantize(Decimal("0.01"))
+    limit_usd = (Decimal(effective_limit) / Decimal(1_000_000)).quantize(Decimal("0.01"))
+    link = settings.dashboard_link("/usage")
     payload = {
+        "type": "budget_warning",
         "kind": "budget_warning",
         "severity": "low",
         "project_id": project_id,
         "threshold_pct": crossed_threshold,
         "spent_micros": spent,
         "limit_micros": effective_limit,
-        "message": f"ChangeWatch Budget Warning: Project {project_id} reached {crossed_threshold}% of spend limit (${spent / 1e6:.2f} / ${effective_limit / 1e6:.2f})",
-        "change_budget_url": settings.dashboard_link("/usage"),
+        "title": f"Budget: {crossed_threshold}% of this month's limit used",
+        "body": (
+            f"Spent ${spent_usd} of ${limit_usd} this month. Verdicts and alerts are never paused; "
+            "AI investigations pause at the hard limit." + (f" Change the budget: {link}" if link else "")
+        ),
+        "change_budget_url": link,
     }
 
-    try:
-        await conn.execute(
-            """
-            INSERT INTO outbox (project_id, dedupe_key, payload, status)
-            VALUES ($1, $2, $3::jsonb, 'pending')
-            ON CONFLICT (dedupe_key) DO NOTHING
-            """,
-            project_id,
-            dedupe_key,
-            json.dumps(payload),
-        )
-    except Exception as exc:
-        logger.warning("Failed enqueueing budget warning outbox notification: %s", exc)
+    from app.outbox import queue_notification
+
+    await queue_notification(conn, project_id=project_id, dedupe_key=dedupe_key, payload=payload)
 
     return crossed_threshold
 

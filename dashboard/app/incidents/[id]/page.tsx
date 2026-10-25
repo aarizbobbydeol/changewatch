@@ -16,7 +16,7 @@ interface InvestigationResult {
   summary?: string;
   what_broke?: string;
   cause?: string;
-  evidence?: { source?: string; detail?: string }[];
+  evidence?: { kind?: string; detail?: string; ref?: string }[];
   suggested_fix?: { description?: string; rollback_recommended?: boolean; warning_label?: string };
   confidence?: "high" | "medium" | "low";
   not_sure_reason?: string | null;
@@ -58,6 +58,7 @@ interface IncidentDetail {
 function aiStatusLabel(ai?: IncidentDetail["ai_investigation"]): string {
   if (!ai || !ai.enabled) return "No investigation yet";
   if (ai.status === "done") return "Completed";
+  if (ai.status === "partial") return "Rules-based answer (AI unavailable)";
   if (ai.status === "running") return "Investigating…";
   if (ai.status === "paused") return "Paused (budget limit)";
   return "Investigation failed";
@@ -96,7 +97,7 @@ function InvestigationView({ result }: { result: InvestigationResult }) {
           <ul className="mt-1 list-disc pl-4 text-slate-300 space-y-0.5">
             {result.evidence.map((e, i) => (
               <li key={i}>
-                {e.source && <span className="text-slate-500">[{e.source}] </span>}
+                {e.kind && <span className="text-slate-500">[{e.kind}] </span>}
                 {e.detail}
               </li>
             ))}
@@ -132,12 +133,14 @@ export default function IncidentDetailPage() {
   const [loading, setLoading] = useState<boolean>(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
+  const [keyChecked, setKeyChecked] = useState<boolean>(false);
 
   useEffect(() => {
     const savedKey = loadReadKey();
     const savedEp = loadEndpoint();
     setApiKey(savedKey);
     setEndpoint(savedEp);
+    setKeyChecked(true);
   }, []);
 
   const getApiUrl = (path: string) => {
@@ -147,7 +150,12 @@ export default function IncidentDetailPage() {
   };
 
   const fetchIncident = async () => {
-    if (!apiKey || !incidentId) return;
+    if (!incidentId) return;
+    if (!apiKey) {
+      setLoading(false);
+      setErrorMsg("A read key is needed to view incidents. Enter it on the Overview page (it is kept in this browser only).");
+      return;
+    }
     setLoading(true);
     setErrorMsg(null);
     try {
@@ -171,21 +179,29 @@ export default function IncidentDetailPage() {
   };
 
   useEffect(() => {
-    if (apiKey && incidentId) {
+    // Wait for the saved key to be read from this browser before deciding it is missing
+    if (keyChecked && incidentId) {
       fetchIncident();
     }
-  }, [apiKey, endpoint, incidentId]);
+  }, [keyChecked, apiKey, endpoint, incidentId]);
 
-  const handleUpdateStatus = async (newStatus: "confirmed" | "resolved" | "dismissed") => {
+  // Saved on the server (POST /api/incidents/{id}/actions or /feedback), then reloaded: the page
+  // shows what the API has, so a reload or a teammate sees the same thing
+  const postToIncident = async (path: "actions" | "feedback", body: Record<string, string>, done: string) => {
     if (!apiKey || !incident) return;
-    setActionStatus("Updating...");
+    setActionStatus("Saving...");
     try {
-      // Optimistic local update
-      setIncident((prev) => (prev ? { ...prev, status: newStatus } : null));
-      setActionStatus(`Status updated to ${newStatus}`);
-      setTimeout(() => setActionStatus(null), 3000);
+      const res = await fetch(getApiUrl(`/api/incidents/${incident.id}/${path}`), {
+        method: "POST",
+        headers: { "X-API-Key": apiKey.trim(), "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body, actor: "dashboard" }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await fetchIncident();
+      setActionStatus(done);
+      setTimeout(() => setActionStatus(null), 4000);
     } catch (e: any) {
-      setActionStatus(`Error: ${e.message}`);
+      setActionStatus(`Could not save: ${e.message}`);
     }
   };
 
@@ -305,32 +321,49 @@ export default function IncidentDetailPage() {
                   <h2 className="text-xl font-bold text-slate-100">{incident.title}</h2>
                 </div>
 
-                {/* Status action buttons */}
-                <div className="flex items-center gap-2">
-                  {incident.status === "possible" && (
-                    <button
-                      onClick={() => handleUpdateStatus("confirmed")}
-                      className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold transition"
-                    >
-                      Confirm Incident
-                    </button>
-                  )}
-                  {incident.status !== "resolved" && (
-                    <button
-                      onClick={() => handleUpdateStatus("resolved")}
-                      className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold transition"
-                    >
-                      Resolve Incident
-                    </button>
-                  )}
-                  {incident.status !== "dismissed" && (
-                    <button
-                      onClick={() => handleUpdateStatus("dismissed")}
-                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-xs font-medium transition"
-                    >
-                      Dismiss
-                    </button>
-                  )}
+                {/* Actions (saved on the server) */}
+                <div className="flex flex-col items-start md:items-end gap-2">
+                  <div className="flex items-center gap-2">
+                    {incident.status !== "resolved" ? (
+                      <>
+                        <button
+                          onClick={() => postToIncident("actions", { action: "ack" }, "Marked as being worked on")}
+                          className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold transition"
+                        >
+                          I&apos;m on it
+                        </button>
+                        <button
+                          onClick={() => postToIncident("actions", { action: "resolve" }, "Incident resolved")}
+                          className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold transition"
+                        >
+                          Resolve
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => postToIncident("actions", { action: "reopen" }, "Incident reopened")}
+                        className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition"
+                      >
+                        Reopen
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5 text-xs text-slate-400">
+                    <span>Was this alert real?</span>
+                    {([
+                      ["real", "Real"],
+                      ["false", "False alarm"],
+                      ["unclear", "Unclear"],
+                    ] as const).map(([label, text]) => (
+                      <button
+                        key={label}
+                        onClick={() => postToIncident("feedback", { label }, "Thanks: this rating feeds the Trust page")}
+                        className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-md transition"
+                      >
+                        {text}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
 
@@ -430,7 +463,8 @@ export default function IncidentDetailPage() {
                   </span>
                 </div>
 
-                {incident.ai_investigation?.status === "done" && incident.ai_investigation.result ? (
+                {(incident.ai_investigation?.status === "done" || incident.ai_investigation?.status === "partial") &&
+                incident.ai_investigation.result ? (
                   <InvestigationView result={incident.ai_investigation.result} />
                 ) : (
                   <div className="p-5 rounded-lg bg-slate-950 border border-slate-800/80 text-center space-y-2">

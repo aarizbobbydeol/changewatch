@@ -15,7 +15,7 @@ from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request, statu
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.auth import (
     get_api_key,
@@ -159,7 +159,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
     """422 that says what is wrong without echoing the submitted values back: they may hold
     secrets, and a NaN cannot be written as JSON at all (the default handler failed with a 500)."""
     errors = [{"loc": list(e.get("loc", ())), "msg": e.get("msg"), "type": e.get("type")} for e in exc.errors()]
-    return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"detail": errors})
+    return JSONResponse(status_code=422, content={"detail": errors})
 
 
 
@@ -848,14 +848,17 @@ async def get_timeline(
             now_dt,
         )
 
-        # 2. Fetch error rollups (Performance Addendum Section 4)
+        # 2. Fetch error rollups (Performance Addendum Section 4). Rollups also count slow
+        # requests, whose issues the worker titles "Slow: <path>": those are not errors
         error_rows = await conn.fetch(
             """
-            SELECT bucket, SUM(count)::int AS error_count
-            FROM event_rollups
-            WHERE project_id = $1 AND bucket >= $2 AND bucket <= $3
-            GROUP BY bucket
-            ORDER BY bucket ASC
+            SELECT r.bucket, SUM(r.count)::int AS error_count
+            FROM event_rollups r
+            JOIN issues i ON i.id = r.issue_id AND i.project_id = r.project_id
+            WHERE r.project_id = $1 AND r.bucket >= $2 AND r.bucket <= $3
+              AND i.title NOT LIKE 'Slow: %'
+            GROUP BY r.bucket
+            ORDER BY r.bucket ASC
             """,
             project_id,
             start_dt,
@@ -910,18 +913,19 @@ async def get_timeline(
         cnt = int(r.get("error_count") or r.get("count") or 1)
         events_per_bucket[r_key] = events_per_bucket.get(r_key, 0) + cnt
 
+    # Requests come only from heartbeats and are never made up: a bucket whose heartbeat has not
+    # arrived yet (the SDK sends one a minute) shows its errors with 0 requests, not a 100% rate
     for b_key, ev_count in events_per_bucket.items():
         if b_key not in bucket_map:
             bucket_map[b_key] = {
                 "bucket": b_key,
                 "timestamp": b_key,
-                "requests": ev_count,
+                "requests": 0,
                 "errors": ev_count,
                 "deploys": [],
             }
         else:
             bucket_map[b_key]["errors"] = max(bucket_map[b_key]["errors"], ev_count)
-            bucket_map[b_key]["requests"] = max(bucket_map[b_key]["requests"], bucket_map[b_key]["errors"])
 
     all_deploys = []
     for dr in deploy_rows:
@@ -1907,15 +1911,15 @@ async def get_admin_margin(
 # ==============================================================================
 
 class IncidentActionRequest(BaseModel):
-    action: str  # ack | assign | resolve | reopen
-    actor: Optional[str] = "anonymous"
+    action: Literal["ack", "assign", "resolve", "reopen"]
+    actor: Optional[str] = Field("anonymous", max_length=200)
     detail: Optional[Dict[str, Any]] = None
 
 
 class IncidentFeedbackRequest(BaseModel):
-    label: str  # real | false | unclear
-    actor: Optional[str] = "anonymous"
-    comment: Optional[str] = None
+    label: Literal["real", "false", "unclear"]
+    actor: Optional[str] = Field("anonymous", max_length=200)
+    comment: Optional[str] = Field(None, max_length=2000)
 
 
 class IgnoreRuleCreate(BaseModel):
@@ -2057,6 +2061,8 @@ async def trigger_incident_action(
     """Execute action on incident: ack, assign, resolve, or reopen."""
     from app.trust.actions import execute_incident_action
     async with project_transaction(project_id) as conn:
+        if not await conn.fetchval("SELECT 1 FROM incidents WHERE id = $1 AND project_id = $2", id, project_id):
+            raise HTTPException(status_code=404, detail="Incident not found")
         res = await execute_incident_action(
             conn=conn,
             project_id=project_id,
@@ -2077,6 +2083,9 @@ async def submit_incident_feedback(
     """Submit rating (real, false, unclear) for an incident alert."""
     from app.trust.feedback import record_alert_feedback
     async with project_transaction(project_id) as conn:
+        # Only this project's incidents: the foreign key alone accepted any project's incident id
+        if not await conn.fetchval("SELECT 1 FROM incidents WHERE id = $1 AND project_id = $2", id, project_id):
+            raise HTTPException(status_code=404, detail="Incident not found")
         fb_id = await record_alert_feedback(
             conn=conn,
             project_id=project_id,

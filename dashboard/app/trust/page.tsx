@@ -25,7 +25,8 @@ interface CalibrationBin {
 
 interface TrustSummary {
   metrics: TrustMetrics;
-  suggestions: { text?: string; title?: string }[];
+  // As /v1/trust/summary returns them (trust/feedback.py get_feedback_suggestions)
+  suggestions: { kind?: string; pattern?: string; reason?: string; false_count?: number; suggestion_text?: string }[];
   calibration: { headline: string; status: string; bins: CalibrationBin[]; total_samples: number; brier_score: number | null };
 }
 
@@ -168,7 +169,7 @@ export default function TrustPage() {
               {summary && summary.suggestions.length > 0 && (
                 <ul className="mt-3 list-disc pl-5 text-sm text-slate-300 space-y-1">
                   {summary.suggestions.map((s, i) => (
-                    <li key={i}>{s.text || s.title}</li>
+                    <li key={i}>{s.suggestion_text || s.reason || s.pattern}</li>
                   ))}
                 </ul>
               )}

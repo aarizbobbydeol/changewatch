@@ -162,6 +162,12 @@ async def run_investigation(
     """Run full read-only investigation with pre-gathering, agent execution, and verification."""
     started_at = datetime.now(timezone.utc)
 
+    # One investigation of an incident at a time (the queued job and a "Dig deeper" or API call):
+    # the second waits for the first to commit, then reuses its result instead of paying again
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1))", f"investigation:{project_id}:{incident_id}"
+    )
+
     # 1. Check cache: existing completed investigation for this incident (unless deep mode requested)
     if not deep_mode:
         cached_row = await conn.fetchrow(
@@ -228,6 +234,9 @@ async def run_investigation(
         except Exception as p_exc:
             logger.debug("Failed parsing LLM output: %s. Falling back to deterministic fallback.", p_exc)
 
+    # Whether the model gave a usable answer: a refusal, a cut-off or an outage gets the rules-based
+    # answer below, which is stored as 'partial' (a later run may still get the AI) and never billed
+    ai_answered = parsed_output is not None
     if not parsed_output:
         # Fallback output derived from deterministic context
         inc = context["incident"]
@@ -294,7 +303,7 @@ async def run_investigation(
             incident_id, project_id, status, model, started_at, finished_at,
             steps, steps_enc, result, result_enc, input_tokens, output_tokens
         )
-        VALUES ($1, $2, 'done', $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        VALUES ($1, $2, $12, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING id
         """,
         incident_id,
@@ -308,6 +317,7 @@ async def run_investigation(
         result_enc,
         input_tokens,
         output_tokens,
+        "done" if ai_answered else "partial",
     )
     inv_id = int(inv_row["id"])
 
@@ -318,7 +328,7 @@ async def run_investigation(
             conn=conn,
             project_id=project_id,
             investigation_id=inv_id,
-            status="done",
+            status="done" if ai_answered else "failed",
             is_deep=deep_mode,
             input_tokens=input_tokens,
             output_tokens=output_tokens,

@@ -2,7 +2,6 @@
 Tests budgets, spend enforcement, warnings, outbox alerts, and the non-negotiable safety floor.
 """
 
-import json
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
@@ -72,19 +71,20 @@ async def test_budget_threshold_warnings_and_deduplication():
     ]
 
     now_dt = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
-    threshold = await check_and_notify_budget_thresholds(mock_conn, project_id=1, occurred_at=now_dt)
+    with patch("app.outbox.queue_notification", new=AsyncMock(return_value=True)) as queued:
+        threshold = await check_and_notify_budget_thresholds(mock_conn, project_id=1, occurred_at=now_dt)
     assert threshold == 50
 
-    # Verify notification inserted into outbox
-    assert mock_conn.execute.call_count == 2  # 1 for budget_state last_warned_pct, 1 for outbox
-    outbox_call = mock_conn.execute.call_args_list[1]
-    sql, pid, dedupe_key, payload_json = outbox_call[0][:4]
-    assert pid == 1
-    assert dedupe_key == "budget_warn:1:2026-06-01:50"
-    payload = json.loads(payload_json)
+    # last_warned_pct is recorded, and the warning goes to the project's channels through the outbox
+    assert mock_conn.execute.call_count == 1
+    kwargs = queued.await_args.kwargs
+    assert kwargs["project_id"] == 1
+    assert kwargs["dedupe_key"] == "budget_warn:1:2026-06-01:50"
+    payload = kwargs["payload"]
     assert payload["kind"] == "budget_warning"
     assert payload["threshold_pct"] == 50
     assert payload["severity"] == "low"
+    assert payload["title"].startswith("Budget: 50%") and "$5.50 of $10.00" in payload["body"]
 
     # Subsequent check at 58% spend: already warned for 50%, so should return None
     mock_conn.fetchrow.side_effect = [

@@ -248,18 +248,16 @@ async def cleanup_retention_cmd(
     """Trigger retention cleanup for expired events, traffic, and code contents."""
     pool = await init_db_pool()
     try:
-        kwargs = {"retention_days": days, "batch_size": batch_size}
-        if code_days is not None:
-            kwargs["code_retention_days"] = code_days
+        # Code (diffs, files, CODEOWNERS) is cleaned too, by default after CODE_RETENTION_DAYS
+        effective_code_days = code_days if code_days is not None else settings.CODE_RETENTION_DAYS
+        kwargs = {"retention_days": days, "batch_size": batch_size, "code_retention_days": effective_code_days}
         stats = await cleanup_old_records(pool, **kwargs)
         effective_days = days if days is not None else settings.RETENTION_DAYS
-        effective_code_days = code_days if code_days is not None else settings.CODE_RETENTION_DAYS
         print("\n==========================================")
         print(" ChangeWatch Retention Cleanup Completed  ")
         print("==========================================")
         print(f"Retention Window:  {effective_days} days")
-        if code_days is not None:
-            print(f"Code Retention Window:  {effective_code_days} days")
+        print(f"Code Retention:    {effective_code_days} days")
         print(f"Batch Size:        {batch_size}")
         print(f"Events Deleted:    {stats['events_deleted']}")
         print(f"Traffic Deleted:   {stats['traffic_deleted']}")

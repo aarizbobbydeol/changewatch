@@ -129,12 +129,26 @@ async def get_overview(
         )
         status_logs = [dict(r) for r in csl_rows]
 
+        # 4. Ratings of alerts (POST /api/incidents/{id}/feedback): the latest rating per incident
+        feedback_rows = await conn.fetch(
+            """
+            SELECT DISTINCT ON (af.incident_id) af.incident_id, af.label
+            FROM alert_feedback af
+            WHERE af.project_id = $1 AND af.created_at >= $2 AND af.created_at <= $3
+            ORDER BY af.incident_id, af.created_at DESC
+            """,
+            project_id,
+            start_dt,
+            end_dt,
+        )
+        feedback = [dict(r) for r in feedback_rows]
+
     kpis = {
         "releases": compute_releases(deploys).to_dict(),
         "change_failure_rate": compute_change_failure_rate(deploys, end_dt).to_dict(),
         "time_to_detect": compute_time_to_detect(incidents).to_dict(),
         "time_to_fix": compute_time_to_fix(resolved).to_dict(),
-        "alerts_real": compute_alerts_accuracy([]).to_dict(),  # alert_feedback table populated in M6
+        "alerts_real": compute_alerts_accuracy(feedback).to_dict(),
         "tool_uptime": compute_tool_uptime(status_logs, window_min).to_dict(),
     }
 

@@ -24,6 +24,10 @@ async def record_alert_feedback(
     label = label.lower().strip()
     if label not in ("real", "false", "unclear"):
         raise ValueError(f"Invalid feedback label: '{label}'. Must be real, false, or unclear.")
+    if not await conn.fetchval(
+        "SELECT 1 FROM incidents WHERE id = $1 AND project_id = $2", incident_id, project_id
+    ):
+        raise LookupError(f"Incident {incident_id} not found")
 
     row = await conn.fetchrow(
         """
@@ -154,7 +158,7 @@ async def get_feedback_suggestions(
         """
         SELECT i.where_file, i.category, COUNT(*) AS false_count
         FROM alert_feedback af
-        JOIN incidents i ON i.id = af.incident_id
+        JOIN incidents i ON i.id = af.incident_id AND i.project_id = af.project_id
         WHERE af.project_id = $1 AND af.label = 'false'
         GROUP BY i.where_file, i.category
         HAVING COUNT(*) >= $2

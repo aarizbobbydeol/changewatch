@@ -1046,3 +1046,28 @@ An independent bug hunt (10 reviewers, then a critic, then three checks per find
 - **Long environment names broke whole batches.** Events allowed 20 characters, deploys 50, and heartbeats were never cut, so an environment like `production-eu-central-1` (23) made every batch with a heartbeat fail with 422, taking the errors in it along. Events now allow 50 like deploys, and the SDK cuts release and environment once at start.
 - **Request paths and nested `extra` values were not scrubbed** (emails or tokens in `/users/<email>/reset`, dicts inside lists). They are now, and a path is cut again after scrubbing because markers can be longer than what they replace.
 - **A heartbeat that did not fit in a full queue lost its counts**; they are now carried into the next heartbeat.
+
+### 88. Bug hunt, part 4: billing, ratings, dashboard, operations
+- **Billing:**
+  - A failed or unusable AI answer (outage, timeout, refusal, cut-off JSON) was billed like a real one. It is now stored as `partial` (the rules-based answer is still shown, and a later run may still get the AI) and records no usage.
+  - Two investigations of one incident at the same moment (the queued job and an API or "Dig deeper" call) were both billed. They now take turns per incident, and the second reuses the first result.
+  - Two usage records at the same moment could both take the last free unit. Free-unit accounting now holds a lock per project, meter and month.
+  - Stored-event usage that arrived after its minute was flushed was silently ignored (same idempotency key), and a database error after the Redis delete lost the count. Each flush is now its own record, written before the count is taken off Redis.
+  - A price book published with a future `effective_from` applied at once (also to new price locks). It now applies from its date.
+  - Budget warnings (50/80/100%) were never sent: the function existed but nothing called it. They are now sent when spend crosses a threshold, as a readable message to the project's channels (they used to have no text the chat formatter could show), with amounts formatted without floats.
+  - The dashboard read budget fields the API does not return, so the "AI Investigations Paused" banner never appeared; saving limits reset custom warning levels; dollar input used floating point. All three are fixed (the dollar conversion is exact).
+- **Ratings and actions:**
+  - The incident page's Confirm/Resolve/Dismiss buttons only changed the page, so nothing was saved. They are now "I'm on it", Resolve and Reopen through `POST /api/incidents/{id}/actions`, plus Real / False alarm / Unclear ratings through `/feedback`, and the page reloads what the server has.
+  - The feedback endpoint accepted another project's incident id (and told you whether it existed). Both endpoints now answer 404 outside the caller's project, and 422 instead of 500 for an unknown action or rating. The feedback joins also check the project.
+  - "Alerts that were real" was always computed from an empty list, and the dashboard read the wrong key for it.
+- **Dashboard:**
+  - The timeline counted slow requests as errors and made up request counts (a newest bucket at about a 100% error rate); requests now come only from heartbeats.
+  - The incident and analytics pages now say a read key is needed, or that it was rejected, instead of loading forever or showing an empty project.
+  - Auto-refresh no longer resets the selected deploy every 15 seconds; trust suggestions show their text; evidence shows its kind; the metrics link goes to the document on GitHub.
+- **Operations:**
+  - The Caddyfile used `tls internal` inside `handle`, which Caddy rejects, so the documented HTTPS profile could not start. Caddy already uses its internal CA for localhost, so the block is gone, and CI validates the Caddyfile with the official image.
+  - `API_WORKERS` is now used (`python -m app.serve`; compose had a fixed `--workers 2`).
+  - `cleanup-retention` also cleans code by default after `CODE_RETENTION_DAYS`, as its help said.
+  - The default price book is in the server image, so the documented publish command works.
+  - The DEMO.md delete command and the README quick-start key are corrected.
+- **Verification:** 445 tests pass against Postgres 16 (63 new in parts 1 to 4, each new test failing on the old code), security 12/12, evals 12/12, chaos. Dashboard lint has 0 errors and the build passes.

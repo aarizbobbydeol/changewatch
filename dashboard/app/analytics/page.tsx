@@ -53,6 +53,11 @@ export default function AnalyticsDashboardPage() {
     const savedEp = loadEndpoint();
     setApiKey(savedKey);
     setEndpoint(savedEp);
+    if (!savedKey) {
+      // Say so instead of showing loading tiles forever
+      setLoading(false);
+      setError("A read key is needed to see analytics. Enter it on the Overview page (it is kept in this browser only).");
+    }
   }, []);
 
   const getApiUrl = (path: string) => `${endpoint.replace(/\/+$/, "")}${path}`;
@@ -63,6 +68,12 @@ export default function AnalyticsDashboardPage() {
     setError(null);
     try {
       const headers = { "X-API-Key": apiKey.trim() };
+      // A rejected key or a server error must show as an error, not as an empty project
+      const getJson = (path: string) =>
+        fetch(getApiUrl(path), { headers }).then(async (r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        });
 
       const [
         ovRes,
@@ -73,13 +84,13 @@ export default function AnalyticsDashboardPage() {
         opsRes,
         defRes,
       ] = await Promise.allSettled([
-        fetch(getApiUrl(`/v1/analytics/overview?period=${periodDays}&env=${env}`), { headers }).then((r) => r.json()),
-        fetch(getApiUrl(`/v1/analytics/verdicts-by-week?period=${periodDays}&env=${env}`), { headers }).then((r) => r.json()),
-        fetch(getApiUrl(`/v1/analytics/ttf-by-week?period=${periodDays}&env=${env}`), { headers }).then((r) => r.json()),
-        fetch(getApiUrl(`/v1/analytics/hotspots?period=${periodDays}&env=${env}`), { headers }).then((r) => r.json()),
-        fetch(getApiUrl(`/v1/analytics/categories?period=${periodDays}&env=${env}`), { headers }).then((r) => r.json()),
-        fetch(getApiUrl(`/v1/analytics/operations?period=${periodDays}&env=${env}`), { headers }).then((r) => r.json()),
-        fetch(getApiUrl(`/v1/analytics/definitions`), { headers }).then((r) => r.json()),
+        getJson(`/v1/analytics/overview?period=${periodDays}&env=${env}`),
+        getJson(`/v1/analytics/verdicts-by-week?period=${periodDays}&env=${env}`),
+        getJson(`/v1/analytics/ttf-by-week?period=${periodDays}&env=${env}`),
+        getJson(`/v1/analytics/hotspots?period=${periodDays}&env=${env}`),
+        getJson(`/v1/analytics/categories?period=${periodDays}&env=${env}`),
+        getJson(`/v1/analytics/operations?period=${periodDays}&env=${env}`),
+        getJson(`/v1/analytics/definitions`),
       ]);
 
       // The API returns the KPI tiles under `kpis` and the series as plain lists
@@ -88,7 +99,16 @@ export default function AnalyticsDashboardPage() {
         if (Array.isArray(res.value)) return res.value;
         return Array.isArray(res.value?.[key]) ? res.value[key] : null;
       };
-      if (ovRes.status === "fulfilled" && !ovRes.value.detail) setOverview(ovRes.value.kpis ?? ovRes.value);
+      if (ovRes.status === "rejected") {
+        const reason = String(ovRes.reason?.message || ovRes.reason);
+        setError(
+          reason.includes("401") || reason.includes("403")
+            ? "The read key was rejected. Check it on the Overview page."
+            : `Could not load analytics (${reason}).`
+        );
+        return;
+      }
+      setOverview(ovRes.value.kpis ?? ovRes.value);
       const weeks = asList(vbwRes, "weeks");
       if (weeks) setVerdictsByWeek(weeks);
       const ttfWeeks = asList(tbwRes, "weeks");
@@ -243,7 +263,7 @@ export default function AnalyticsDashboardPage() {
           {renderMetricTile("change_failure_rate", "Change Failure Rate")}
           {renderMetricTile("time_to_detect", "Time to Detect")}
           {renderMetricTile("time_to_fix", "Time to Fix")}
-          {renderMetricTile("alerts_accuracy", "Alerts That Were Real")}
+          {renderMetricTile("alerts_real", "Alerts That Were Real")}
           {renderMetricTile("tool_uptime", "Tool Uptime")}
         </div>
 
@@ -411,7 +431,7 @@ export default function AnalyticsDashboardPage() {
         {/* Small footer link to definitions */}
         <div className="text-center text-xs text-slate-600 pb-8">
           All metrics calculated strictly via pure functions in metrics.py.{" "}
-          <a href="/docs/METRICS.md" target="_blank" className="text-slate-400 underline">
+          <a href="https://github.com/aarizbobbydeol/changewatch/blob/main/docs/METRICS.md" target="_blank" rel="noreferrer" className="text-slate-400 underline">
             How these numbers are calculated
           </a>
         </div>

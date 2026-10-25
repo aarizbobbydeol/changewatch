@@ -40,8 +40,8 @@ async def compute_decision_calibration(
                  ELSE NULL
                END AS outcome
         FROM decisions d
-        JOIN incidents i ON i.id = d.incident_id
-        LEFT JOIN alert_feedback af ON af.incident_id = i.id
+        JOIN incidents i ON i.id = d.incident_id AND i.project_id = d.project_id
+        LEFT JOIN alert_feedback af ON af.incident_id = i.id AND af.project_id = i.project_id
         WHERE d.project_id = $1
           AND d.question_id = $2
           AND d.probability IS NOT NULL

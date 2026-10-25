@@ -56,7 +56,7 @@ Set up a server with HTTPS first: [SELF_HOSTING.md](SELF_HOSTING.md) covers a sm
 
 Use a server that holds only demo data. Testers who connect their own app should get their own project (`create-project`), which row-level security keeps separate.
 
-Stop the demo with `docker compose --profile demo stop demo`. Its data ages out with normal retention (30 days), or delete the project and crypto-shred its data with `docker compose exec api python -m app.cli delete-project <id> --purge`.
+Stop the demo with `docker compose --profile demo stop demo`. Its data ages out with normal retention (30 days), or delete the project and crypto-shred its data with `docker compose exec api python -m app.cli delete-project --project-id <id> --purge`.
 
 ### Settings
 
