@@ -33,6 +33,7 @@ CHANGES_DATA = {
     ("POST", "/api/incidents/{id}/actions"), ("POST", "/api/incidents/{id}/feedback"),
     ("POST", "/api/incidents/{id}/investigate"), ("DELETE", "/v1/project-data"), ("POST", "/v1/telemetry/opt-in"),
     ("POST", "/v1/events"), ("POST", "/v1/deploys"),
+    ("POST", "/api/runbooks"), ("PUT", "/api/runbooks/{id}"), ("DELETE", "/api/runbooks/{id}"),
 }
 SAMPLES = {"sha": "deadbeefcafe", "metric": "overview", "meter": "ai_investigation", "token": "not-a-real-token"}
 NOT_FOUND_OK = {("GET", "/v1/verdict")}  # the sample sha has no deploy

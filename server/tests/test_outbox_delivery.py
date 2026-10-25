@@ -307,3 +307,18 @@ async def test_live_next_message_waits_while_the_one_before_is_being_sent(projec
     await outbox._claim_and_deliver(sender, set())
     await outbox._claim_and_deliver(sender, set())
     assert sent == ["msg 0", "msg 1"]
+
+
+@pytest.mark.asyncio
+async def test_live_queue_order_wins_over_the_queuing_transactions_start_time(project):
+    # Two worker processes: one queues "possible", another whose transaction began a moment earlier
+    # (it waited for the first one's lock) queues "confirmed" after it, with an earlier next_attempt_at
+    ids = await _queue(project, [(905, 86000), (905, 86400)])  # ids in queue order; the second is "due" first
+    sent = []
+
+    async def sender(pid, payload):
+        sent.append(payload["text"])
+
+    for _ in range(2):
+        await outbox._claim_and_deliver(sender, set())
+    assert sent == ["msg 0", "msg 1"] and await _statuses(ids) == [("sent", 0)] * 2
