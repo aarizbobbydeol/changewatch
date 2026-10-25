@@ -142,6 +142,41 @@ async def _returned_after_resolution(
     return seen_since is None
 
 
+async def _alert_context(conn: asyncpg.Connection, project_id: int, incident_id: int, issue_id: int,
+                         title: Optional[str], where_file: Optional[str], where_function: Optional[str],
+                         now_dt: datetime) -> Dict[str, str]:
+    """The one-line context of an incident alert (possible, confirmed or back again): the closest past
+    incident and how it ended ("seen_before"), and the team's runbook ("runbook"). Each lookup runs in
+    a savepoint and is skipped on error, so it never holds back the alert."""
+    lines: Dict[str, str] = {}
+    try:
+        async with conn.transaction():
+            from app.trust.memory import find_similar_incidents, seen_before_line
+
+            similar = await find_similar_incidents(
+                conn, project_id, exclude_incident_id=incident_id, issue_id=issue_id, where_file=where_file,
+                where_function=where_function, title=title, before=now_dt, limit=1,
+            )
+            line = seen_before_line(similar)
+            if line:
+                lines["seen_before"] = line
+    except Exception as exc:
+        logger.warning("Incident %d: past incidents could not be checked: %s", incident_id, exc)
+    try:
+        async with conn.transaction():
+            from app.runbooks import find_runbooks, runbook_line
+
+            line = runbook_line(await find_runbooks(
+                conn, project_id, title=title, where_file=where_file, issue_id=issue_id,
+                since=now_dt - timedelta(hours=1), limit=1,
+            ))
+            if line:
+                lines["runbook"] = line
+    except Exception as exc:
+        logger.warning("Incident %d: runbooks could not be checked: %s", incident_id, exc)
+    return lines
+
+
 async def check_and_trigger_incident(
     conn: asyncpg.Connection,
     project_id: int,
@@ -301,7 +336,9 @@ async def check_and_trigger_incident(
                 where_function=inc_full["where_function"] or "unknown",
                 in_diff=bool(inc_full["in_diff"]),
                 raw_owners=json.loads(inc_full["owners"]) if inc_full["owners"] else [],
-                triage_info={"returned": True},
+                triage_info={"returned": True, **await _alert_context(
+                    conn, project_id, inc_id, issue_id, inc_full["title"], inc_full["where_file"],
+                    inc_full["where_function"], occurred_at_dt)},
                 # A new message, not a repeat of the first "confirmed" alert (outbox dedupe)
                 dedupe_suffix=f":reopened:{int(resolved_at.timestamp()) if resolved_at else 0}",
             )
@@ -343,6 +380,9 @@ async def check_and_trigger_incident(
                 in_diff=bool(inc_full["in_diff"]),
                 raw_owners=owners_list,
                 first_event_at=first_event_at_ts,
+                # The confirmed alert is the one teams act on: it carries the same context lines
+                triage_info=await _alert_context(conn, project_id, inc_id, issue_id, inc_full["title"],
+                                                 inc_full["where_file"], inc_full["where_function"], occurred_at_dt),
             )
         else:
             await conn.execute(
@@ -529,34 +569,8 @@ async def check_and_trigger_incident(
     if muted:
         return incident_id
 
-    # Memory: the closest past incident like this one and how it ended, for one line in the alert
-    try:
-        async with conn.transaction():
-            from app.trust.memory import find_similar_incidents, seen_before_line
-
-            similar = await find_similar_incidents(
-                conn, project_id, exclude_incident_id=incident_id, issue_id=issue_id, where_file=where_file,
-                where_function=where_function, title=issue_row["title"], before=now_dt, limit=1,
-            )
-            line = seen_before_line(similar)
-            if line:
-                triage_info["seen_before"] = line
-    except Exception as exc:
-        logger.warning("Incident %d: past incidents could not be checked: %s", incident_id, exc)
-
-    # Runbooks: the team's steps for this kind of error, one line in the alert
-    try:
-        async with conn.transaction():
-            from app.runbooks import find_runbooks, runbook_line
-
-            line = runbook_line(await find_runbooks(
-                conn, project_id, title=issue_row["title"], where_file=where_file, issue_id=issue_id,
-                since=now_dt - timedelta(hours=1), limit=1,
-            ))
-            if line:
-                triage_info["runbook"] = line
-    except Exception as exc:
-        logger.warning("Incident %d: runbooks could not be checked: %s", incident_id, exc)
+    triage_info.update(await _alert_context(conn, project_id, incident_id, issue_id, issue_row["title"],
+                                            where_file, where_function, now_dt))
 
     # 9. Dispatch instant alert
     await dispatch_incident_alert(

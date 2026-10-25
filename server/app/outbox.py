@@ -295,7 +295,13 @@ def _channel_key(project_id: int, channel_id: Optional[int]) -> str:
 async def _claim_and_deliver(sender_func, busy: set) -> Any:
     """Claim one due message (of a channel no other lane is sending to), send it and record the
     result, all in its own transaction. None when nothing is due, "busy" when the claimed
-    message's channel turned out to be in use by another lane (it is left for later)."""
+    message's channel turned out to be in use by another lane or process (it is left for later).
+
+    A channel gets its due messages in the order they were queued ("possible" before "confirmed"):
+    ties on next_attempt_at (messages queued in one transaction share it) go by id, one sender per
+    channel holds an advisory lock, and a message is sent only while it is its channel's oldest due
+    one, so SKIP LOCKED can never hand out the next message while the one before is being sent. A
+    message waiting to retry is not due, so it does not hold up the ones behind it."""
     async with get_connection() as conn:
         async with conn.transaction():
             item = await conn.fetchrow(
@@ -304,7 +310,7 @@ async def _claim_and_deliver(sender_func, busy: set) -> Any:
                 FROM outbox
                 WHERE status = 'pending' AND next_attempt_at <= now()
                   AND (project_id::text || ':' || COALESCE(channel_id::text, '*')) <> ALL($1::text[])
-                ORDER BY next_attempt_at ASC
+                ORDER BY next_attempt_at ASC, id ASC
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
                 """,
@@ -317,6 +323,21 @@ async def _claim_and_deliver(sender_func, busy: set) -> Any:
                 return "busy"  # lanes claimed at the same moment; ending the transaction frees the row
             busy.add(key)
             try:
+                if not await conn.fetchval("SELECT pg_try_advisory_xact_lock(720115, hashtext($1))", key):
+                    return "busy"  # another process is sending to this channel
+                oldest = await conn.fetchval(
+                    """
+                    SELECT id FROM outbox
+                    WHERE status = 'pending' AND next_attempt_at <= now() AND project_id = $1
+                      AND channel_id IS NOT DISTINCT FROM $2
+                    ORDER BY next_attempt_at ASC, id ASC
+                    LIMIT 1
+                    """,
+                    item["project_id"],
+                    item["channel_id"],
+                )
+                if oldest != item["id"]:
+                    return "busy"  # an earlier message of this channel is still being sent
                 return await process_outbox_item(conn, item, sender_func)
             finally:
                 busy.discard(key)

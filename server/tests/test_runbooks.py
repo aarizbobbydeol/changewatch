@@ -359,6 +359,35 @@ async def test_live_new_incident_alert_links_the_runbook(project):
 
 
 @pytest.mark.asyncio
+async def test_live_confirmed_alert_also_links_the_runbook(project):
+    """The confirmed alert, the one teams act on, carries the same line as the first one (it was
+    built without it, so whichever arrived first decided whether the team saw the runbook)."""
+    from app.incident_manager import check_and_trigger_incident
+
+    pid = project["pid"]
+    await _add(pid, title="Coupon lookups", match_exception="KeyError", url="https://wiki.example/rb/coupons")
+    async with project_transaction(pid) as conn:
+        dep = await conn.fetchval("INSERT INTO deploys (project_id, commit_sha, deployed_at) VALUES ($1, 'rbconf001', $2) RETURNING id",
+                                  pid, NOW - timedelta(minutes=5))
+        issue = await conn.fetchval(
+            "INSERT INTO issues (project_id, fingerprint, title, first_seen, last_seen, status, event_count) "
+            "VALUES ($1, $2, 'KeyError: coupon', now(), now(), 'open', 3) RETURNING id", pid, uuid.uuid4().hex)
+        for i in range(3):
+            await conn.execute("INSERT INTO events (event_id, issue_id, project_id, deploy_id, occurred_at, environment) "
+                               "VALUES ($1, $2, $3, $4, $5, 'prod')", uuid.uuid4().hex, issue, pid, dep, NOW - timedelta(seconds=3 - i))
+        trace = 'Traceback (most recent call last):\n  File "app/coupons.py", line 12, in lookup\n    c[k]\nKeyError: coupon\n'
+        with patch("app.incident_manager.dispatch_incident_alert", new=AsyncMock()) as dispatch, \
+             patch("app.trust.calm.is_issue_muted", new=AsyncMock(return_value=(False, None))):
+            for new_events in (3, 10):  # 10 more confirms it (CONFIRM_MIN_EVENTS defaults to 10)
+                await check_and_trigger_incident(conn=conn, project_id=pid, deploy_id=dep, issue_id=issue,
+                                                 payload={"request_path": "/c", "stack_trace": trace, "exc_type": "KeyError"},
+                                                 occurred_at_dt=NOW, new_events=new_events)
+    sent = {c.kwargs["status"]: c.kwargs.get("triage_info") or {} for c in dispatch.call_args_list}
+    assert sent["confirmed"]["runbook"] == "Runbook: Coupon lookups (https://wiki.example/rb/coupons)"
+    assert sent["possible"]["runbook"] == sent["confirmed"]["runbook"]
+
+
+@pytest.mark.asyncio
 async def test_live_ai_investigation_is_given_the_runbook(project):
     from app.investigator.agent import build_investigation_prompt, pregather_context
 

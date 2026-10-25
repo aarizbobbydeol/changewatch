@@ -262,3 +262,48 @@ async def test_long_discord_messages_are_clipped_to_discord_limits(monkeypatch):
     assert len(posted["content"]) == 2000 and posted["content"].endswith("…")
     assert len(posted["embeds"][0]["title"]) == 256
     assert len(posted["embeds"][0]["fields"][0]["value"]) == 1024
+
+
+@pytest.mark.asyncio
+async def test_live_a_channel_gets_its_messages_in_the_order_they_were_queued(project):
+    # Messages queued in one transaction share next_attempt_at; queue order (id) breaks the tie, not
+    # where the rows happen to sit on disk (here the later one was written first)
+    async with project_transaction(project) as conn:
+        first_id, second_id = await conn.fetchval("SELECT nextval('outbox_id_seq')"), await conn.fetchval("SELECT nextval('outbox_id_seq')")
+        for oid, key, text in ((second_id, "second", "Confirmed regression"), (first_id, "first", "Possible regression")):
+            await conn.execute(
+                """INSERT INTO outbox (id, project_id, dedupe_key, payload, next_attempt_at, status)
+                   VALUES ($1, $2, $3, $4, now() - interval '1 day', 'pending')""",
+                oid, project, f"order:{project}:{key}", json.dumps({"text": text}))
+    sent = []
+
+    async def sender(pid, payload):
+        if pid == project:
+            sent.append(payload["text"])
+
+    for _ in range(2):  # one claim at a time: the order comes from the query alone
+        await outbox._claim_and_deliver(sender, set())
+    assert sent == ["Possible regression", "Confirmed regression"]
+
+
+@pytest.mark.asyncio
+async def test_live_next_message_waits_while_the_one_before_is_being_sent(project):
+    first, second = await _queue(project, [(904, 86400), (904, 86300)])  # the oldest due messages anywhere
+    sent = []
+
+    async def sender(pid, payload):
+        sent.append(payload["text"])
+
+    other_sender = await asyncpg.connect(settings.DATABASE_URL)
+    try:
+        tx = other_sender.transaction()
+        await tx.start()
+        await other_sender.fetchrow("SELECT id FROM outbox WHERE id = $1 FOR UPDATE", first)  # another process sending it
+        assert await outbox._claim_and_deliver(sender, set()) == "busy"
+        assert sent == [] and await _statuses([second]) == [("pending", 0)]
+        await tx.rollback()
+    finally:
+        await other_sender.close()
+    await outbox._claim_and_deliver(sender, set())
+    await outbox._claim_and_deliver(sender, set())
+    assert sent == ["msg 0", "msg 1"]
