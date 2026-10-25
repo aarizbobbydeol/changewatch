@@ -529,6 +529,21 @@ async def check_and_trigger_incident(
     if muted:
         return incident_id
 
+    # Memory: the closest past incident like this one and how it ended, for one line in the alert
+    try:
+        async with conn.transaction():
+            from app.trust.memory import find_similar_incidents, seen_before_line
+
+            similar = await find_similar_incidents(
+                conn, project_id, exclude_incident_id=incident_id, issue_id=issue_id, where_file=where_file,
+                where_function=where_function, title=issue_row["title"], before=now_dt, limit=1,
+            )
+            line = seen_before_line(similar)
+            if line:
+                triage_info["seen_before"] = line
+    except Exception as exc:
+        logger.warning("Incident %d: past incidents could not be checked: %s", incident_id, exc)
+
     # 9. Dispatch instant alert
     await dispatch_incident_alert(
         conn=conn,

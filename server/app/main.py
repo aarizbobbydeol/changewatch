@@ -1110,11 +1110,17 @@ async def get_incident(
 
         # The full story: deploy, errors, alerts delivered, AI answer, verdicts, who acted and when
         full_timeline = None
+        similar_incidents: List[Dict[str, Any]] = []
         try:
             async with conn.transaction():
+                from app.trust.memory import find_similar_incidents
                 from app.trust.timeline import build_incident_timeline
 
                 full_timeline = await build_incident_timeline(conn, project_id, id)
+                similar_incidents = await find_similar_incidents(
+                    conn, project_id, exclude_incident_id=id, issue_id=row["issue_id"], where_file=row["where_file"],
+                    where_function=row["where_function"], title=row["title"], before=row["created_at"],
+                )
         except Exception as exc:
             logger.warning("Incident %d: full timeline unavailable (%s); showing the basic one", id, exc)
 
@@ -1185,6 +1191,7 @@ async def get_incident(
         code_excerpt_start=code_excerpt_start,
         ai_investigation=ai_investigation,
         timeline=timeline,
+        similar_incidents=similar_incidents,
     )
 
 

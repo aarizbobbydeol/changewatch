@@ -94,6 +94,9 @@ def format_incident_instant_message(
     returned = bool(triage_info and triage_info.get("returned"))
     if returned:
         where_text += "\n*This error was resolved before and is back after this deploy.*"
+    seen_before = (triage_info or {}).get("seen_before")
+    if seen_before:
+        where_text += f"\n_{seen_before}_"
     owners_text = ", ".join(owners) if owners else "Unassigned"
     msg_preview = message.splitlines()[0][:120] if message else "No commit message"
 
@@ -147,6 +150,7 @@ def format_incident_instant_message(
         f"{badge}: {error_title[:80]} ({event_count}x) at {where_file}:{where_line} {diff_note} "
         f"after deploy {commit_sha[:8]} by {author}. "
         + ("This error was resolved before and is back. " if returned else "")
+        + (f"{seen_before} " if seen_before else "")
         + f"Owners: {owners_text}. Link: {dashboard_url}"
     )
 

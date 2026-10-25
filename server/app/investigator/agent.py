@@ -90,6 +90,12 @@ async def pregather_context(
     file_diff = await get_failing_file_diff(conn, project_id, deploy_id, where_file, where_line)
     request_context = await get_request_context(conn, project_id, inc_row["issue_id"], deploy_id)
     error_timeline = await get_error_timeline(conn, project_id, inc_row["issue_id"], deploy_id)
+    from app.trust.memory import find_similar_incidents
+
+    similar = await find_similar_incidents(
+        conn, project_id, exclude_incident_id=incident_id, issue_id=inc_row["issue_id"], where_file=where_file,
+        where_function=inc_row["where_function"], title=inc_row["title"], before=inc_row["created_at"], limit=3,
+    )
 
     # Context file excerpt (±30 lines around error frame)
     code_excerpt = await get_file_at_commit(
@@ -114,6 +120,7 @@ async def pregather_context(
         "file_diff": file_diff,
         "request_context": request_context,
         "error_timeline": error_timeline,
+        "similar_incidents": similar,
     }
 
 
@@ -174,6 +181,11 @@ def build_investigation_prompt(context: Dict[str, Any]) -> str:
         _section("Other new errors after this deploy", _json(other_errors) if other_errors else "None", 1200),
         _section("Error rate before and after the deploy (all errors, from request counts)", _json(context["error_rate"]), 400),
         _section("Previous deploys", _json(previous), 600),
+        _section("Similar past incidents (how they were explained and how they ended)",
+                 _json([{k: s.get(k) for k in ("id", "when", "match", "title", "where", "cause", "resolution",
+                                                "resolved_after", "rated")}
+                        for s in context.get("similar_incidents") or []]) if context.get("similar_incidents") else "None",
+                 1500),
     ]
 
     prompt = "\n".join(sections) + """
@@ -183,7 +195,7 @@ Use only the data above. Return a JSON object conforming exactly to:
   "what_broke": "...",
   "where": {"file": "...", "line": 0, "function": "..."},
   "cause": "...",
-  "evidence": [{"kind": "diff|file|dependency|config|events|error_rate|previous_deploy|request|timeline", "detail": "...", "ref": "..."}],
+  "evidence": [{"kind": "diff|file|dependency|config|events|error_rate|previous_deploy|request|timeline|past_incident", "detail": "...", "ref": "..."}],
   "suggested_fix": {"description": "...", "code_hint": "...", "rollback_recommended": false, "rollback_to_sha": null},
   "confidence": "high|medium|low",
   "not_sure_reason": null

@@ -123,7 +123,7 @@ can pause), and gathers the evidence first: the stack trace; what the deploy cha
 failing file (the diff hunks near the failing line) and the code around it; the routes, methods
 and `extra` fields of the requests that failed; this error per minute around the deploy; other new
 errors from the same deploy; dependency and configuration changes; the error rate before and after;
-the previous deploys. Each part has a size limit, so one huge diff cannot crowd out the rest. The model may then call read-only tools: database
+the previous deploys; and similar past incidents with how they were explained and resolved. Each part has a size limit, so one huge diff cannot crowd out the rest. The model may then call read-only tools: database
 `SELECT`s, and reading a file from GitHub when code is not stored (a code check in CI makes sure
 nothing can write to your repository). The answer is checked against the evidence (a fix that
 cites nothing, or a dangerous one, is flagged), stored encrypted, and posted as a reply in the
@@ -165,6 +165,11 @@ or meter them.
   is flowing again).
 - **Feedback:** the alert's buttons and the dashboard let the team acknowledge, resolve, reopen
   and rate an alert (real, false alarm, unclear). Ratings feed the accuracy numbers on the Trust page.
+- **Memory of past incidents:** a new incident is compared with the last 180 days of this project:
+  the same error coming back, or an error in the same function or file. The closest strong match
+  adds one line to the alert ("Seen before: incident #12 on 2026-09-30 (the same function),
+  resolved automatically after 25 min"), the incident page lists them under "Seen before", and the
+  investigator is told how they were explained and how they ended.
 - **Timeline and postmortem:** the incident page shows everything in time order: deploy, first
   error, each alert delivered, the AI answer, verdicts, who acknowledged or rated it, how it was
   resolved. "Write draft" turns that into a blameless postmortem in Markdown (summary, impact,

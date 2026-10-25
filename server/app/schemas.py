@@ -222,6 +222,8 @@ class IncidentDetailResponse(BaseModel):
     code_excerpt_start: Optional[int] = None  # line number of the excerpt's first line
     ai_investigation: Dict[str, Any] = Field(default_factory=dict)
     timeline: List[Dict[str, Any]] = Field(default_factory=list)
+    # Past incidents like this one and how they ended (app/trust/memory.py)
+    similar_incidents: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class ProjectSettingsResponse(BaseModel):

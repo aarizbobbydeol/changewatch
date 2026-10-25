@@ -22,6 +22,18 @@ interface InvestigationResult {
   not_sure_reason?: string | null;
 }
 
+interface SimilarIncident {
+  id: number;
+  title: string;
+  when: string;
+  match: string; // the same error | the same function | the same file
+  where?: string | null;
+  resolution?: string | null;
+  resolved_after?: string | null;
+  rated?: string | null;
+  cause?: string | null;
+}
+
 interface IncidentDetail {
   id: number;
   deploy_id: number;
@@ -46,6 +58,7 @@ interface IncidentDetail {
   code_excerpt: string | null;
   code_excerpt_start: number | null; // line number of the excerpt's first line
   timeline: TimelineEvent[];
+  similar_incidents?: SimilarIncident[];
   ai_investigation?: {
     enabled?: boolean;
     status?: string; // running | done | partial | failed | paused
@@ -519,6 +532,29 @@ export default function IncidentDetailPage() {
                 )}
               </div>
             </div>
+
+            {/* Memory: past incidents like this one */}
+            {incident.similar_incidents && incident.similar_incidents.length > 0 && (
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-3">
+                <h3 className="text-sm font-semibold text-slate-200">Seen before</h3>
+                <ul className="space-y-2">
+                  {incident.similar_incidents.map((s) => (
+                    <li key={s.id} className="text-xs text-slate-300 border border-slate-800 rounded-lg p-3">
+                      <Link href={`/incidents/${s.id}`} className="text-indigo-300 hover:underline font-medium">
+                        Incident #{s.id}
+                      </Link>{" "}
+                      on {s.when.slice(0, 10)} ({s.match}): {s.title}
+                      {s.where && <span className="text-slate-500"> at {s.where}</span>}
+                      <div className="text-slate-400 mt-1">
+                        {s.resolution ? `${s.resolution}${s.resolved_after ? ` after ${s.resolved_after}` : ""}` : "Not resolved"}
+                        {s.rated ? ` · rated ${s.rated}` : ""}
+                      </div>
+                      {s.cause && <div className="text-slate-500 mt-1">Cause then: {s.cause}</div>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             {/* Postmortem draft */}
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-3">
