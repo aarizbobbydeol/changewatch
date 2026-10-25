@@ -39,10 +39,16 @@ async def find_similar_incidents(
     before: Optional[datetime] = None,
     limit: int = 3,
 ) -> List[Dict[str, Any]]:
-    """Past incidents like this one, best match first, each with how it was explained and resolved."""
+    """Past incidents like this one, best match first, each with how it was explained and resolved.
+
+    Another incident of the same deploy that is still open is left out: that is the same breakage in
+    progress, not a past one."""
     exc_type = (title or "").split(":", 1)[0].strip()
     file_ = (where_file or "").strip()
     func = (where_function or "").strip()
+    # Errors without a readable stack trace all sit at "unknown": no file to match on
+    if file_ == "unknown":
+        file_ = ""
     if func in ("unknown", "<module>"):
         func = ""
     rows = await conn.fetch(
@@ -58,6 +64,8 @@ async def find_similar_incidents(
         WHERE i.project_id = $1 AND i.id <> $2
           AND i.created_at < $7 AND i.created_at >= $7 - make_interval(days => $8)
           AND (i.issue_id = $3 OR ($4 <> '' AND i.where_file = $4))
+          AND NOT (i.status <> 'resolved' AND i.deploy_id = coalesce(
+                   (SELECT c.deploy_id FROM incidents c WHERE c.id = $2 AND c.project_id = $1), 0))
         ORDER BY score DESC, i.created_at DESC
         LIMIT $9
         """,
@@ -75,14 +83,16 @@ async def find_similar_incidents(
     for r in rows:
         score = int(r["score"])
         match = "the same error" if score >= 100 else "the same function" if score >= 60 else "the same file"
-        resolved = await conn.fetchrow(
-            """
-            SELECT actor, detail FROM incident_events
-            WHERE project_id = $1 AND incident_id = $2 AND type = 'resolved'
-            ORDER BY at DESC LIMIT 1
-            """,
-            project_id, r["id"],
-        )
+        resolved = None
+        if r["status"] == "resolved":  # a reopened incident keeps the event of its earlier resolution
+            resolved = await conn.fetchrow(
+                """
+                SELECT actor, detail FROM incident_events
+                WHERE project_id = $1 AND incident_id = $2 AND type = 'resolved'
+                ORDER BY at DESC LIMIT 1
+                """,
+                project_id, r["id"],
+            )
         resolution = None
         if resolved:
             detail = resolved["detail"]

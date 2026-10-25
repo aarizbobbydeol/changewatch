@@ -129,6 +129,72 @@ async def test_live_new_incident_alert_says_it_was_seen_before(history):
     assert line.startswith(f"Seen before: incident #{history['func']}") and "(the same function)" in line
 
 
+@pytest.mark.asyncio
+async def test_live_open_incident_of_the_same_release_is_not_seen_before(history):
+    """Two errors in one function from one deploy are the same breakage in progress, not a past one."""
+    from app.incident_manager import check_and_trigger_incident
+
+    pid = history["pid"]
+    async with project_transaction(pid) as conn:
+        dep = await conn.fetchval("INSERT INTO deploys (project_id, commit_sha, deployed_at) VALUES ($1, 'samedeploy1', $2) RETURNING id",
+                                  pid, NOW - timedelta(minutes=5))
+        ids = []
+        with patch("app.incident_manager.dispatch_incident_alert", new=AsyncMock()) as dispatch, \
+             patch("app.trust.calm.is_issue_muted", new=AsyncMock(return_value=(False, None))):
+            for exc, line in (("KeyError", 40), ("TypeError", 44)):
+                issue = await conn.fetchval(
+                    "INSERT INTO issues (project_id, fingerprint, title, first_seen, last_seen, status, event_count) "
+                    "VALUES ($1, $2, $3, now(), now(), 'open', 3) RETURNING id", pid, uuid.uuid4().hex, f"{exc}: y")
+                for i in range(3):
+                    await conn.execute("INSERT INTO events (event_id, issue_id, project_id, deploy_id, occurred_at, environment) "
+                                       "VALUES ($1, $2, $3, $4, $5, 'prod')", uuid.uuid4().hex, issue, pid, dep, NOW - timedelta(seconds=3 - i))
+                trace = f'Traceback (most recent call last):\n  File "app/orders.py", line {line}, in place_order\n    x\n{exc}: y\n'
+                ids.append(await check_and_trigger_incident(
+                    conn=conn, project_id=pid, deploy_id=dep, issue_id=issue,
+                    payload={"request_path": "/x", "stack_trace": trace, "exc_type": exc}, occurred_at_dt=NOW, new_events=3))
+        assert dispatch.call_count == 2 and None not in ids
+        assert "seen_before" not in dispatch.call_args.kwargs["triage_info"]
+        # Once the first one has ended, it is history like any other
+        await conn.execute("UPDATE incidents SET status = 'resolved', resolved_at = now() WHERE id = $1", ids[0])
+        similar = await find_similar_incidents(conn, pid, exclude_incident_id=ids[1], where_file="app/orders.py",
+                                               where_function="place_order", title="TypeError: y")
+    assert [s["id"] for s in similar] == [ids[0]]
+
+
+@pytest.mark.asyncio
+async def test_live_reopened_incident_is_not_remembered_as_resolved(history):
+    from app.trust.actions import execute_incident_action
+
+    async with project_transaction(history["pid"]) as conn:
+        await execute_incident_action(conn, history["pid"], history["same"], "reopen", actor="carol")
+        similar = await find_similar_incidents(conn, history["pid"], issue_id=history["issue_a"], limit=1)
+    assert similar[0]["id"] == history["same"] and similar[0]["status"] == "confirmed"
+    assert similar[0]["resolution"] is None and similar[0]["resolved_after"] is None
+    assert "resolved" not in seen_before_line(similar)
+
+
+@pytest.mark.asyncio
+async def test_live_unknown_location_is_not_the_same_file(history):
+    """Errors without a readable stack trace all sit at 'unknown': that is no reason to call them similar."""
+    pid = history["pid"]
+    async with project_transaction(pid) as conn:
+        issue = await conn.fetchval(
+            "INSERT INTO issues (project_id, fingerprint, title, first_seen, last_seen, status, event_count) "
+            "VALUES ($1, $2, 'TypeError: a', now(), now(), 'open', 1) RETURNING id", pid, uuid.uuid4().hex)
+        for title in ("TypeError: a", "RangeError: b"):
+            dep = await conn.fetchval("INSERT INTO deploys (project_id, commit_sha, deployed_at) VALUES ($1, $2, $3) RETURNING id",
+                                      pid, uuid.uuid4().hex[:12], NOW - timedelta(days=1))
+            await conn.execute(
+                "INSERT INTO incidents (project_id, deploy_id, issue_id, status, title, where_file, where_line, where_function, created_at) "
+                "VALUES ($1, $2, $3, 'confirmed', $4, 'unknown', 0, 'unknown', $5)",
+                pid, dep, issue if title.startswith("TypeError") else history["issue_a"], title, NOW - timedelta(days=1))
+        unrelated = await find_similar_incidents(conn, pid, where_file="unknown", where_function="unknown", title="SyntaxError: d")
+        same_error = await find_similar_incidents(conn, pid, issue_id=issue, where_file="unknown", where_function="unknown",
+                                                  title="TypeError: a")
+    assert unrelated == []
+    assert [s["match"] for s in same_error] == ["the same error"]
+
+
 def test_alert_text_carries_the_seen_before_line():
     msg = format_incident_instant_message(
         status="possible", commit_sha="abcdef12", author="a", message="m", error_title="KeyError: y", event_count=3,

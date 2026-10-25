@@ -7,10 +7,16 @@ verdicts, and the audit events (acknowledged, escalated, rated, resolved, reopen
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import asyncpg
+
+# An alert goes out as one outbox row per channel: its key with this ending removed names the alert
+_CHANNEL_SUFFIX = re.compile(r":(?:channel:\d+|default)$")
+# The auto-resolve note names who deployed the fix: "likely fixed by deploy 1a2b3c4d by alice"
+_FIX_AUTHOR = re.compile(r"^(likely fixed by deploy \S+) by .*$", re.DOTALL)
 
 # Same moment: show the cause before the effect (deployed, then first error, then opened ...)
 _ORDER = {
@@ -31,16 +37,23 @@ def _first_line(text: Optional[str], limit: int = 80) -> str:
     return line if len(line) <= limit else line[: limit - 1] + "…"
 
 
-def _event_text(etype: str, actor: str, detail: Dict[str, Any]) -> str:
+def _event_text(etype: str, actor: str, detail: Dict[str, Any], blameless: bool = False) -> str:
+    """One line for an audit event. Blameless (the postmortem): "a responder" instead of anyone's name."""
+    if blameless:
+        actor = "a responder"
     if etype == "acked":
         return f"Acknowledged by {actor}"
     if etype == "assigned":
-        return f"Assigned to {detail.get('assignee') or actor}"
+        # The actor is who assigned; actions.py records the assignee as "assigned_to"
+        return f"Assigned to {actor if blameless else detail.get('assigned_to') or detail.get('assignee') or actor}"
     if etype == "escalated":
         return f"Reminder {detail.get('level', 1)}: still unacknowledged"
     if etype == "resolved":
         if detail.get("auto_resolve"):
-            return f"Resolved automatically: {detail.get('fix_note') or 'no new errors while traffic kept flowing'}"
+            note = detail.get("fix_note") or "no new errors while traffic kept flowing"
+            if blameless:
+                note = _FIX_AUTHOR.sub(r"\1", note)
+            return f"Resolved automatically: {note}"
         return f"Resolved by {actor}"
     if etype == "reopened":
         if detail.get("reason") == "error_returned":
@@ -49,11 +62,16 @@ def _event_text(etype: str, actor: str, detail: Dict[str, Any]) -> str:
     if etype == "feedback":
         label = {"real": "a real problem", "false": "a false alarm", "unclear": "unclear"}.get(detail.get("label"), "rated")
         return f"Rated {label} by {actor}"
-    return f"{etype.replace('_', ' ').capitalize()} ({actor})"
+    label = etype.replace("_", " ").capitalize()
+    return label if blameless else f"{label} ({actor})"
 
 
-async def build_incident_timeline(conn: asyncpg.Connection, project_id: int, incident_id: int) -> Optional[List[Dict[str, Any]]]:
-    """[{"at", "event", "detail", "actor"}] in time order, or None if the incident is not this project's."""
+async def build_incident_timeline(
+    conn: asyncpg.Connection, project_id: int, incident_id: int, *, blameless: bool = False
+) -> Optional[List[Dict[str, Any]]]:
+    """[{"at", "event", "detail", "actor"}] in time order, or None if the incident is not this project's.
+
+    Blameless (for the postmortem): no one's name in the text, and no "actor"."""
     inc = await conn.fetchrow(
         """
         SELECT i.id, i.deploy_id, i.issue_id, i.title, i.event_count, i.created_at, i.confirmed_at,
@@ -73,7 +91,7 @@ async def build_incident_timeline(conn: asyncpg.Connection, project_id: int, inc
 
     def add(at: Optional[datetime], event: str, detail: str, actor: Optional[str] = None) -> None:
         if at is not None:
-            items.append({"at": at, "event": event, "detail": detail, "actor": actor})
+            items.append({"at": at, "event": event, "detail": detail, **({} if blameless else {"actor": actor})})
 
     sha = (inc["commit_sha"] or "")[:8]
     message = _first_line(inc["message"])
@@ -86,7 +104,8 @@ async def build_incident_timeline(conn: asyncpg.Connection, project_id: int, inc
     add(first_error, "first_error", f"First error: {inc['title'] or 'unknown error'}")
     add(inc["created_at"], "opened", "Incident opened")
 
-    # Alerts: the first delivery of each kind (one row per channel), or what happened to it
+    # Alerts: when each one was first delivered and to how many channels, or what happened to it.
+    # Each reopen and each resolution sends its own alert (the key carries its time)
     outbox_rows = await conn.fetch(
         """
         SELECT dedupe_key, status, created_at, sent_at
@@ -97,14 +116,14 @@ async def build_incident_timeline(conn: asyncpg.Connection, project_id: int, inc
         project_id,
         f"incident:{incident_id}:%",
     )
-    by_kind: Dict[str, List[Any]] = {}
+    by_alert: Dict[str, List[Any]] = {}
     for row in outbox_rows:
-        parts = row["dedupe_key"].split(":")
+        by_alert.setdefault(_CHANNEL_SUFFIX.sub("", row["dedupe_key"]), []).append(row)
+    for key, rows in by_alert.items():
+        parts = key.split(":")
         kind = parts[2] if len(parts) > 2 else "alert"
         if kind == "reopened" or (len(parts) > 3 and parts[3] == "reopened"):
             kind = "reopened_alert"
-        by_kind.setdefault(kind, []).append(row)
-    for kind, rows in by_kind.items():
         label = _ALERT_KIND.get(kind, "Alert" if kind != "reopened_alert" else "Alert: the error is back")
         sent = [r for r in rows if r["status"] == "sent"]
         if sent:
@@ -160,7 +179,7 @@ async def build_incident_timeline(conn: asyncpg.Connection, project_id: int, inc
         detail = detail or {}
         etype = ev["type"]
         has_resolved_event = has_resolved_event or etype == "resolved"
-        add(ev["at"], etype, _event_text(etype, ev["actor"] or "someone", detail), ev["actor"])
+        add(ev["at"], etype, _event_text(etype, ev["actor"] or "someone", detail, blameless), ev["actor"])
 
     if inc["resolved_at"] and not has_resolved_event:
         add(inc["resolved_at"], "resolved", "Resolved")

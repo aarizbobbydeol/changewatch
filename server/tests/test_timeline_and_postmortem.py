@@ -173,3 +173,83 @@ async def test_live_unchanged_final_verdict_is_not_called_a_change(incident):
         timeline = await build_incident_timeline(conn, pid, inc)
     verdicts = [t["detail"] for t in timeline if t["event"] == "verdict"]
     assert verdicts == ["Release verdict: ROLLBACK (first check)", "Final check: verdict stays ROLLBACK"]
+
+
+@pytest.mark.asyncio
+async def test_live_postmortem_names_teams_never_people(incident):
+    """Owners that are people (the commit-author fallback, or a person in CODEOWNERS), who acted on
+    the incident, and who deployed the fix stay out of the draft. The incident page still says who."""
+    pid, _, inc = incident
+    async with project_transaction(pid) as conn:
+        await conn.execute("UPDATE incidents SET owners = $2 WHERE id = $1", inc,
+                           json.dumps(["@acme/payments", "@carol", "jane@corp.example"]))
+        await conn.execute("UPDATE incident_events SET detail = $2 WHERE incident_id = $1 AND type = 'resolved'", inc,
+                           json.dumps({"auto_resolve": True, "fix_note": "likely fixed by deploy 99887766 by Dave Smith"}))
+        await conn.execute("INSERT INTO incident_events (incident_id, project_id, type, actor, detail, at) "
+                           "VALUES ($1, $2, 'assigned', 'alice@acme.example', $3, $4)",
+                           inc, pid, json.dumps({"assigned_to": "bob"}), T0 + timedelta(minutes=4))
+        draft = await build_postmortem(conn, pid, inc)
+        page = await build_incident_timeline(conn, pid, inc)
+        # Only people as owners: no team is named, and the draft asks for a team rule
+        await conn.execute("UPDATE incidents SET owners = $2 WHERE id = $1", inc, json.dumps(["jane@corp.example"]))
+        people_only = (await build_postmortem(conn, pid, inc))["markdown"]
+    md = draft["markdown"]
+    for person in ("alice", "bob", "carol", "jane", "Dave Smith"):
+        assert person not in md, person
+    assert "**Owners:** @acme/payments ·" in md
+    assert "Acknowledged by a responder" in md and "Assigned to a responder" in md
+    assert "Rated a real problem by a responder" in md
+    assert draft["sections"]["resolution"] == "Resolved automatically: likely fixed by deploy 99887766"
+    assert all("actor" not in t for t in draft["sections"]["timeline"])
+    assert "Add a CODEOWNERS rule" not in md
+    assert "jane" not in people_only and "**Owners:** no team in CODEOWNERS ·" in people_only
+    assert "- [ ] Add a CODEOWNERS rule that names a team for `app/billing.py`" in people_only
+    page_text = [t["detail"] for t in page]
+    assert "Acknowledged by alice@acme.example" in page_text and "Assigned to bob" in page_text
+
+
+@pytest.mark.asyncio
+async def test_live_reopened_incident_is_not_called_resolved(incident):
+    pid, _, inc = incident
+    from app.trust.actions import execute_incident_action
+
+    async with project_transaction(pid) as conn:
+        await execute_incident_action(conn, pid, inc, "reopen", actor="carol")
+        draft = await build_postmortem(conn, pid, inc)
+    assert "**Status:** Ongoing (confirmed)" in draft["markdown"]
+    assert draft["sections"]["resolution"].startswith("Not resolved yet.")
+    assert "Reopened by a responder" in draft["markdown"]
+
+
+@pytest.mark.asyncio
+async def test_live_timeline_names_the_assignee_not_who_assigned(incident):
+    pid, _, inc = incident
+    from app.trust.actions import execute_incident_action
+
+    async with project_transaction(pid) as conn:
+        await execute_incident_action(conn, pid, inc, "assign", actor="alice", detail={"assignee": "bob"})
+        timeline = await build_incident_timeline(conn, pid, inc)
+    assert [t["detail"] for t in timeline if t["event"] == "assigned"] == ["Assigned to bob"]
+
+
+@pytest.mark.asyncio
+async def test_live_each_reopen_and_resolved_message_is_its_own_entry(incident):
+    pid, _, inc = incident
+    r1, r2 = T0 + timedelta(minutes=55), T0 + timedelta(minutes=120)
+    async with project_transaction(pid) as conn:
+        for key, at in ((f"incident:{inc}:resolved:{int(r1.timestamp())}:channel:1", r1),
+                        (f"incident:{inc}:confirmed:reopened:{int(r1.timestamp())}:channel:1", T0 + timedelta(minutes=65)),
+                        (f"incident:{inc}:resolved:{int(r2.timestamp())}:channel:1", r2),
+                        (f"incident:{inc}:confirmed:reopened:{int(r2.timestamp())}:default", T0 + timedelta(minutes=150))):
+            await conn.execute("INSERT INTO outbox (project_id, channel_id, dedupe_key, payload, status, created_at, sent_at) "
+                               "VALUES ($1, 1, $2, '{}', 'sent', $3, $3)", pid, key, at)
+        timeline = await build_incident_timeline(conn, pid, inc)
+    alerts = [(t["at"][11:19], t["detail"]) for t in timeline if t["event"] == "alert_sent"]
+    assert alerts == [
+        ("14:00:32", "Possible-regression alert delivered to 2 channels"),
+        ("14:00:41", "Confirmed-regression alert delivered to 1 channel"),
+        ("14:55:00", "Resolved message delivered to 1 channel"),
+        ("15:05:00", "Alert: the error is back delivered to 1 channel"),
+        ("16:00:00", "Resolved message delivered to 1 channel"),
+        ("16:30:00", "Alert: the error is back delivered to 1 channel"),
+    ], alerts
