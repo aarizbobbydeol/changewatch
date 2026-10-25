@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import NavLinks from "../components/NavLinks";
 import { apiUrl, loadEndpoint, loadReadKey, saveEndpoint, saveReadKey } from "../lib/session";
 import { dollarsToMicros, microsToDollars } from "../lib/money";
@@ -72,12 +72,16 @@ export default function SettingsPage() {
   const [rbEditing, setRbEditing] = useState<number | null>(null);
   const [rbStatus, setRbStatus] = useState<string | null>(null);
 
+  // Only the newest request's answer is shown: a slow answer for the previous key must not
+  // replace the runbooks of the project the new key opens
+  const runbooksRequest = useRef(0);
   const loadRunbooks = useCallback(() => {
+    const request = ++runbooksRequest.current;
     if (!readKey) return;
     fetch(apiUrl(endpoint, "/api/runbooks"), { headers: { "X-API-Key": readKey } })
       .then((res) => (res.ok ? res.json() : []))
-      .then((data) => setRunbooks(Array.isArray(data) ? data : []))
-      .catch(() => setRunbooks([]));
+      .then((data) => request === runbooksRequest.current && setRunbooks(Array.isArray(data) ? data : []))
+      .catch(() => request === runbooksRequest.current && setRunbooks([]));
   }, [readKey, endpoint]);
 
   useEffect(() => {
@@ -151,10 +155,19 @@ export default function SettingsPage() {
   }, []);
 
   useEffect(() => {
+    // A new key may open another project: forget what the old one showed, and the runbook being
+    // edited, so nothing on screen belongs to a different project than the one a Save writes to
+    setSettings(null);
+    setRunbooks([]);
+    setRbEditing(null);
+    setRbForm({ ...EMPTY_RUNBOOK });
+    setRbStatus(null);
+    setValueInput("");
+    setValueStatus(null);
+    setError(null);
+    setLoading(!!readKey);
     if (!readKey) return;
     let cancelled = false;
-    setLoading(true);
-    setError(null);
     fetch(apiUrl(endpoint, "/api/settings"), { headers: { "X-API-Key": readKey } })
       .then(async (res) => {
         if (!res.ok) throw new Error(res.status === 401 || res.status === 403 ? "That read key was not accepted." : `The API answered ${res.status}.`);

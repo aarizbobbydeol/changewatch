@@ -1,5 +1,8 @@
 """The MCP server, run as a real subprocess speaking JSON-RPC over stdio to a recording HTTP server."""
+import importlib.util
+import io
 import json
+import socket
 import subprocess
 import sys
 import threading
@@ -131,3 +134,94 @@ def test_rejected_key_and_plain_http_to_another_host():
 
     by_id, _ = _session([_call(1, "get_status")], _env("http://203.0.113.10:8000"))
     assert "must use https://" in by_id[1]["result"]["content"][0]["text"]
+
+
+class RawServer:
+    """Answers every connection with the same raw bytes: a cut-off body, a garbage status line ..."""
+
+    def __init__(self, answer: bytes):
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(8)
+        self.url = f"http://127.0.0.1:{self.sock.getsockname()[1]}"
+
+        def loop():
+            while True:
+                try:
+                    conn, _ = self.sock.accept()
+                except OSError:
+                    return
+                with conn:
+                    conn.recv(65536)
+                    conn.sendall(answer)
+
+        threading.Thread(target=loop, daemon=True).start()
+
+    def close(self):
+        self.sock.close()
+
+
+PING = {"jsonrpc": "2.0", "id": 9, "method": "ping"}
+
+
+def _json_answer(body: bytes) -> bytes:
+    return b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s" % (len(body), body)
+
+
+def test_params_that_are_not_an_object_get_an_error_and_the_server_keeps_answering(api):
+    by_id, _ = _session([
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": ["list_runbooks"]},  # positional params
+        {"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": "x"},
+        PING,
+    ], _env(api.url))
+    assert by_id[1]["error"]["code"] == -32602 and by_id[2]["error"]["code"] == -32602
+    assert by_id[9]["result"] == {}
+    assert api.requests == []
+
+
+@pytest.mark.parametrize("answer", [
+    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"markdown\":",
+    b"GARBAGE\r\n\r\n",
+    _json_answer(b"null"),
+    _json_answer(b"[1, 2]"),
+], ids=["cut-off body", "garbage status line", "null body", "list of numbers"])
+def test_a_broken_answer_is_a_tool_error_and_the_server_keeps_answering(answer):
+    raw = RawServer(answer)
+    try:
+        by_id, _ = _session([_call(1, "get_postmortem", {"incident_id": 7}), _call(2, "list_deploys"), PING], _env(raw.url))
+    finally:
+        raw.close()
+    assert by_id[1]["result"]["isError"] is True
+    assert "result" in by_id[2]
+    assert by_id[9]["result"] == {}
+
+
+def test_a_bad_port_in_the_address_is_a_tool_error():
+    by_id, _ = _session([_call(1, "get_status"), PING], _env("https://changewatch.example:80a"))
+    assert by_id[1]["result"]["isError"] is True and "changewatch.example:80a" in by_id[1]["result"]["content"][0]["text"]
+    assert by_id[9]["result"] == {}
+
+
+def test_any_other_failure_is_an_internal_error_and_the_next_request_is_answered(monkeypatch, capsys):
+    spec = importlib.util.spec_from_file_location("changewatch_mcp", SERVER)
+    mcp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mcp)
+    real = mcp.handle
+
+    def flaky(message):
+        if message.get("id") in (1, 3):
+            raise RuntimeError("cw_read_secret at https://changewatch.example")
+        return real(message)
+
+    monkeypatch.setattr(mcp, "handle", flaky)
+    lines = [{"jsonrpc": "2.0", "id": 1, "method": "ping"}, [{"jsonrpc": "2.0", "id": 3, "method": "ping"}, PING],
+             {"jsonrpc": "2.0", "id": 2, "method": "ping"}]
+    monkeypatch.setattr(sys, "stdin", io.StringIO("".join(json.dumps(m) + "\n" for m in lines)))
+    mcp.main()
+    out = capsys.readouterr().out
+    assert "cw_read_secret" not in out and "changewatch.example" not in out
+    answers = [json.loads(line) for line in out.splitlines()]
+    assert answers[0] == {"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": "Internal error"}}
+    assert answers[1] == [{"jsonrpc": "2.0", "id": 3, "error": {"code": -32603, "message": "Internal error"}},
+                          {"jsonrpc": "2.0", "id": 9, "result": {}}]
+    assert answers[2] == {"jsonrpc": "2.0", "id": 2, "result": {}}

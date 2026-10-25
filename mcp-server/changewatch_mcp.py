@@ -10,6 +10,7 @@ Settings (environment): CHANGEWATCH_URL (https://..., or http://localhost), CHAN
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -53,7 +54,8 @@ TOOLS: List[Dict[str, Any]] = [
     {
         "name": "get_release_verdict",
         "description": "Whether a deploy is safe: safe, watch, rollback or no_data, with the reasons. "
-                       "Use the commit SHA (or the release name the deploy was registered with).",
+                       "Use the commit SHA (the first 7 characters are enough) or the exact release name "
+                       "the deploy was registered with.",
         "inputSchema": {"type": "object", "properties": {
             "commit_sha": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,64}$"},
             "environment": {"type": "string", "default": "prod"}},
@@ -141,7 +143,8 @@ def _get(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         if 300 <= exc.code < 400:
             raise ToolError("ChangeWatch answered with a redirect: set CHANGEWATCH_URL to the final address.")
         raise ToolError(f"ChangeWatch answered HTTP {exc.code}.")
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    # HTTPException: a cut-off body, a garbage status line or a bad port in CHANGEWATCH_URL
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
         reason = getattr(exc, "reason", exc)
         raise ToolError(f"Cannot reach ChangeWatch at {urllib.parse.urlparse(url).netloc} ({type(reason).__name__}).")
 
@@ -163,7 +166,10 @@ def call_tool(name: str, args: Dict[str, Any]) -> Any:
     if name == "get_incident":
         return _get(f"/api/incidents/{_int(args, 'incident_id')}")
     if name == "get_postmortem":
-        return _get(f"/api/incidents/{_int(args, 'incident_id')}/postmortem").get("markdown", "")
+        draft = _get(f"/api/incidents/{_int(args, 'incident_id')}/postmortem")
+        if not isinstance(draft, dict):
+            raise ToolError("ChangeWatch sent an answer this tool does not understand.")
+        return draft.get("markdown", "")
     if name == "get_release_verdict":
         sha = args.get("commit_sha")
         if not isinstance(sha, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", sha):
@@ -214,6 +220,8 @@ def handle(message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": text}}
 
     params = message.get("params") or {}
+    if not isinstance(params, dict):
+        return error(-32602, "params must be an object")
     if method == "initialize":
         asked = params.get("protocolVersion")
         return result({
@@ -238,8 +246,22 @@ def handle(message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             return error(-32602, f"Unknown tool: {name}")
         except ToolError as exc:
             return result({"content": [{"type": "text", "text": str(exc)}], "isError": True})
+        except Exception as exc:  # an answer shaped unlike the API's: the tool fails, the server stays up
+            text = f"ChangeWatch sent an answer this tool does not understand ({type(exc).__name__})."
+            return result({"content": [{"type": "text", "text": text}], "isError": True})
         return result({"content": [{"type": "text", "text": _text(data)}], "isError": False})
     return error(-32601, f"Method not found: {method}")
+
+
+def _answer(message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """handle(), but a bug answers this one request with an error instead of ending the session.
+    The message is fixed: an exception's text could hold the key or the address."""
+    try:
+        return handle(message)
+    except Exception:
+        if message.get("id") is None:
+            return None
+        return {"jsonrpc": "2.0", "id": message.get("id"), "error": {"code": -32603, "message": "Internal error"}}
 
 
 def main() -> None:
@@ -254,10 +276,10 @@ def main() -> None:
                                                    "error": {"code": -32700, "message": "Parse error"}}
         else:
             if isinstance(message, list):  # a batch
-                answers = [r for r in (handle(m) for m in message if isinstance(m, dict)) if r]
+                answers = [r for r in (_answer(m) for m in message if isinstance(m, dict)) if r]
                 response = answers or None  # type: ignore[assignment]
             elif isinstance(message, dict):
-                response = handle(message)
+                response = _answer(message)
             else:
                 response = {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid request"}}
         if response is not None:

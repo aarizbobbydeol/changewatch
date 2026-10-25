@@ -127,6 +127,7 @@ export default function DashboardPage() {
   const [aiCost, setAiCost] = useState<AiCost | null>(null);
   const [review, setReview] = useState<(DeployReview & { deploy_id: number }) | null>(null);
   const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null);
+  const [refreshCount, setRefreshCount] = useState<number>(0);
 
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -189,6 +190,7 @@ export default function DashboardPage() {
         if (!current) return deploysData[0] ?? null;
         return deploysData.find((d) => d.id === current.id) ?? current;
       });
+      setRefreshCount((n) => n + 1); // the selected deploy's review and AI spend are fetched again too
 
       // 3. Fetch Issues
       const issuesRes = await fetch(getApiUrl("/api/issues?limit=50"), { headers });
@@ -227,7 +229,9 @@ export default function DashboardPage() {
     }
   };
 
-  // The app's own AI spend before and after the selected deploy (SDK record_ai_usage)
+  // The app's own AI spend before and after the selected deploy (SDK record_ai_usage), and its risk
+  // review. Both change after the deploy: the review is written in the background and the spend's
+  // "after" window grows for 30 minutes, so they are fetched again on every refresh, not only on a click.
   const selectedDeployId = selectedDeploy?.id;
   useEffect(() => {
     if (!apiKey || !selectedDeployId) return;
@@ -252,7 +256,7 @@ export default function DashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [apiKey, endpoint, selectedDeployId]);
+  }, [apiKey, endpoint, selectedDeployId, refreshCount]);
 
   // Load issue detail when clicked
   const selectIssueWithDetails = async (issue: Issue) => {

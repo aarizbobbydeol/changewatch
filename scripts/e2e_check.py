@@ -56,6 +56,13 @@ def http(method: str, url: str, body=None, headers=None, timeout=15):
         return 0, str(exc)
 
 
+def alert_delivered(timeline: list) -> bool:
+    """The incident timeline says the regression alert was delivered (the same event name is
+    also used for "could not be delivered" and "waiting to be delivered")."""
+    return any(t.get("event") == "alert_sent" and "regression alert delivered to" in (t.get("detail") or "")
+               for t in timeline if isinstance(t, dict))
+
+
 def wait_for(label: str, fn, timeout: float, every: float = 2.0):
     deadline = time.monotonic() + timeout
     last = None
@@ -221,7 +228,7 @@ def main() -> int:
         check(any(line.get("message") == "order has no discount" for line in logs),
               "incident shows the app's log lines before the error")
         timeline = detail.get("timeline", []) if isinstance(detail, dict) else []
-        check(any(t.get("event") == "alert_sent" for t in timeline), "incident timeline shows the alert delivery")
+        check(alert_delivered(timeline), "incident timeline shows the alert delivery")
         runbooks = detail.get("runbooks", []) if isinstance(detail, dict) else []
         check([r.get("title") for r in runbooks] == ["Billing totals fail"], "incident shows the matching runbook")
         commands = [c.get("command") for c in ((detail.get("fix_suggestions") or {}).get("commands") or [])]

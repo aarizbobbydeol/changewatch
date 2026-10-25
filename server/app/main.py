@@ -574,6 +574,8 @@ async def get_verdict(
     clean_sha = sha.strip()
     clean_env = environment.strip()
 
+    # A short SHA (7+ hex characters) may name a deploy by its start; a release name must match in
+    # full, so "release-1.2" never finds "release-1.20". An exact match wins over a newer prefix match.
     async with read_project_transaction(project_id) as conn:
         row = await conn.fetchrow(
             """
@@ -583,9 +585,9 @@ async def get_verdict(
             FROM deploys d
             LEFT JOIN deploy_analysis a ON a.deploy_id = d.id
             WHERE d.project_id = $1
-              AND (d.commit_sha = $2 OR (length($2) >= 7 AND d.commit_sha LIKE $2 || '%'))
+              AND (d.commit_sha = $2 OR ($2 ~ '^[0-9a-fA-F]{7,40}$' AND d.commit_sha LIKE $2 || '%'))
               AND d.environment = $3
-            ORDER BY d.deployed_at DESC
+            ORDER BY (d.commit_sha = $2) DESC, d.deployed_at DESC
             LIMIT 1
             """,
             project_id,
