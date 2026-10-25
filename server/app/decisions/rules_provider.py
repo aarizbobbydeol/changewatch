@@ -44,7 +44,8 @@ class RulesDecisionProvider:
         is_critical = bool(state_dict.get("is_critical", False))
         request_path = str(state_dict.get("request_path", "")).lower()
         exc_type = str(state_dict.get("exc_type", ""))
-        message = str(state_dict.get("message", "")).lower()
+        # The decision state carries the error text as "title" ("ExcType: message")
+        message = str(state_dict.get("message") or state_dict.get("title", "")).lower()
         event_count = int(state_dict.get("event_count", 1))
 
         answers: Dict[str, Answer] = {}

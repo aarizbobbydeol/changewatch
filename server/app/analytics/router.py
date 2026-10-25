@@ -82,9 +82,10 @@ async def get_overview(
             """
             SELECT d.id, d.commit_sha, d.deployed_at, d.environment,
                    a.verdict, a.first_verdict,
+                   -- Ever confirmed: auto-resolve flips the status within 30 minutes of the fix
                    EXISTS(
                      SELECT 1 FROM incidents i
-                     WHERE i.deploy_id = d.id AND i.status = 'confirmed'
+                     WHERE i.deploy_id = d.id AND i.project_id = d.project_id AND i.confirmed_at IS NOT NULL
                    ) AS has_confirmed_incident
             FROM deploys d
             LEFT JOIN deploy_analysis a ON a.deploy_id = d.id
@@ -102,15 +103,17 @@ async def get_overview(
         # 2. Incidents in window
         inc_rows = await conn.fetch(
             """
-            SELECT id, status, created_at, confirmed_at, resolved_at,
-                   alerted_at, first_event_at, last_event_at, first_alert_ms
-            FROM incidents
-            WHERE project_id = $1 AND created_at >= $2 AND created_at <= $3
-            ORDER BY created_at DESC
+            SELECT i.id, i.status, i.created_at, i.confirmed_at, i.resolved_at,
+                   i.alerted_at, i.first_event_at, i.last_event_at, i.first_alert_ms
+            FROM incidents i
+            JOIN deploys d ON d.id = i.deploy_id AND d.project_id = i.project_id
+            WHERE i.project_id = $1 AND d.environment = $4 AND i.created_at >= $2 AND i.created_at <= $3
+            ORDER BY i.created_at DESC
             """,
             project_id,
             start_dt,
             end_dt,
+            env,
         )
         incidents = [dict(r) for r in inc_rows]
         resolved = [i for i in incidents if i.get("status") == "resolved"]
@@ -257,9 +260,12 @@ async def get_hotspots(
     async with read_project_transaction(project_id) as conn:
         rows = await conn.fetch(
             """
-            SELECT where_file
-            FROM incidents
-            WHERE project_id = $1 AND created_at >= $2 AND created_at <= $3
+            SELECT i.where_file,
+                   EXISTS(SELECT 1 FROM alert_feedback af
+                          WHERE af.incident_id = i.id AND af.project_id = i.project_id AND af.label = 'false')
+                     AS is_false_alarm
+            FROM incidents i
+            WHERE i.project_id = $1 AND i.created_at >= $2 AND i.created_at <= $3
             """,
             project_id,
             start_dt,

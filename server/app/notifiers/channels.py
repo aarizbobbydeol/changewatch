@@ -182,7 +182,15 @@ class EmailNotifier:
         from email.mime.text import MIMEText
 
         msg = MIMEText(payload.get("text", "ChangeWatch Alert"))
-        msg["Subject"] = payload.get("subject", "ChangeWatch Regression Alert")
+        # Named after what the message is: a digest or a "Resolved" note is not a regression alert
+        kind = payload.get("type") or payload.get("kind") or ""
+        default_subject = {
+            "weekly_digest": "ChangeWatch weekly digest",
+            "incident_resolved": "ChangeWatch: resolved",
+            "budget_warning": "ChangeWatch budget warning",
+        }.get(kind, "ChangeWatch Regression Alert")
+        title = str(payload.get("title") or "").replace("*", "").strip()
+        msg["Subject"] = (payload.get("subject") or title or default_subject)[:200]
         msg["From"] = sender
         msg["To"] = ", ".join(recipients)
 

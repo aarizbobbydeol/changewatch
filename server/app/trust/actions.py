@@ -144,7 +144,9 @@ async def execute_incident_action(
             """
             UPDATE incidents
             SET status = 'confirmed',
-                resolved_at = NULL
+                resolved_at = NULL,
+                -- Auto-resolve waits for 30 quiet minutes from now, not from the last old error
+                last_event_at = GREATEST(last_event_at, now())
             WHERE id = $1 AND project_id = $2
             """,
             incident_id,

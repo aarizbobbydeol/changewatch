@@ -36,12 +36,19 @@ async def compute_decision_calibration(
                CASE
                  WHEN af.label = 'real' THEN 1.0
                  WHEN af.label = 'false' THEN 0.0
-                 WHEN i.status = 'confirmed' THEN 1.0
+                 WHEN i.confirmed_at IS NOT NULL THEN 1.0
                  ELSE NULL
                END AS outcome
         FROM decisions d
         JOIN incidents i ON i.id = d.incident_id AND i.project_id = d.project_id
-        LEFT JOIN alert_feedback af ON af.incident_id = i.id AND af.project_id = i.project_id
+        -- One outcome per incident however many people rated it: the latest real/false rating
+        -- ('unclear' says nothing), else whether it was confirmed
+        LEFT JOIN LATERAL (
+            SELECT label FROM alert_feedback f
+            WHERE f.incident_id = i.id AND f.project_id = i.project_id AND f.label IN ('real', 'false')
+            ORDER BY f.created_at DESC
+            LIMIT 1
+        ) af ON true
         WHERE d.project_id = $1
           AND d.question_id = $2
           AND d.probability IS NOT NULL

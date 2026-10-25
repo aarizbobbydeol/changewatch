@@ -127,10 +127,11 @@ async def get_dependency_changes(
     project_id: int,
     deploy_id: int,
 ) -> List[Dict[str, Any]]:
-    """Parse added or modified dependency files to extract package changes."""
+    """The packages a deploy added or changed: only dependency lines inside the file's added line
+    ranges (the stored content is the whole file at the deploy, not the change)."""
     rows = await conn.fetch(
         """
-        SELECT path, status, content, content_enc
+        SELECT path, status, content, content_enc, added_ranges
         FROM deploy_files
         WHERE project_id = $1 AND deploy_id = $2 AND is_dependency_file = true
         LIMIT 10
@@ -142,33 +143,60 @@ async def get_dependency_changes(
     for r in rows:
         path = r["path"]
         content = await decrypt_or_plain(project_id, "deploy_files", "content", r.get("content_enc"), r.get("content")) or ""
-        # Parse requirements.txt style lines
-        if "requirements" in path or path.endswith(".txt"):
-            for line in content.splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                match = re.match(r"^([a-zA-Z0-9_\-]+)([=><~]+.*)?$", line)
-                if match:
-                    pkg = match.group(1)
-                    ver = match.group(2) or "any"
-                    changes.append({"file": path, "package": pkg, "spec": ver, "change_type": r["status"]})
-        elif "package.json" in path:
-            try:
-                pkg_json = json.loads(content)
-                deps = {**pkg_json.get("dependencies", {}), **pkg_json.get("devDependencies", {})}
-                for pkg, ver in list(deps.items())[:50]:
-                    changes.append({"file": path, "package": pkg, "spec": ver, "change_type": r["status"]})
-            except Exception:
-                pass
-        elif "pyproject.toml" in path:
-            for line in content.splitlines():
-                if "=" in line and not line.strip().startswith("#"):
-                    parts = line.split("=", 1)
-                    pkg = parts[0].strip().strip('"').strip("'")
-                    if pkg and not pkg.startswith("["):
-                        changes.append({"file": path, "package": pkg, "spec": parts[1].strip(), "change_type": r["status"]})
+        raw_ranges = r.get("added_ranges")
+        ranges = raw_ranges if isinstance(raw_ranges, list) else json.loads(raw_ranges or "[]")
+        for line_no, pkg, spec in _dependency_lines(path, content):
+            if any(start <= line_no <= end for start, end in ranges):
+                changes.append({"file": path, "package": pkg, "spec": spec, "change_type": r["status"]})
     return changes[:50]
+
+
+_DEP_TABLES = ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies")
+
+
+def _dependency_lines(path: str, content: str):
+    """(line number, package, spec) for each dependency declared in a requirements file,
+    package.json (dependency blocks only) or pyproject.toml (dependency tables only)."""
+    lines = content.splitlines()
+    if "requirements" in path or path.endswith(".txt"):
+        for i, line in enumerate(lines, start=1):
+            match = re.match(r"^\s*([A-Za-z0-9_.\-\[\]]+)\s*([=<>~!]=?.*)?$", line)
+            if match and not line.strip().startswith(("#", "-")):
+                yield i, match.group(1), (match.group(2) or "any").strip()
+    elif path.endswith("package.json"):
+        in_deps = False
+        for i, line in enumerate(lines, start=1):
+            if re.match(r'^\s*"(?:%s)"\s*:\s*\{' % "|".join(_DEP_TABLES), line):
+                in_deps = True
+                continue
+            if in_deps and line.strip().startswith("}"):
+                in_deps = False
+                continue
+            match = re.match(r'^\s*"([^"]+)"\s*:\s*"([^"]*)"', line)
+            if in_deps and match:
+                yield i, match.group(1), match.group(2)
+    elif path.endswith("pyproject.toml"):
+        section, in_array = "", False
+        for i, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if stripped.startswith("["):
+                section, in_array = stripped.strip("[] "), False
+                continue
+            if section in ("project", "project.optional-dependencies") and re.match(r"^[\w-]+\s*=\s*\[", stripped):
+                in_array = not stripped.endswith("]")
+                inline = re.findall(r'"([^"]+)"', stripped.split("=", 1)[1])
+                for req in inline:
+                    yield i, re.split(r"[<>=~!; \[]", req, 1)[0], req
+                continue
+            if in_array:
+                if stripped.startswith("]"):
+                    in_array = False
+                    continue
+                for req in re.findall(r'"([^"]+)"', stripped):
+                    yield i, re.split(r"[<>=~!; \[]", req, 1)[0], req
+            elif section.endswith("dependencies") and "=" in stripped and not stripped.startswith("#"):
+                name, spec = stripped.split("=", 1)
+                yield i, name.strip().strip('"'), spec.strip()
 
 
 async def get_config_changes(

@@ -14,7 +14,7 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import asyncpg
 
 from app.crypto import decrypt_or_plain
@@ -32,6 +32,7 @@ from app.notifiers.incident_alert import dispatch_incident_alert
 from app.sre_prep import (
     frame_in_diff,
     innermost_project_frame,
+    is_project_frame,
     parse_stack_trace,
     resolve_owners,
 )
@@ -44,6 +45,35 @@ def _same_file(frame_path: str, repo_path: str) -> bool:
     frame_path = frame_path.replace("\\", "/")
     repo_path = repo_path.replace("\\", "/").lstrip("/")
     return frame_path == repo_path or frame_path.endswith("/" + repo_path)
+
+
+def _repo_relative(frames: List[Any], frame: Any, deploy_paths: List[str]) -> Optional[str]:
+    """The frame's path inside the repository, or None. The server directory the repository is
+    deployed at is taken from the frames that name a changed file; the longest match wins."""
+    best: Optional[Tuple[str, int]] = None  # (server root, length of the matched repo path)
+    for f in frames:
+        fp = (f.file or "").replace("\\", "/")
+        for rp in deploy_paths:
+            rp = (rp or "").replace("\\", "/").lstrip("/")
+            if not rp:
+                continue
+            if fp == rp:
+                root = ""
+            elif fp.endswith("/" + rp):
+                root = fp[: len(fp) - len(rp)]
+            else:
+                continue
+            if best is None or len(rp) > best[1]:
+                best = (root, len(rp))
+    if best is None:
+        return None
+    fpath = (frame.file or "").replace("\\", "/")
+    root = best[0]
+    if root and fpath.startswith(root):
+        return fpath[len(root):]
+    if not root and not fpath.startswith("/"):
+        return fpath
+    return None
 
 
 async def meter_decision_call(
@@ -322,10 +352,6 @@ async def check_and_trigger_incident(
     # 5. Open new incident
     raw_trace = payload.get("stack_trace") or ""
     frames = parse_stack_trace(raw_trace)
-    frame = innermost_project_frame(frames)
-    where_file = frame.file if frame else "unknown"
-    where_line = frame.line if frame else 0
-    where_function = frame.function if frame else "unknown"
 
     # Fetch deploy files to check in_diff and resolve owners
     df_rows = await conn.fetch(
@@ -333,10 +359,23 @@ async def check_and_trigger_incident(
         deploy_id,
         project_id,
     )
+    deploy_paths = [r["path"] for r in df_rows]
+
+    frame = innermost_project_frame(frames)
+    if frame is not None and not is_project_frame(frame):
+        # Every frame looks like a library (the app is installed as a package): the innermost
+        # frame in a file this deploy changed is the better guess
+        frame = next((f for f in reversed(frames) if any(_same_file(f.file, p) for p in deploy_paths)), frame)
+    where_file = frame.file if frame else "unknown"
+    where_line = frame.line if frame else 0
+    where_function = frame.function if frame else "unknown"
+
+    # Stack frames carry server paths (/srv/app/app/billing.py); CODEOWNERS rules and deploy files
+    # are repository paths. The repository's place on the server is learned from any frame that
+    # names a changed file, so even an unchanged file gets its repository path and owners.
+    rel_path = _repo_relative(frames, frame, deploy_paths) if frame else None
     deploy_files = []
     file_authors = []
-    # Stack frames carry absolute paths (/srv/app/app/billing.py); CODEOWNERS rules are
-    # repo-relative, so owners are resolved against the matching deploy file's path.
     repo_path: Optional[str] = None
     for r in df_rows:
         ranges = r["added_ranges"]
@@ -347,7 +386,13 @@ async def check_and_trigger_incident(
             "added_ranges": parsed_ranges,
         }
         deploy_files.append(df_dict)
-        if where_file and _same_file(where_file, r["path"]):
+        if rel_path is not None:
+            matched = r["path"].replace("\\", "/").lstrip("/") == rel_path
+        else:
+            # The longest matching path wins, so a same-named file elsewhere does not
+            matched = bool(where_file) and _same_file(where_file, r["path"]) and (
+                repo_path is None or len(r["path"]) > len(repo_path))
+        if matched:
             repo_path = r["path"]
             auths = r["authors"]
             file_authors = auths if isinstance(auths, list) else json.loads(auths or "[]")
@@ -356,15 +401,32 @@ async def check_and_trigger_incident(
     codeowners_content = await decrypt_or_plain(
         project_id, "deploys", "codeowners", dep_row.get("codeowners_enc"), dep_row.get("codeowners")
     )
-    owners = resolve_owners(repo_path or where_file, codeowners_content, file_authors)
-    if repo_path:
+    owners = resolve_owners(repo_path or rel_path or where_file, codeowners_content, file_authors)
+    if repo_path or rel_path:
         # Store the repo path, not the server path: alerts read "app/billing.py:42", hotspots group
         # by repo directory, and the investigator's exact-path file lookups find the file
-        where_file = repo_path
+        where_file = repo_path or rel_path
 
     # 6. Run Typed Decisions Triage (sub-second rules/fake fallback)
     triage_info: Dict[str, Any] = {}
     try:
+        # Code goes to the decision provider only with DECISION_SEND_CODE: 20 lines around the frame
+        code_excerpt: Optional[str] = None
+        if settings.DECISION_SEND_CODE and repo_path and where_line:
+            file_row = await conn.fetchrow(
+                "SELECT content, content_enc FROM deploy_files WHERE deploy_id = $1 AND project_id = $2 AND path = $3",
+                deploy_id,
+                project_id,
+                repo_path,
+            )
+            if file_row:
+                text = await decrypt_or_plain(
+                    project_id, "deploy_files", "content", file_row.get("content_enc"), file_row.get("content")
+                )
+                if text:
+                    lines = text.splitlines()
+                    start = max(0, where_line - 11)
+                    code_excerpt = "\n".join(lines[start:start + 20])
         decision_state = build_decision_state(
             error_title=issue_row["title"],
             exc_type=payload.get("exc_type") or "Error",
@@ -374,6 +436,8 @@ async def check_and_trigger_incident(
             in_diff=in_diff,
             is_critical=is_critical_route,
             commit_message=dep_row["message"],
+            code_excerpt=code_excerpt,
+            send_code=settings.DECISION_SEND_CODE,
         )
         triage_questions = get_triage_questions(owner_candidates=owners)
         t_start = time.monotonic()

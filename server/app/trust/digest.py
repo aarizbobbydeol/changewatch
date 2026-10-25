@@ -53,25 +53,34 @@ async def generate_weekly_digest(
     # 2. Fetch incidents in the last 7 days
     incident_rows = await conn.fetch(
         """
-        SELECT id, deploy_id, status, title, where_file, first_alert_ms,
-               created_at, first_event_at, last_event_at, resolved_at
-        FROM incidents
-        WHERE project_id = $1 AND created_at >= $2
+        SELECT i.id, i.deploy_id, i.status, i.title, i.where_file, i.first_alert_ms,
+               i.created_at, i.first_event_at, i.last_event_at, i.resolved_at, i.confirmed_at,
+               EXISTS(SELECT 1 FROM alert_feedback af
+                      WHERE af.incident_id = i.id AND af.project_id = i.project_id AND af.label = 'false')
+                 AS is_false_alarm
+        FROM incidents i
+        JOIN deploys d ON d.id = i.deploy_id AND d.project_id = i.project_id
+        WHERE i.project_id = $1 AND d.environment = $3 AND i.created_at >= $2
         """,
         project_id,
         week_ago,
+        environment,
     )
     incidents = [dict(r) for r in incident_rows]
 
     # 3. Fetch alert feedback in the last 7 days
     feedback_rows = await conn.fetch(
         """
-        SELECT label
-        FROM alert_feedback
-        WHERE project_id = $1 AND created_at >= $2
+        SELECT DISTINCT ON (af.incident_id) af.label
+        FROM alert_feedback af
+        JOIN incidents i ON i.id = af.incident_id AND i.project_id = af.project_id
+        JOIN deploys d ON d.id = i.deploy_id AND d.project_id = i.project_id
+        WHERE af.project_id = $1 AND d.environment = $3 AND af.created_at >= $2
+        ORDER BY af.incident_id, af.created_at DESC
         """,
         project_id,
         week_ago,
+        environment,
     )
     feedback_list = [dict(r) for r in feedback_rows]
 
@@ -114,7 +123,7 @@ async def generate_weekly_digest(
     # Mark deploys that had confirmed incidents or rollback verdicts
     failed_deploy_ids = {
         inc["deploy_id"] for inc in incidents
-        if inc.get("status") in ("confirmed", "resolved")
+        if inc.get("confirmed_at") is not None  # ever confirmed, as on the dashboard
     }
     for d in deploys:
         if d.get("id") in failed_deploy_ids or d.get("final_verdict") == "rollback" or d.get("first_verdict") == "rollback":
@@ -124,7 +133,7 @@ async def generate_weekly_digest(
     # Calculate metrics via pure functions
     rel_metric = compute_releases(deploys)
     cfr_metric = compute_change_failure_rate(deploys, now_dt=current)
-    ttf_metric = compute_time_to_fix(incidents)
+    ttf_metric = compute_time_to_fix([i for i in incidents if i.get("status") == "resolved"])
     acc_metric = compute_alerts_accuracy(feedback_list)
     upt_metric = compute_tool_uptime(status_logs, window_minutes=10080.0)
     hot_metric = compute_hotspots(incidents)
@@ -142,7 +151,7 @@ async def generate_weekly_digest(
     else:
         releases_summary += f", {total_incidents_n} incident(s)"
         if ttf_metric.value is not None:
-            releases_summary += f", median fix time: {int(ttf_metric.value // 60)} min"
+            releases_summary += f", median fix time: {int(round(ttf_metric.value))} min"  # already minutes
     lines.append(releases_summary)
 
     if cfr_metric.formatted and not cfr_metric.formatted.startswith("Not enabled"):

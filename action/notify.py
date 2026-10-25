@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 DEFAULT_EXCLUDES = ["**/.env*", "**/*.pem", "**/*.key", "**/id_rsa*", "secrets/**"]
@@ -82,6 +83,13 @@ def main() -> int:
 
     if not url or not key:
         print("::warning::ChangeWatch: changewatch_url and changewatch_api_key are required")
+        return 0
+    # The key and the diff must not cross the internet in clear text (same rule as the SDK)
+    parsed = urllib.parse.urlparse(url)
+    local = (parsed.hostname or "") in ("localhost", "127.0.0.1", "::1")
+    insecure_ok = (os.environ.get("CW_ALLOW_INSECURE") or "").lower() in ("1", "true", "yes")
+    if parsed.scheme != "https" and not local and not insecure_ok:
+        print("::warning::ChangeWatch: changewatch_url must use https:// (set allow_insecure: true to send over plain HTTP)")
         return 0
     if not before or set(before) == {"0"} or not git("cat-file", "-t", before).strip():
         before = git("rev-parse", f"{sha}^").strip()  # first push, or force push: diff against the parent

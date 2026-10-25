@@ -3,6 +3,14 @@ from typing import Optional, Protocol, Tuple
 import httpx
 from app.config import RETIRED_MODEL_REPLACEMENTS, settings
 from app.scrub import scrub_text
+from app.trust.secret_guard import apply_secret_guard
+
+
+def outbound_text(text: str) -> str:
+    """What may leave for an AI provider: scrubbed, then the optional second filter
+    (SECRET_GUARD_ENABLED), which logs that it blocked something without logging what."""
+    cleaned, _, _ = apply_secret_guard(scrub_text(text), field_name="llm_prompt")
+    return cleaned
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +43,7 @@ class AnthropicClient:
         self.last_usage: Optional[Tuple[int, int]] = None
 
     async def complete(self, system: str, prompt: str, max_tokens: int) -> str:
-        clean_system = scrub_text(system)
-        clean_prompt = scrub_text(prompt)
+        clean_system, clean_prompt = outbound_text(system), outbound_text(prompt)
 
         # Thinking is always on for current models and counts toward max_tokens, so callers pass room for it
         response = await self.client.beta.messages.create(
@@ -79,8 +86,7 @@ class OllamaClient:
 
 
     async def complete(self, system: str, prompt: str, max_tokens: int) -> str:
-        clean_system = scrub_text(system)
-        clean_prompt = scrub_text(prompt)
+        clean_system, clean_prompt = outbound_text(system), outbound_text(prompt)
 
         url = f"{self.base_url}/api/chat"
         payload = {

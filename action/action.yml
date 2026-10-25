@@ -21,6 +21,10 @@ inputs:
     description: "Comma-separated globs never sent (added to **/.env*, **/*.pem, **/*.key, **/id_rsa*, secrets/**)"
     required: false
     default: "infra/**"
+  allow_insecure:
+    description: "Send over plain http:// to a host other than localhost (the key and diff travel unencrypted)"
+    required: false
+    default: "false"
 
 runs:
   using: "composite"
@@ -36,6 +40,7 @@ runs:
         CW_ENV: ${{ inputs.environment }}
         CW_MODE: ${{ inputs.mode }}
         CW_EXCLUDE: ${{ inputs.exclude }}
+        CW_ALLOW_INSECURE: ${{ inputs.allow_insecure }}
         CW_SHA: ${{ github.sha }}
         CW_BEFORE: ${{ github.event.before }}
       run: python3 "${{ github.action_path }}/notify.py"

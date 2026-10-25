@@ -32,12 +32,18 @@ def glob_to_regex(pattern: str) -> re.Pattern:
     - If pattern ends with '/', it matches anything inside that directory.
     - If pattern has no slash, it matches in any directory (e.g. '*.js' matches 'app/main.js').
     - '*' matches anything except a slash.
-    - '**' matches anything including slashes.
+    - '**' matches anything including slashes; a leading '**/' also matches at the root.
+    - A pattern that names a directory also covers everything inside it ('/src/payments' and
+      'logs' own src/payments/x.py and a/logs/y.log, as on GitHub), except one ending in '/*',
+      which covers that directory's direct children only.
     """
     orig_pattern = pattern
     anchored_root = pattern.startswith("/")
     if anchored_root:
         pattern = pattern[1:]
+    any_depth_prefix = pattern.startswith("**/")
+    if any_depth_prefix:
+        pattern = pattern[3:]
 
     is_dir_only = pattern.endswith("/")
     if is_dir_only:
@@ -74,8 +80,12 @@ def glob_to_regex(pattern: str) -> re.Pattern:
 
     if is_dir_only:
         regex_body = f"{regex_body}/.*"
+    elif not pattern.endswith("/*"):
+        regex_body = f"{regex_body}(?:/.*)?"  # the path itself, or anything inside it
 
-    if anchored_root:
+    if any_depth_prefix:
+        full_regex = f"(?:^|/){regex_body}$"
+    elif anchored_root:
         full_regex = f"^{regex_body}$"
     elif "/" in orig_pattern.rstrip("/"):
         full_regex = f"^{regex_body}$"
@@ -114,15 +124,13 @@ def parse_codeowners(content: str) -> CompiledCodeowners:
     rules: List[CodeownerRule] = []
 
     for line in content.splitlines():
-        line = line.strip()
+        line = line.split(" #", 1)[0].strip()  # inline comments are not owners
         if not line or line.startswith("#"):
             continue
 
         parts = line.split()
-        if len(parts) < 2:
-            continue
-
         pattern = parts[0]
+        # A pattern with no owners is a rule too: it takes ownership away from earlier rules
         owners = parts[1:]
 
         try:

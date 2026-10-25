@@ -38,6 +38,8 @@ def redact_kv_match(match: re.Match) -> str:
 
 # Combined single-pass alternation for high-performance scrubbing
 COMBINED_SECRET_PATTERN = re.compile(
+    # A PEM private key, also inside JSON with escaped newlines, also cut off before its END line
+    r"(?P<pem>-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]{0,12000}?-----END [A-Z ]*PRIVATE KEY-----|[A-Za-z0-9+/=\s\\]*))|"
     r"(?P<aws>\bAKIA[0-9A-Z]{16}\b)|"
     r"(?P<gh>\b(?:gh[pousr]_[A-Za-z0-9_]{36,}|github_pat_[A-Za-z0-9_]{20,})\b)|"
     r"(?P<sk>\b(?:sk-[A-Za-z0-9_-]{10,}|[rs]k_(?:live|test)_[A-Za-z0-9]{10,}|xox[abprs]-[A-Za-z0-9-]{10,})\b)|"
@@ -47,6 +49,8 @@ COMBINED_SECRET_PATTERN = re.compile(
 
 
 def _combined_replacer(match: re.Match) -> str:
+    if match.group("pem"):
+        return "[REDACTED_PRIVATE_KEY]"
     if match.group("aws"):
         return "[REDACTED_AWS_KEY]"
     if match.group("gh"):

@@ -229,6 +229,11 @@ async def rotate_project_key_cmd(project_id: int):
 
 async def delete_project_cmd(project_id: int, purge: bool):
     """Delete a project and purge its data and encryption keys (crypto-shred)."""
+    if not purge:
+        # Deletion cannot be undone: --purge is the confirmation, as the help and docs say
+        print(f"Refusing to delete project {project_id}: add --purge to confirm. This permanently deletes "
+              "all of its data and its encryption key.", file=sys.stderr)
+        sys.exit(2)
     await init_db_pool()
     try:
         async with get_connection() as conn:

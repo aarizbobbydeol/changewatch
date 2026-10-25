@@ -5,6 +5,8 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 ACTION = Path(__file__).resolve().parent.parent.parent / "action" / "notify.py"
 
 
@@ -61,7 +63,7 @@ def test_action_sends_changed_lines_codeowners_and_respects_excludes(tmp_path, m
         return Resp()
 
     monkeypatch.chdir(repo)
-    for k, v in {"CW_URL": "http://cw.test", "CW_KEY": "cw_ingest_x", "CW_MODE": "full", "CW_EXCLUDE": "infra/**",
+    for k, v in {"CW_URL": "https://cw.test", "CW_KEY": "cw_ingest_x", "CW_MODE": "full", "CW_EXCLUDE": "infra/**",
                  "CW_BEFORE": first, "CW_SHA": ""}.items():
         monkeypatch.setenv(k, v)
     mod = _load()
@@ -76,3 +78,21 @@ def test_action_sends_changed_lines_codeowners_and_respects_excludes(tmp_path, m
     assert body["author"] == "dev@acme.example"
     assert "prod.key" not in body["diff"] and "main.tf" not in body["diff"]
     assert sent["key"] == "cw_ingest_x"
+
+
+@pytest.mark.parametrize("url,allowed", [
+    ("http://203.0.113.10:8000", False),        # the key and the diff would cross the internet in clear text
+    ("http://localhost:8000", True),
+    ("https://changewatch.example.com", True),
+])
+def test_action_refuses_plain_http_to_other_hosts(monkeypatch, capsys, url, allowed):
+    monkeypatch.setenv("CW_URL", url)
+    monkeypatch.setenv("CW_KEY", "cw_ingest_x")
+    monkeypatch.delenv("CW_ALLOW_INSECURE", raising=False)
+    mod = _load()
+    with patch.object(mod, "git", return_value=""), \
+         patch.object(mod.urllib.request, "urlopen", side_effect=OSError("no network in tests")) as opened:
+        assert mod.main() == 0  # never fails the workflow
+    assert opened.called is allowed
+    if not allowed:
+        assert "must use https://" in capsys.readouterr().out

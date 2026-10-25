@@ -1071,3 +1071,27 @@ An independent bug hunt (10 reviewers, then a critic, then three checks per find
   - The default price book is in the server image, so the documented publish command works.
   - The DEMO.md delete command and the README quick-start key are corrected.
 - **Verification:** 445 tests pass against Postgres 16 (63 new in parts 1 to 4, each new test failing on the old code), security 12/12, evals 12/12, chaos. Dashboard lint has 0 errors and the build passes.
+
+### 89. Bug hunt, part 5: grouping, big fleets, ownership, reports
+The bug hunt's second round (areas a critic said the first round missed) confirmed 33 more findings; 14 were already fixed by #80 to #88. These were not:
+- **One bug became hundreds of issues.** The fingerprint hashed the whole trace, including the exception message, so `order 1234 has no items` and `order 5678 …` were different issues: no instant alert (never 3 events of one issue), and a no-op deploy could look like it introduced "20 new error types". Errors now group by exception type and the trace's frame and code lines; without frames, by the message with ids and numbers replaced. Slow requests group by route (`/users/:id`). On upgrade, the worker moves each existing issue to its new fingerprint the first time it is seen, keeping its history, so known errors do not look new.
+- **Fleets of more than 60 app processes lost errors.** Every SDK process sends a heartbeat a minute, the limit was 60 per key, and going over it refused the whole batch with 429, errors included, with every process retrying in the same second. Heartbeats over the (now configurable, 1,200) limit are dropped and counted; the errors go through.
+- **Owners and locations used server paths** when the failing file was not one the deploy changed: `/srv/app/app/billing/charge.py` matched only catch-all CODEOWNERS rules, and hotspots grouped under `srv`. The repository's place on the server is learned from any frame that names a changed file (the longest match wins, so a same-named file elsewhere does not); apps installed as packages fall back to the innermost changed file.
+- **CODEOWNERS** directory patterns without a trailing slash (`/src/payments`) and `**/dir` matched nothing inside them, inline comments became owners, and owner-less lines were ignored. They now follow GitHub's rules.
+- **Private keys reached the AI provider.** The scrubber had no PEM pattern, and the optional `SECRET_GUARD_ENABLED` filter was never called. PEM private keys are always removed now (also JSON-escaped or cut off), and the guard runs on every outbound prompt.
+- **The investigator was told every package was changed**: "dependency changes" listed the whole requirements file. It now lists only the lines in the deploy's added ranges (and only dependency tables in pyproject.toml and package.json).
+- **The Action sent the key and diff over plain HTTP** to any host. It now requires https except for localhost, with an explicit `allow_insecure` input.
+- **Reports:**
+  - The weekly digest's median fix time was divided by 60 again (45 minutes printed as 0) and counted open incidents.
+  - Each environment's digest counted every environment's incidents.
+  - The change failure rate checked the current status (auto-resolve flips it within 30 minutes) and now counts incidents that were ever confirmed, the same way on the dashboard and in the digest.
+  - Calibration counted one incident once per rating (ten "false" clicks made a full bin) and treated "unclear" as real.
+  - Hotspots now leave out incidents rated false alarms.
+- **Also:**
+  - A manual reopen was undone by auto-resolve within a minute.
+  - Digest and "Resolved" emails had the subject "Regression Alert".
+  - `delete-project` ignored `--purge` and deleted without confirmation.
+  - Rules triage never saw the error text, so config errors were never categorised as such.
+  - `DECISION_SEND_CODE` was never read.
+- **Not changed, left for a decision:** the AI "likely cause" on watch/rollback verdicts is gated by the budget but not metered. Whether it should count as an AI investigation is a pricing choice.
+- **Verification:** 467 tests pass against Postgres 16 (every new test in this part fails on the old code), security 12/12, evals 12/12, chaos.
