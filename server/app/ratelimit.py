@@ -7,8 +7,6 @@ from app.queue import get_redis
 
 logger = logging.getLogger(__name__)
 
-HEARTBEAT_LIMIT_PER_MIN = 60
-
 
 async def check_rate_limit(
     api_key: str,
@@ -18,7 +16,7 @@ async def check_rate_limit(
     """
     Check rate limit for an API key in 1-minute buckets in Redis.
     Normal events limit: settings.RATE_LIMIT_PER_MIN (default 600).
-    Heartbeat events limit: HEARTBEAT_LIMIT_PER_MIN (60).
+    Heartbeat events limit: settings.HEARTBEAT_LIMIT_PER_MIN (default 1200, one per app process).
 
     Returns:
         (allowed: bool, current_usage: int, limit: int)
@@ -26,7 +24,7 @@ async def check_rate_limit(
     if event_count <= 0:
         return True, 0, settings.RATE_LIMIT_PER_MIN
 
-    limit = HEARTBEAT_LIMIT_PER_MIN if is_heartbeat else settings.RATE_LIMIT_PER_MIN
+    limit = settings.HEARTBEAT_LIMIT_PER_MIN if is_heartbeat else settings.RATE_LIMIT_PER_MIN
     prefix = "ratelimit:heartbeat" if is_heartbeat else "ratelimit"
     minute_bucket = int(time.time() // 60)
     # Hash, not the key itself (Redis keys are visible to SCAN and saved to disk)

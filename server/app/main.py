@@ -420,16 +420,17 @@ async def ingest_events(
                 headers=retry_after,
             )
 
-    # Check rate limit for heartbeats
+    # Heartbeats over their limit are dropped and counted, but the batch is not refused: a 429 here
+    # held back the errors sent with them, and every SDK process retried in the same second
+    heartbeats_dropped = 0
     if heartbeat_count > 0:
         allowed, current, limit = await check_rate_limit(api_key, heartbeat_count, is_heartbeat=True)
         if not allowed:
-            await count_dropped(_redis_or_none(), project_id, "rate_limit", len(batch.events))
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Heartbeat rate limit exceeded: {current} in current minute (limit {limit})",
-                headers=retry_after,
-            )
+            heartbeats_dropped = heartbeat_count
+            batch = EventsBatch.model_construct(events=[e for e in batch.events if e.type != "heartbeat"])
+            await count_dropped(_redis_or_none(), project_id, "rate_limit", heartbeats_dropped)
+            logger.warning("Heartbeat limit reached for project %d (%d/min): %d heartbeat(s) dropped",
+                           project_id, limit, heartbeats_dropped)
 
     # Performance Addendum Section 3: Backpressure Shedding
     redis = get_redis()
@@ -530,7 +531,7 @@ async def ingest_events(
             detail="Event queue temporarily unavailable; retry later",
             headers={"Retry-After": str(QUEUE_RETRY_AFTER_SEC)},
         )
-    return EventsResponse(accepted=len(events_to_queue), dropped=dropped_count)
+    return EventsResponse(accepted=len(events_to_queue), dropped=dropped_count + heartbeats_dropped)
 
 
 # ---------------------------------------------------------------------------

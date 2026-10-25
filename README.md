@@ -350,6 +350,7 @@ See [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md) and run the audit script 
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | Ollama HTTP endpoint |
 | `OLLAMA_MODEL` | `llama3` | Ollama model tag |
 | `RATE_LIMIT_PER_MIN` | `600` | Max ingest events per minute per API key |
+| `HEARTBEAT_LIMIT_PER_MIN` | `1200` | Max traffic heartbeats per minute per key (one per app process); extra ones are dropped, never the errors |
 | `VERDICT_FIRST_MIN` | `10` | Minutes after deploy for the first checkpoint |
 | `VERDICT_FINAL_MIN` | `30` | Minutes after deploy for the final checkpoint |
 | `VERDICT_ROLLBACK_NEW_ISSUE_EVENTS` | `20` | New-issue events that trigger `rollback` |

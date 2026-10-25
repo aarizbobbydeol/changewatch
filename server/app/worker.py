@@ -18,7 +18,7 @@ from app.cache import (
 from app.config import resolve_worker_processes, settings
 from app.crypto import decrypt_or_plain, encrypt_or_keep
 from app.db import close_db_pool, init_db_pool, project_transaction
-from app.fingerprint import compute_fingerprint
+from app.fingerprint import compute_fingerprint, legacy_fingerprint, normalize_path
 from app.metering import record_stored_event_metric
 from app.queue import close_redis, get_redis, init_redis
 from app.scrub import scrub_text
@@ -265,6 +265,37 @@ async def _check_incident(
     )
 
 
+async def _adopt_legacy_issues(conn: asyncpg.Connection, project_id: int, pairs: List[Tuple[str, str]]) -> None:
+    """Move issues stored under the old fingerprint to the new one, keeping their history
+    (first_seen, counts, incidents). Without this, every known error would become a new issue after
+    an upgrade and the next deploy would look like it introduced them."""
+    new_fps = [p[0] for p in pairs]
+    legacy_fps = [p[1] for p in pairs]
+    try:
+        async with conn.transaction():
+            await conn.execute(
+                """
+                WITH m AS (
+                    SELECT DISTINCT new_fp, legacy_fp FROM unnest($2::text[], $3::text[]) AS m(new_fp, legacy_fp)
+                ), pick AS (
+                    SELECT DISTINCT ON (m.new_fp) m.new_fp, i.id
+                    FROM m JOIN issues i ON i.project_id = $1 AND i.fingerprint = m.legacy_fp
+                    WHERE NOT EXISTS (SELECT 1 FROM issues n WHERE n.project_id = $1 AND n.fingerprint = m.new_fp)
+                    ORDER BY m.new_fp, i.first_seen
+                )
+                UPDATE issues SET fingerprint = pick.new_fp FROM pick WHERE issues.id = pick.id
+                """,
+                project_id,
+                new_fps,
+                legacy_fps,
+            )
+    except asyncpg.UniqueViolationError:
+        pass  # another worker moved it at the same moment: the upsert below finds it
+    except Exception as exc:
+        # Only an upgrade aid: never let it cost the batch (the savepoint keeps the transaction usable)
+        logger.warning("Could not move issues to their new fingerprint for project %d: %s", project_id, exc)
+
+
 async def _record_batch_sources(
     conn: asyncpg.Connection,
     project_id: int,
@@ -396,6 +427,7 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
             if error_events:
                 await _record_batch_sources(conn, project_id, error_events, is_heartbeat=False)
                 fp_groups: Dict[str, Dict[str, Any]] = {}
+                legacy_pairs: List[Tuple[str, str]] = []
                 for ev in error_events:
                     ev_type = ev.get("type", "error")
                     fp = compute_fingerprint(
@@ -406,9 +438,19 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
                         message=ev.get("message"),
                     )
                     ev["fingerprint"] = fp
+                    if issue_lookup_cache.get((project_id, fp)) is None:
+                        legacy = legacy_fingerprint(
+                            event_type=ev_type,
+                            exc_type=ev.get("exc_type"),
+                            stack_trace=ev.get("stack_trace"),
+                            request_path=ev.get("request_path"),
+                            message=ev.get("message"),
+                        )
+                        if legacy != fp:
+                            legacy_pairs.append((fp, legacy))
 
                     if ev_type == "slow_request":
-                        title = f"Slow: {ev.get('request_path') or 'Unknown'}"
+                        title = f"Slow: {normalize_path(ev.get('request_path')) or 'Unknown'}"
                     else:
                         exc = ev.get("exc_type") or "Error"
                         msg = (ev.get("message") or "")[:100]
@@ -426,6 +468,9 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
                         fp_groups[fp]["first_seen"] = min(fp_groups[fp]["first_seen"], ev["occurred_at_dt"])
                         fp_groups[fp]["last_seen"] = max(fp_groups[fp]["last_seen"], ev["occurred_at_dt"])
                         fp_groups[fp]["count"] += 1
+
+                if legacy_pairs:
+                    await _adopt_legacy_issues(conn, project_id, legacy_pairs)
 
                 # Upsert all distinct issues in ONE query with atomic event_count tracking (Storm Control Section 3)
                 fps = list(fp_groups.keys())

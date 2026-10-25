@@ -96,6 +96,11 @@ class Settings(BaseModel):
 
 
     # Ingestion & Detection Settings
+    # Each SDK process sends one heartbeat a minute, so this is the number of app processes one
+    # ingest key can have; heartbeats over it are dropped (counted), never the errors with them
+    HEARTBEAT_LIMIT_PER_MIN: int = Field(
+        default_factory=lambda: int(os.getenv("HEARTBEAT_LIMIT_PER_MIN", "1200"))
+    )
     RATE_LIMIT_PER_MIN: int = Field(
         default_factory=lambda: int(os.getenv("RATE_LIMIT_PER_MIN", "600"))
     )
