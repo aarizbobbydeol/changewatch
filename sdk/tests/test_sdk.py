@@ -91,6 +91,58 @@ async def test_asgi_middleware_re_raises_and_captures():
     assert queued_event["request_path"] == "/crash"
 
 
+def _queued_errors(client):
+    events = []
+    while not client._queue.empty():
+        events.append(client._queue.get_nowait())
+    return [e for e in events if e["type"] == "error"]
+
+
+@pytest.mark.asyncio
+async def test_an_exception_object_raised_again_is_reported_for_every_request():
+    """A failed shared future or a cached error raises the same exception object in every request.
+    Each failing request must send its own event, or the instant alert (3 events in a minute)
+    never fires for this outage."""
+    import asyncio
+
+    client = Client(api_key="test_key", endpoint="http://localhost:8000")
+    client._running = False
+    state = {}
+
+    async def connect():
+        raise ConnectionError("db unreachable")
+
+    async def cached_error_app(scope, receive, send):
+        if "error" not in state:
+            try:
+                raise ConnectionError("db unreachable")
+            except ConnectionError as exc:
+                state["error"] = exc
+        raise state["error"]
+
+    async def shared_future_app(scope, receive, send):
+        if "db" not in state:
+            state["db"] = asyncio.ensure_future(connect())
+        await state["db"]
+
+    for app in (cached_error_app, shared_future_app):
+        middleware = changewatch.ASGIMiddleware(app, client=client)
+        for _ in range(4):
+            with pytest.raises(ConnectionError):
+                await middleware({"type": "http", "path": "/orders", "method": "GET"}, None, None)
+    errors = _queued_errors(client)
+    assert len(errors) == 8 and {e["request_path"] for e in errors} == {"/orders"}
+
+
+def test_reporting_a_stored_exception_again_sends_it_again():
+    client = Client(api_key="test_key", endpoint="http://localhost:8000")
+    client._running = False
+    stored = ValueError("payment provider down")
+    for _ in range(3):
+        client.capture_exception(stored)
+    assert len(_queued_errors(client)) == 3
+
+
 @pytest.mark.asyncio
 async def test_asgi_middleware_captures_slow_request():
     """Verify ASGIMiddleware captures slow request when duration >= slow_ms."""

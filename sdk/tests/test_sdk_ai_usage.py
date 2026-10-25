@@ -39,6 +39,23 @@ def test_token_counts_are_read_from_anthropic_and_openai_responses():
     assert events["unknown"]["calls"] == 1
 
 
+def test_sums_stay_within_the_servers_limits():
+    """One sum over the server's limits made it reject the whole batch, error events included
+    (here: micro-USD passed as dollars, 400 times in a minute)."""
+    client = changewatch.Client(api_key="cw_ingest_test", endpoint="http://127.0.0.1:9")
+    client._running = False
+    for _ in range(400):
+        client.record_ai_usage("claude-x", 10**10, 10**10, cost_usd=3000, calls=10**7)
+    client.record_ai_usage("other", input_tokens=10**15)
+    events = {e["model"]: e for e in _flushed(client)}
+    client.stop()
+    big = events["claude-x"]
+    assert (big["input_tokens"], big["output_tokens"], big["cost_micros"]) == (10**12, 10**12, 10**12)
+    assert big["calls"] == 2_147_483_647
+    assert events["other"]["input_tokens"] == 10**12
+    assert client._internal_errors > 0
+
+
 def test_bad_input_never_raises_into_the_app():
     client = changewatch.Client(api_key="cw_ingest_test", endpoint="http://127.0.0.1:9")
     client._running = False

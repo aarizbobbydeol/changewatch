@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import atexit
 import collections
+import contextvars
 import json
 import logging
 import os
@@ -96,6 +97,9 @@ def _scrub(text: Optional[str]) -> Optional[str]:
 
 _MAX_EXTRA_BYTES = 10000  # the server rejects an event whose extra is over 10 KB
 _MAX_EVENT_AGE_SEC = 23 * 3600  # the server rejects events older than 24 hours
+# The server's limits for calls, input tokens, output tokens and cost_micros in one ai_usage
+# event: one sum past them made it reject the whole batch, error events in it included
+_AI_USAGE_LIMITS = (2_147_483_647, 10**12, 10**12, 10**12)
 
 
 def _json_safe_extra(extra: Dict[str, Any]) -> Dict[str, Any]:
@@ -138,8 +142,30 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_NoRedirect)
 
 
+def _reaches_root(name: Any) -> bool:
+    """Whether a record of this logger reaches the root logger, i.e. the app's own log output
+    (walked up as Logger.callHandlers does): a disabled logger or propagate=False stops it."""
+    if not isinstance(name, str) or name.startswith("changewatch"):
+        return False  # our own warnings: never a loop
+    node = logging.root.manager.loggerDict.get(name)
+    if node is None:
+        return name == logging.root.name and not logging.root.disabled
+    if not isinstance(node, logging.Logger) or node.disabled:
+        return False
+    while node.parent is not None:
+        if not node.propagate:
+            return False
+        node = node.parent
+    return True
+
+
 class _LogBuffer(logging.Handler):
     """Keeps the process's last log lines in memory, to attach to the next error (capture_logs).
+
+    It is not added to any logger: a log record factory, chained to the one before it, hands it
+    each new record that reaches the root logger. A handler on the root logger made a later
+    logging.basicConfig() do nothing, hid Python's own output of errors while logging is not
+    configured, and logging.config.dictConfig() removed it without a sign.
 
     Nothing is sent on its own. Lines are cut when recorded and scrubbed only when an error takes
     them, so logging stays cheap. With capture_logged_errors, `logger.exception(...)` (an error
@@ -151,15 +177,43 @@ class _LogBuffer(logging.Handler):
         self._client = client
         self._lines: "collections.deque" = collections.deque(maxlen=capacity)
         self._capture_logged_errors = capture_logged_errors
+        # The lowest level worth a look: kept lines (capacity 0 keeps none) and logged errors
+        never = sys.maxsize
+        self._threshold = min(self.level if capacity else never, logging.ERROR if capture_logged_errors else never)
+        self._previous_factory = logging.getLogRecordFactory()
+        self._factory = self._make_record  # one bound method, to recognise it as ours later
+        self._active = True
+        logging.setLogRecordFactory(self._factory)
+
+    def _make_record(self, *args: Any, **kwargs: Any) -> logging.LogRecord:
+        # Logging only creates a record for a level its logger is enabled for
+        record = self._previous_factory(*args, **kwargs)
+        try:
+            if self._active and (record.levelno or 0) >= self._threshold and _reaches_root(record.name):
+                self.handle(record)
+        except Exception:
+            self._client._internal_errors += 1
+        return record
+
+    def detach(self) -> None:
+        """Stop looking at log records: put the previous record factory back while ours is still
+        the current one. If another library has wrapped ours since, ours only passes records on."""
+        self._active = False
+        if logging.getLogRecordFactory() is self._factory:
+            logging.setLogRecordFactory(self._previous_factory)
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            if record.name.startswith("changewatch"):
-                return  # our own warnings: never a loop
-            self._lines.append((record.created, record.levelname, record.name, record.getMessage()[:1000]))
+            if self._lines.maxlen and record.levelno >= self.level:
+                message = record.getMessage()
+                if len(message) > 1000:
+                    # Cut after the last whole word: a value cut in two (an email, a token) no
+                    # longer matches the scrubber
+                    message = (message[:1000].rsplit(None, 1) or [""])[0]
+                self._lines.append((record.created, record.levelname, record.name, message))
             exc = record.exc_info[1] if record.exc_info else None
             if self._capture_logged_errors and exc is not None and record.levelno >= logging.ERROR:
-                self._client.capture_exception(exc, extra={"logger": record.name[:100]})
+                self._client._capture(exc, {"logger": record.name[:100]}, None, None, "log")
         except Exception:
             self._client._internal_errors += 1
 
@@ -167,11 +221,75 @@ class _LogBuffer(logging.Handler):
         """The buffered lines, oldest first, scrubbed and cut to the server's limits."""
         with self.lock:
             lines = list(self._lines)
+        # Scrubbed whole, then cut: cutting first left a value that crossed the cut unredacted
         return [
             {"ts": ts, "level": level[:10], "logger": (_scrub(name[:100]) or "")[:100],
-             "message": (_scrub(message[:500]) or "")[:500]}
+             "message": (_scrub(message) or "")[:500]}
             for ts, level, name, message in lines
         ]
+
+
+class _Request:
+    """The request ASGIMiddleware is handling."""
+
+    __slots__ = ("path", "method", "done")
+
+    def __init__(self, path: str, method: str):
+        self.path, self.method, self.done = path, method, False
+
+
+# Set by ASGIMiddleware at the start of each request, so captures that do not pass a path (a
+# logged exception, the app's own capture_exception call) carry the request's path and method.
+# Code started for the request sees it too (asyncio tasks and worker threads get a copy of the
+# context). It is left in place when the request ends: the server's own report of what the
+# request raised (uvicorn logs it) comes right after, in the same context.
+_current_request: "contextvars.ContextVar[Optional[_Request]]" = contextvars.ContextVar("changewatch_request", default=None)
+
+
+def _tb_in_chain(mark: Any, tb: Any) -> bool:
+    """Whether traceback entry `mark` is part of traceback `tb`. An exception that propagates only
+    gets entries added in front, so this holds while it is still unwinding from `mark`."""
+    if mark is None:
+        return tb is None
+    while tb is not None:
+        if tb is mark:
+            return True
+        tb = tb.tb_next
+    return False
+
+
+def _already_reported(exc: BaseException, source: str, request: Optional[_Request]) -> bool:
+    """Whether this capture repeats one already sent, such as an exception logged (with
+    capture_logged_errors) and then raised on to the middleware or an exception hook.
+
+    In a request: once per request. A failed shared future or a cached error raises the same
+    exception object in every request, and every failing request must still send an event.
+    Outside a request: when another kind of capture ("log", "app" for capture_exception, "hook"
+    for an exception hook) sent it from this thread and it is still unwinding from there. Two
+    captures of the same kind both send: that is what one object raised again in a loop looks like.
+    """
+    try:
+        seen = getattr(exc, "_changewatch_reported", None)
+        if not seen:
+            return False
+        where, tb, by = seen
+        if request is not None:
+            return where is request
+        if where != threading.get_ident() or (by == source and source != "hook"):
+            return False
+        return _tb_in_chain(tb, exc.__traceback__)
+    except Exception:
+        return False
+
+
+def _mark_reported(exc: BaseException, source: str, request: Optional[_Request]) -> None:
+    try:
+        if request is not None:
+            exc._changewatch_reported = (request, None, source)  # type: ignore[attr-defined]
+        else:
+            exc._changewatch_reported = (threading.get_ident(), exc.__traceback__, source)  # type: ignore[attr-defined]
+    except Exception:
+        pass  # an exception that takes no attributes is sent again if another hook sees it
 
 
 class Client:
@@ -225,11 +343,12 @@ class Client:
         self._ai_usage: Dict[Tuple[str, str, bool], List[int]] = {}
         self._last_ai_flush = time.time()
 
-        # The app's recent log lines, attached to errors (opt-in: capture_logs)
+        # The app's recent log lines, attached to errors (opt-in: capture_logs), and exceptions
+        # it only logs (opt-in: capture_logged_errors, which works on its own too)
         self._log_handler: Optional[_LogBuffer] = None
-        if capture_logs and not self.disabled:
-            self._log_handler = _LogBuffer(self, level=log_level, capture_logged_errors=capture_logged_errors)
-            logging.getLogger().addHandler(self._log_handler)
+        if (capture_logs or capture_logged_errors) and not self.disabled:
+            self._log_handler = _LogBuffer(self, level=log_level, capacity=50 if capture_logs else 0,
+                                           capture_logged_errors=capture_logged_errors)
 
         # Background worker thread (only started if not disabled)
         self._worker_thread: Optional[threading.Thread] = None
@@ -326,12 +445,15 @@ class Client:
             if cost_usd is not None:
                 cost_micros = int((Decimal(str(cost_usd)) * 1_000_000).to_integral_value(rounding=ROUND_HALF_UP))
             key = (str(model or "unknown")[:100], str(feature or "")[:100], cost_micros is not None)
+            added = (max(0, int(calls)), max(0, int(input_tokens or 0)), max(0, int(output_tokens or 0)),
+                     max(0, cost_micros or 0))
             with self._lock:
                 totals = self._ai_usage.setdefault(key, [0, 0, 0, 0])
-                totals[0] += max(0, int(calls))
-                totals[1] += max(0, int(input_tokens or 0))
-                totals[2] += max(0, int(output_tokens or 0))
-                totals[3] += max(0, cost_micros or 0)
+                for i, limit in enumerate(_AI_USAGE_LIMITS):
+                    totals[i] += added[i]
+                    if totals[i] > limit:
+                        totals[i] = limit
+                        self._internal_errors += 1  # counted: what went past the limit is lost
         except Exception:
             self._internal_errors += 1
 
@@ -382,15 +504,26 @@ class Client:
         method: Optional[str] = None,
     ):
         """Capture an unhandled or manual exception (non-blocking, never raises)."""
+        self._capture(exc, extra, request_path, method, "app")
+
+    def _capture(
+        self,
+        exc: BaseException,
+        extra: Optional[Dict[str, Any]],
+        request_path: Optional[str],
+        method: Optional[str],
+        source: str,
+    ):
+        """capture_exception, told which kind of capture this is: "app", "log" or "hook"."""
         if self.disabled:
             return
         try:
-            if getattr(exc, "_changewatch_captured", False):
-                return  # already reported (logged with capture_logged_errors, then raised further)
-            try:
-                exc._changewatch_captured = True  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            request = _current_request.get()
+            if _already_reported(exc, source, request):
+                return  # e.g. logged with capture_logged_errors, then raised on to a hook
+            if request is not None and not request.done:
+                request_path = request_path or request.path
+                method = method or request.method
             exc_type = type(exc).__name__[:200]
             # Cut to the server's limits (with room for redaction markers) before scrubbing, so
             # scrubbing time stays bounded however large the exception text is
@@ -414,11 +547,13 @@ class Client:
                 "occurred_at": time.time(),
                 "extra": clean_extra,
             }
-            if self._log_handler is not None:
-                logs = self._log_handler.snapshot()
+            log_handler = self._log_handler
+            if log_handler is not None:
+                logs = log_handler.snapshot()
                 if logs:
                     event["logs"] = logs
             self._queue.put_nowait(event)
+            _mark_reported(exc, source, request)  # only once queued: a dropped one can come again
         except queue.Full:
             self._dropped_events += 1
         except Exception:
@@ -627,12 +762,15 @@ class Client:
 
     def stop(self):
         """Stop worker thread and drain remaining queue."""
-        if self._log_handler is not None:
-            logging.getLogger().removeHandler(self._log_handler)
-            self._log_handler = None
+        self._stop_log_capture()
         self._running = False
         if self._worker_thread and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=1.0)
+
+    def _stop_log_capture(self):
+        log_handler, self._log_handler = self._log_handler, None
+        if log_handler is not None:
+            log_handler.detach()
 
 
 # Global state
@@ -659,6 +797,11 @@ def init(
     """
     global _client, _orig_sys_excepthook, _orig_threading_excepthook
 
+    if _client is not None:
+        # Called again (an app factory, a test per app): the first client's log capture would
+        # otherwise stay on for good, and report through that client even after shutdown()
+        _client._stop_log_capture()
+
     client = Client(
         api_key=api_key,
         release=release,
@@ -681,7 +824,7 @@ def init(
 
     def _changewatch_sys_excepthook(exc_type, exc_value, exc_traceback):
         if _client and not _client.disabled and exc_value:
-            _client.capture_exception(exc_value)
+            _client._capture(exc_value, None, None, None, "hook")
         if _orig_sys_excepthook:
             _orig_sys_excepthook(exc_type, exc_value, exc_traceback)
 
@@ -694,7 +837,7 @@ def init(
 
         def _changewatch_threading_excepthook(args):
             if _client and not _client.disabled and args.exc_value:
-                _client.capture_exception(args.exc_value)
+                _client._capture(args.exc_value, None, None, None, "hook")
             if _orig_threading_excepthook:
                 _orig_threading_excepthook(args)
 
@@ -786,15 +929,18 @@ class ASGIMiddleware:
         path = scope.get("path", "")
         method = scope.get("method", "GET")
         has_error = False
+        request = _Request(path, method)
+        _current_request.set(request)  # not reset at the end: see _current_request
 
         try:
             await self.app(scope, receive, send)
         except BaseException as exc:
             has_error = True
-            active_client.capture_exception(exc, request_path=path, method=method)
+            active_client._capture(exc, None, path, method, "hook")
             # Must always re-raise original exception unchanged
             raise
         finally:
+            request.done = True
             duration_ms = (time.monotonic() - start_time) * 1000.0
             active_client.record_request(has_error=has_error)
 

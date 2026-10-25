@@ -25,8 +25,11 @@ app.add_middleware(ASGIMiddleware, client=cw)   # errors, latency, heartbeats
 ```
 
 Optional: `capture_logs=True` attaches the app's last 50 log lines (WARNING and above, or
-`log_level=`) to each error; `capture_logged_errors=True` also reports exceptions that are caught
-and only logged with `logger.exception(...)`.
+`log_level=`) to each error; `capture_logged_errors=True` (on its own or with `capture_logs`) also
+reports exceptions that are caught and only logged with `logger.exception(...)`. An exception that
+is logged and then raised on is reported once, with the request's path and method. Only lines that
+reach the root logger count (as in your own log output). The SDK adds no logging handler, so
+`logging.basicConfig()` and `dictConfig()` work as usual, before or after `init()`.
 
 The SDK never raises into your app and never blocks a request: events go into a bounded queue
 that a background thread sends in batches. Secrets and personal data (emails, IPs, tokens) are
