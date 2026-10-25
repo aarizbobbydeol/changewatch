@@ -8,10 +8,57 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Any, Dict, Optional, Protocol
 import httpx
 
 logger = logging.getLogger("changewatch.notifiers")
+
+# Alerts quote text ChangeWatch does not control: error messages (which can echo a user's input),
+# commit messages, runbook titles, AI answers. Chat apps turn some of it into actions: Slack
+# "<!channel>" pings everyone and "<https://x|Fix here>" hides where a link goes; Discord
+# "@everyone" pings and "[Fix here](https://x)" masks a link. Messages are made safe when sent.
+_SLACK_TOKEN = re.compile(r"<@[UW][A-Z0-9]{2,20}>|<(https?://[^|<>\s]+)\|([^<>]*)>")
+
+
+def _slack_escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def slack_safe(text: str) -> str:
+    """Slack text with every control sequence escaped, except user mentions ChangeWatch adds and
+    links to its own dashboard; any other labelled link is shown as "label (url)"."""
+    from app.config import settings
+
+    ours = settings.dashboard_link("")
+    out, pos = [], 0
+    for match in _SLACK_TOKEN.finditer(text):
+        out.append(_slack_escape(text[pos:match.start()]))
+        url, label = match.group(1), match.group(2)
+        if url is None or (url == ours or url.startswith(ours + "/")):
+            out.append(match.group(0))
+        else:
+            out.append(_slack_escape(f"{label} ({url})"))
+        pos = match.end()
+    out.append(_slack_escape(text[pos:]))
+    return "".join(out)
+
+
+def _slack_safe_blocks(value: Any) -> Any:
+    """Every formatted ("mrkdwn") text inside Slack blocks, made safe. Plain text is shown as
+    written by Slack (no mentions, no links), so it is left alone."""
+    if isinstance(value, list):
+        return [_slack_safe_blocks(v) for v in value]
+    if isinstance(value, dict):
+        if value.get("type") == "plain_text":
+            return value
+        return {k: (slack_safe(v) if k == "text" and isinstance(v, str) else _slack_safe_blocks(v)) for k, v in value.items()}
+    return value
+
+
+def _no_masked_links(text: str) -> str:
+    """'[label](url)' shown as written instead of as a link (Discord, Teams markdown)."""
+    return text.replace("](", "] (")
 
 
 class Notifier(Protocol):
@@ -41,8 +88,8 @@ class SlackNotifier:
             }
             body: Dict[str, Any] = {
                 "channel": channel_id,
-                "text": payload.get("text", "ChangeWatch Alert"),
-                "blocks": payload.get("blocks", []),
+                "text": slack_safe(str(payload.get("text", "ChangeWatch Alert"))),
+                "blocks": _slack_safe_blocks(payload.get("blocks", [])),
             }
             if thread_ts:
                 body["thread_ts"] = thread_ts
@@ -56,8 +103,11 @@ class SlackNotifier:
 
         # Incoming webhook fallback
         elif webhook_url:
+            safe = {**payload, "text": slack_safe(str(payload.get("text", "ChangeWatch Alert")))}
+            if "blocks" in payload:
+                safe["blocks"] = _slack_safe_blocks(payload["blocks"])
             async with httpx.AsyncClient(timeout=10.0) as client:
-                res = await client.post(webhook_url, json=payload)
+                res = await client.post(webhook_url, json=safe)
                 res.raise_for_status()
                 return "webhook_delivered"
         else:
@@ -78,21 +128,22 @@ class DiscordNotifier:
             raise ValueError("Discord configuration missing webhook_url")
 
         # Discord rejects (HTTP 400) content over 2000 characters and embed fields over their limits
-        content = _clip(payload.get("text", "ChangeWatch Alert"), 2000)
+        content = _clip(_no_masked_links(str(payload.get("text", "ChangeWatch Alert"))), 2000)
         embeds = []
         if "details" in payload:
             d = payload["details"]
             embeds.append({
                 "title": _clip(d.get("title", "Regression Detected"), 256),
-                "description": _clip(d.get("description", ""), 4096),
+                "description": _clip(_no_masked_links(str(d.get("description", ""))), 4096),
                 "color": 0xFF4444 if d.get("status") == "confirmed" else 0xFFA500,
                 "fields": [
-                    {"name": "Where", "value": _clip(d.get("where", "Unknown") or "Unknown", 1024), "inline": True},
+                    {"name": "Where", "value": _clip(_no_masked_links(str(d.get("where", "Unknown") or "Unknown")), 1024), "inline": True},
                     {"name": "Owners", "value": _clip(d.get("owners", "None") or "None", 1024), "inline": True},
                 ],
             })
 
-        body = {"content": content}
+        # User mentions of code owners only: never @everyone, @here or a role
+        body: Dict[str, Any] = {"content": content, "allowed_mentions": {"parse": ["users"]}}
         if embeds:
             body["embeds"] = embeds
 
@@ -117,9 +168,9 @@ class TeamsNotifier:
             "summary": payload.get("text", "ChangeWatch Alert"),
             "sections": [
                 {
-                    "activityTitle": payload.get("text", "ChangeWatch Alert"),
+                    "activityTitle": _no_masked_links(str(payload.get("text", "ChangeWatch Alert"))),
                     "facts": [
-                        {"name": k, "value": str(v)}
+                        {"name": k, "value": _no_masked_links(str(v))}
                         for k, v in payload.get("details", {}).items()
                     ],
                     "markdown": True,

@@ -185,6 +185,19 @@ async def build_postmortem(conn: asyncpg.Connection, project_id: int, incident_i
     if not owners:
         actions.append(f"Add a CODEOWNERS rule for `{inc['where_file'] or 'this path'}` so the next alert reaches its team.")
 
+    # The team's runbook for this error, or an action item to write one
+    from app.runbooks import exception_type, find_runbooks
+
+    runbooks = await find_runbooks(
+        conn, project_id, title=inc["title"], where_file=inc["where_file"], issue_id=inc["issue_id"],
+        since=(first_error or inc["created_at"]) - timedelta(hours=1), limit=1,
+    )
+    if runbooks:
+        resolution += f"\n\nRunbook for this error: {runbooks[0]['title']}" + (f" ({runbooks[0]['url']})" if runbooks[0]["url"] else "")
+    else:
+        actions.append(f"Write a runbook for `{exception_type(inc['title']) or 'this error'}` in `{inc['where_file'] or 'this code'}`"
+                       " (Settings → Runbooks), so the next alert links to the steps.")
+
     # Times as HH:MM:SS on the first day, with the date when the incident ran past midnight
     day0 = timeline[0]["at"][:10] if timeline else ""
     timeline_lines = [

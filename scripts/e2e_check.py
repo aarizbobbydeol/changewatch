@@ -143,6 +143,13 @@ def main() -> int:
     def text_of(body: dict) -> str:
         return str(body.get("text") or body.get("body") or body.get("content") or body)
 
+    # The team's runbook for this kind of error, added with the read key like other settings
+    status, _ = http("POST", f"{api}/api/runbooks", {
+        "title": "Billing totals fail", "steps": "1. Check discounts\n2. Roll back if checkouts fail",
+        "match_exception": "ZeroDivisionError", "match_path": "app/billing.py",
+        "url": "https://wiki.acme.example/runbooks/billing"}, read)
+    check(status == 201, "runbook added")
+
     # 3. Baseline: 20 minutes of normal traffic before the deploy
     now = time.time()
     beats = [{"event_id": f"{run}-hb-{m}", "type": "heartbeat", "requests": 300, "errors": 0,
@@ -190,12 +197,16 @@ def main() -> int:
         check("this line was changed in this release" in alert, "alert says the line changed in this release")
         check("@acme/payments" in alert, "alert names the owner from CODEOWNERS")
         check("dev@acme.example" in alert, "alert names the commit author")
+        check("Runbook: Billing totals fail (https://wiki.acme.example/runbooks/billing)" in alert, "alert links the runbook")
     wait_for("AI investigation reply delivered", lambda: next(
         (t for t in map(text_of, messages(f"/hook/{run}")) if "nvestigation" in t), None), 120)
     verdict = wait_for("rollback or watch verdict delivered", lambda: next(
         (t for t in map(text_of, messages(f"/hook/{run}")) if "verdict" in t.lower() and sha[:8] in t
          and ("ROLLBACK" in t or "WATCH" in t)), None), args.verdict_timeout, every=5)
     print(f"  verdict after {time.time() - deployed_at:.0f} s: {(verdict or '')[:80]}")
+    if verdict:
+        check("Risk review: MEDIUM: Divides by a value that may be zero (app/billing.py:42)" in verdict,
+              "verdict alert carries the deploy's risk review")
 
     # 7. Read API, isolation, dashboard, export, exactly-once
     status, incidents = http("GET", f"{api}/api/incidents", headers=read)
@@ -209,6 +220,13 @@ def main() -> int:
               "incident shows the app's log lines before the error")
         timeline = detail.get("timeline", []) if isinstance(detail, dict) else []
         check(any(t.get("event") == "alert_sent" for t in timeline), "incident timeline shows the alert delivery")
+        runbooks = detail.get("runbooks", []) if isinstance(detail, dict) else []
+        check([r.get("title") for r in runbooks] == ["Billing totals fail"], "incident shows the matching runbook")
+        status, review = http("GET", f"{api}/api/deploys/{mine[0]['deploy_id']}/review", headers=read)
+        check(status == 200 and isinstance(review, dict) and review.get("risk") == "medium"
+              and any(f.get("file") == "app/billing.py" and f.get("line") == 42 for f in review.get("findings", [])),
+              "risk review of the deploy flags the changed line")
+    check(http("GET", f"{api}/api/incidents/99999999999", headers=read)[0] == 422, "an out-of-range id is a 422, not a 500")
     status, v = http("GET", f"{api}/v1/verdict?sha={sha}&environment=prod", headers=read)
     check(status == 200 and isinstance(v, dict) and v.get("verdict") in ("rollback", "watch"),
           f"verdict API answers for the commit ({v.get('verdict') if isinstance(v, dict) else status})")

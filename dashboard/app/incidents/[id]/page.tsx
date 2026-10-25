@@ -34,6 +34,14 @@ interface SimilarIncident {
   cause?: string | null;
 }
 
+interface Runbook {
+  id: number;
+  title: string;
+  steps: string;
+  url: string | null;
+  matched_on: string[]; // error type | file | route
+}
+
 interface IncidentDetail {
   id: number;
   deploy_id: number;
@@ -68,6 +76,7 @@ interface IncidentDetail {
     value_per_failed_request: string | null;
     estimated_impact: string | null;
   } | null;
+  runbooks?: Runbook[];
   ai_investigation?: {
     enabled?: boolean;
     status?: string; // running | done | partial | failed | paused
@@ -486,6 +495,31 @@ export default function IncidentDetailPage() {
                 </div>
               )}
             </div>
+
+            {/* The team's runbooks for this kind of error */}
+            {incident.runbooks && incident.runbooks.length > 0 && (
+              <div className="bg-slate-900 border border-teal-800/60 rounded-xl p-5 shadow-sm space-y-3">
+                <h3 className="text-sm font-semibold text-slate-200">Runbook</h3>
+                {incident.runbooks.map((rb, idx) => (
+                  <div key={rb.id} className={idx > 0 ? "border-t border-slate-800 pt-3" : ""}>
+                    <div className="flex flex-wrap items-baseline gap-2">
+                      <span className="text-sm font-medium text-teal-300">{rb.title}</span>
+                      <span className="text-[11px] text-slate-500">matched on {rb.matched_on.join(", ")}</span>
+                      {rb.url && (
+                        <a href={rb.url} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-300 hover:underline">
+                          Open the full runbook
+                        </a>
+                      )}
+                    </div>
+                    {rb.steps ? (
+                      <pre className="mt-2 whitespace-pre-wrap text-xs text-slate-300 font-sans">{rb.steps}</pre>
+                    ) : (
+                      <p className="mt-2 text-xs text-slate-500">No steps written here.</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* Code Excerpt & Diff Location */}
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-3">

@@ -97,6 +97,9 @@ def format_incident_instant_message(
     seen_before = (triage_info or {}).get("seen_before")
     if seen_before:
         where_text += f"\n_{seen_before}_"
+    runbook = (triage_info or {}).get("runbook")
+    if runbook:
+        where_text += f"\n📘 {runbook}"
     owners_text = ", ".join(owners) if owners else "Unassigned"
     msg_preview = message.splitlines()[0][:120] if message else "No commit message"
 
@@ -151,6 +154,7 @@ def format_incident_instant_message(
         f"after deploy {commit_sha[:8]} by {author}. "
         + ("This error was resolved before and is back. " if returned else "")
         + (f"{seen_before} " if seen_before else "")
+        + (f"{runbook}. " if runbook else "")
         + f"Owners: {owners_text}. Link: {dashboard_url}"
     )
 

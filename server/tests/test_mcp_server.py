@@ -86,7 +86,7 @@ def test_handshake_and_tool_list(api):
     assert by_id[1]["result"]["capabilities"] == {"tools": {"listChanged": False}}
     names = [t["name"] for t in by_id[2]["result"]["tools"]]
     assert names == ["list_incidents", "get_incident", "get_postmortem", "get_release_verdict",
-                     "get_deploy_review", "list_deploys", "list_issues", "get_issue", "get_status"]
+                     "get_deploy_review", "list_deploys", "list_issues", "get_issue", "list_runbooks", "get_status"]
     assert by_id[3]["result"] == {}
 
 

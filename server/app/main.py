@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncGenerator, Dict, List, Literal, Optional
 
+import asyncpg
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,6 +50,7 @@ from app.diffparse import parse_unified_diff
 from app.ingest_stats import count_dropped, dropped_totals
 from app.queue import check_redis_health, close_redis, get_redis, init_redis
 from app.ratelimit import check_rate_limit
+from app.runbooks import MAX_RUNBOOKS, RunbookIn, create_runbook, delete_runbook, list_runbooks, update_runbook
 from app.analytics import analytics_router
 from app.schemas import (
     DeployCreate,
@@ -160,6 +162,17 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
     secrets, and a NaN cannot be written as JSON at all (the default handler failed with a 500)."""
     errors = [{"loc": list(e.get("loc", ())), "msg": e.get("msg"), "type": e.get("type")} for e in exc.errors()]
     return JSONResponse(status_code=422, content={"detail": errors})
+
+
+@app.exception_handler(asyncpg.exceptions.DataError)
+async def out_of_range_handler(request: Request, exc: asyncpg.exceptions.DataError) -> JSONResponse:
+    """A number too big for its database column (an ID above 2,147,483,647) is the client's
+    mistake: 422, not a 500. asyncpg reports it before sending the query, as a DataError caused by
+    an OverflowError. Anything else is re-raised and stays a 500. The value is never logged."""
+    if isinstance(exc.__cause__, OverflowError):
+        logger.info("Rejected an out-of-range number on %s", request.url.path)
+        return JSONResponse(status_code=422, content={"detail": "A number in the request is out of range"})
+    raise exc
 
 
 
@@ -1169,6 +1182,19 @@ async def get_incident(
         except Exception as exc:
             logger.warning("Incident %d: full timeline unavailable (%s); showing the basic one", id, exc)
 
+        # The team's runbooks for this kind of error (app/runbooks.py)
+        runbooks: List[Dict[str, Any]] = []
+        try:
+            async with conn.transaction():
+                from app.runbooks import find_runbooks
+
+                runbooks = await find_runbooks(
+                    conn, project_id, title=row["title"], where_file=row["where_file"], issue_id=row["issue_id"],
+                    since=row["created_at"] - timedelta(hours=1),
+                )
+        except Exception as exc:
+            logger.warning("Incident %d: runbooks unavailable: %s", id, exc)
+
     raw_owners = row["owners"]
     owners = raw_owners if isinstance(raw_owners, list) else json.loads(raw_owners or "[]")
 
@@ -1239,6 +1265,7 @@ async def get_incident(
         similar_incidents=similar_incidents,
         logs_before_error=logs_before_error,
         cost=cost,
+        runbooks=runbooks,
     )
 
 
@@ -1339,6 +1366,51 @@ async def update_project_settings(
                 payload.failed_request_value_micros or None,
                 project_id,
             )
+    return {"ok": True}
+
+
+# Runbooks: the steps the team wrote for a kind of error, shown in its alerts and incidents.
+# Changed with the read key, like the other project settings.
+@app.get("/api/runbooks", tags=["Runbooks"])
+async def get_runbooks(project_id: int = Depends(require_read_project_id)) -> List[Dict[str, Any]]:
+    """The project's runbooks with their matchers and steps."""
+    async with read_project_transaction(project_id) as conn:
+        return await list_runbooks(conn, project_id)
+
+
+@app.post("/api/runbooks", status_code=status.HTTP_201_CREATED, tags=["Runbooks"])
+async def add_runbook(payload: RunbookIn, project_id: int = Depends(require_read_project_id)) -> Dict[str, Any]:
+    """Add a runbook. Set at least one of match_exception, match_path, match_route; all set ones must match."""
+    async with project_transaction(project_id) as conn:
+        created = await create_runbook(conn, project_id, payload)
+    if created is None:
+        raise HTTPException(status_code=409, detail=f"This project already has {MAX_RUNBOOKS} runbooks")
+    return created
+
+
+@app.put("/api/runbooks/{id}", tags=["Runbooks"])
+async def edit_runbook(
+    payload: RunbookIn,
+    id: int = Path(..., description="Runbook ID"),
+    project_id: int = Depends(require_read_project_id),
+) -> Dict[str, Any]:
+    """Replace a runbook."""
+    async with project_transaction(project_id) as conn:
+        updated = await update_runbook(conn, project_id, id, payload)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Runbook not found")
+    return updated
+
+
+@app.delete("/api/runbooks/{id}", tags=["Runbooks"])
+async def remove_runbook(
+    id: int = Path(..., description="Runbook ID"),
+    project_id: int = Depends(require_read_project_id),
+) -> Dict[str, Any]:
+    """Delete a runbook (only the runbook; incidents that showed it are unchanged)."""
+    async with project_transaction(project_id) as conn:
+        if not await delete_runbook(conn, project_id, id):
+            raise HTTPException(status_code=404, detail="Runbook not found")
     return {"ok": True}
 
 
@@ -1467,6 +1539,7 @@ async def export_project_data(
             }
             for tr in traffic_rows
         ]
+        runbooks_out = await list_runbooks(conn, project_id)
 
         return {
             "export_timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1479,6 +1552,7 @@ async def export_project_data(
             "issues": issues_out,
             "events": events_out,
             "traffic": traffic_out,
+            "runbooks": runbooks_out,
         }
 
 

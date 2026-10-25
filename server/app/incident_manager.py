@@ -544,6 +544,20 @@ async def check_and_trigger_incident(
     except Exception as exc:
         logger.warning("Incident %d: past incidents could not be checked: %s", incident_id, exc)
 
+    # Runbooks: the team's steps for this kind of error, one line in the alert
+    try:
+        async with conn.transaction():
+            from app.runbooks import find_runbooks, runbook_line
+
+            line = runbook_line(await find_runbooks(
+                conn, project_id, title=issue_row["title"], where_file=where_file, issue_id=issue_id,
+                since=now_dt - timedelta(hours=1), limit=1,
+            ))
+            if line:
+                triage_info["runbook"] = line
+    except Exception as exc:
+        logger.warning("Incident %d: runbooks could not be checked: %s", incident_id, exc)
+
     # 9. Dispatch instant alert
     await dispatch_incident_alert(
         conn=conn,

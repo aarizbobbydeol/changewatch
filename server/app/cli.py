@@ -569,6 +569,58 @@ async def list_members_cmd(project_id: int):
         await close_db_pool()
 
 
+async def add_runbook_cmd(project_id: int, title: str, steps_file: Optional[str] = None,
+                          match_exception: Optional[str] = None, match_path: Optional[str] = None,
+                          match_route: Optional[str] = None, url: Optional[str] = None) -> int:
+    """Add a runbook from a text or Markdown file of steps. Returns its ID (0 if refused)."""
+    from pydantic import ValidationError
+
+    from app.db import project_transaction
+    from app.runbooks import MAX_RUNBOOKS, RunbookIn, create_runbook
+
+    steps = ""
+    if steps_file:
+        with open(steps_file, encoding="utf-8") as fh:
+            steps = fh.read()
+    try:
+        data = RunbookIn(title=title, steps=steps, match_exception=match_exception, match_path=match_path,
+                         match_route=match_route, url=url)
+    except ValidationError as exc:
+        print("Runbook not added: " + "; ".join(e["msg"].removeprefix("Value error, ") for e in exc.errors()))
+        return 0
+    await init_db_pool()
+    try:
+        async with project_transaction(project_id) as conn:
+            created = await create_runbook(conn, project_id, data)
+    finally:
+        await close_db_pool()
+    if created is None:
+        print(f"Runbook not added: project {project_id} already has {MAX_RUNBOOKS} runbooks.")
+        return 0
+    print(f"Runbook created: ID={created['id']}, Title={created['title']}")
+    return int(created["id"])
+
+
+async def list_runbooks_cmd(project_id: int):
+    """List a project's runbooks and what each one matches."""
+    from app.db import read_project_transaction
+    from app.runbooks import list_runbooks
+
+    await init_db_pool()
+    try:
+        async with read_project_transaction(project_id) as conn:
+            rows = await list_runbooks(conn, project_id)
+    finally:
+        await close_db_pool()
+    if not rows:
+        print(f"No runbooks for project {project_id}.")
+        return
+    print(f"\nRunbooks for Project {project_id}:")
+    for r in rows:
+        matchers = ", ".join(f"{k}={r[k]}" for k in ("match_exception", "match_path", "match_route") if r[k])
+        print(f"  [{r['id']}] {r['title']} | {matchers} | {len(r['steps'])} characters of steps")
+
+
 async def requeue_dead_cmd(limit: int = 0) -> int:
     """Move dead-lettered events back to the events queue with a fresh retry count."""
     import json
@@ -699,6 +751,18 @@ def main():
     mem_list_parser = subparsers.add_parser("list-members", help="List team members for a project")
     mem_list_parser.add_argument("project_id", type=int, help="Project ID")
 
+    # Subcommands: add-runbook, list-runbooks
+    rb_add_parser = subparsers.add_parser("add-runbook", help="Add a runbook (steps for a kind of error)")
+    rb_add_parser.add_argument("project_id", type=int, help="Project ID")
+    rb_add_parser.add_argument("title", help="One-line title, shown in alerts")
+    rb_add_parser.add_argument("--steps-file", default=None, help="Text or Markdown file with the steps")
+    rb_add_parser.add_argument("--exception", default=None, help="Error type to match, e.g. ZeroDivisionError")
+    rb_add_parser.add_argument("--path", default=None, help="Failing file to match, e.g. app/billing/*")
+    rb_add_parser.add_argument("--route", default=None, help="Request path to match, e.g. /checkout*")
+    rb_add_parser.add_argument("--url", default=None, help="Link to the team's own runbook page (https)")
+    rb_list_parser = subparsers.add_parser("list-runbooks", help="List a project's runbooks")
+    rb_list_parser.add_argument("project_id", type=int, help="Project ID")
+
     # Subcommand: requeue-dead
     rq_parser = subparsers.add_parser(
         "requeue-dead", help="Replay events that failed 3 times (events:dead), for example after fixing their cause"
@@ -753,6 +817,13 @@ def main():
         )
     elif args.command == "list-members":
         asyncio.run(list_members_cmd(args.project_id))
+    elif args.command == "add-runbook":
+        if not asyncio.run(add_runbook_cmd(args.project_id, args.title, steps_file=args.steps_file,
+                                           match_exception=args.exception, match_path=args.path,
+                                           match_route=args.route, url=args.url)):
+            sys.exit(1)
+    elif args.command == "list-runbooks":
+        asyncio.run(list_runbooks_cmd(args.project_id))
     elif args.command == "requeue-dead":
         asyncio.run(requeue_dead_cmd(args.limit))
     else:

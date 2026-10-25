@@ -143,6 +143,7 @@ async def test_export_endpoint_requires_read_and_admin_keys_and_returns_data(aut
         [{"id": 20, "title": "ZeroDivisionError", "fingerprint": "fp1", "status": "unresolved", "first_seen": datetime.now(timezone.utc), "last_seen": datetime.now(timezone.utc), "event_count": 5}], # issues
         [{"id": 30, "event_id": "ev1", "issue_id": 20, "deploy_id": 10, "environment": "prod", "type": "error", "request_path": "/calc", "duration_ms": 10.0, "occurred_at": datetime.now(timezone.utc), "stack_trace": "tb", "stack_trace_enc": None, "extra": "{}", "extra_enc": None}], # events
         [{"environment": "prod", "bucket": datetime.now(timezone.utc), "requests": 100, "errors": 2}], # traffic
+        [], # runbooks
     ]
 
     mock_pool = build_mock_pool(mock_conn)

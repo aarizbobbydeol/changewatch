@@ -25,6 +25,7 @@ class EvidenceItem(BaseModel):
         "timeline",
         "past_incident",
         "logs",
+        "runbook",
     ] = Field(..., description="Evidence category")
     detail: str = Field(..., description="Concrete factual finding")
     ref: Optional[str] = Field(None, description="Tool call id or data source reference")

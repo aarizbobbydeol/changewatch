@@ -181,6 +181,10 @@ or meter them.
   adds one line to the alert ("Seen before: incident #12 on 2026-09-30 (the same function),
   resolved automatically after 25 min"), the incident page lists them under "Seen before", and the
   investigator is told how they were explained and how they ended.
+- **Runbooks:** the team writes steps for a kind of error once (Settings → Runbooks), matched by
+  error type, file and route. The best match adds a line to the alert ("Runbook: Billing totals
+  fail (https://wiki…)"), its steps are on the incident page and in the AI investigation, and the
+  postmortem draft names it, or suggests writing one when none matched.
 - **Cost:** if the app reports its own AI calls (`record_ai_usage`), the deploy page shows AI
   spend per 1,000 requests before and after the deploy, and one message goes out when a release
   at least doubles it. Each incident shows its failed requests, how long it lasted, what its AI

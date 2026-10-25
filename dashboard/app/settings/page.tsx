@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import NavLinks from "../components/NavLinks";
 import { apiUrl, loadEndpoint, loadReadKey, saveEndpoint, saveReadKey } from "../lib/session";
 import { dollarsToMicros, microsToDollars } from "../lib/money";
@@ -30,6 +30,25 @@ interface ProjectSettings {
   team_members: Member[];
 }
 
+interface Runbook {
+  id: number;
+  title: string;
+  steps: string;
+  match_exception: string | null;
+  match_path: string | null;
+  match_route: string | null;
+  url: string | null;
+}
+
+const EMPTY_RUNBOOK = { title: "", steps: "", match_exception: "", match_path: "", match_route: "", url: "" };
+
+// FastAPI answers 422 with a list of {msg}; anything else with {detail: "..."}
+function apiError(body: any, status: number): string {
+  const detail = body?.detail;
+  if (Array.isArray(detail)) return detail.map((d: any) => String(d.msg || "").replace(/^Value error, /, "")).join("; ");
+  return typeof detail === "string" ? detail : `HTTP ${status}`;
+}
+
 const CHANNEL_LABELS: Record<string, string> = {
   slack: "Slack",
   discord: "Discord",
@@ -48,6 +67,62 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [valueInput, setValueInput] = useState("");
   const [valueStatus, setValueStatus] = useState<string | null>(null);
+  const [runbooks, setRunbooks] = useState<Runbook[]>([]);
+  const [rbForm, setRbForm] = useState({ ...EMPTY_RUNBOOK });
+  const [rbEditing, setRbEditing] = useState<number | null>(null);
+  const [rbStatus, setRbStatus] = useState<string | null>(null);
+
+  const loadRunbooks = useCallback(() => {
+    if (!readKey) return;
+    fetch(apiUrl(endpoint, "/api/runbooks"), { headers: { "X-API-Key": readKey } })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data) => setRunbooks(Array.isArray(data) ? data : []))
+      .catch(() => setRunbooks([]));
+  }, [readKey, endpoint]);
+
+  useEffect(() => {
+    loadRunbooks();
+  }, [loadRunbooks]);
+
+  // Add a runbook, or save the one being edited; empty matchers are sent as null
+  const saveRunbook = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const body = Object.fromEntries(Object.entries(rbForm).map(([k, v]) => [k, k === "title" || k === "steps" ? v : v.trim() || null]));
+    try {
+      const res = await fetch(apiUrl(endpoint, rbEditing ? `/api/runbooks/${rbEditing}` : "/api/runbooks"), {
+        method: rbEditing ? "PUT" : "POST",
+        headers: { "X-API-Key": readKey, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(apiError(await res.json().catch(() => null), res.status));
+      setRbStatus(rbEditing ? "Saved" : "Added");
+      setRbForm({ ...EMPTY_RUNBOOK });
+      setRbEditing(null);
+      loadRunbooks();
+    } catch (err: any) {
+      setRbStatus(`Could not save: ${err.message}`);
+    }
+  };
+
+  const editRunbook = (rb: Runbook) => {
+    setRbEditing(rb.id);
+    setRbStatus(null);
+    setRbForm({
+      title: rb.title,
+      steps: rb.steps,
+      match_exception: rb.match_exception || "",
+      match_path: rb.match_path || "",
+      match_route: rb.match_route || "",
+      url: rb.url || "",
+    });
+  };
+
+  const deleteRunbook = async (rb: Runbook) => {
+    if (!window.confirm(`Delete the runbook "${rb.title}"?`)) return;
+    const res = await fetch(apiUrl(endpoint, `/api/runbooks/${rb.id}`), { method: "DELETE", headers: { "X-API-Key": readKey } });
+    setRbStatus(res.ok ? "Deleted" : `Could not delete: HTTP ${res.status}`);
+    loadRunbooks();
+  };
 
   // Value of one failed request, used to estimate what an incident cost
   const saveFailedRequestValue = async () => {
@@ -226,6 +301,84 @@ export default function SettingsPage() {
                   </tbody>
                 </table>
               )}
+            </section>
+
+            <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
+              <h2 className="font-semibold mb-1">Runbooks</h2>
+              <p className="text-sm text-slate-400 mb-3">
+                Steps for a kind of error. The best match is linked in the alert and shown on the incident page, and the AI
+                investigation reads it. Set at least one of error type, file or route; when several are set, all must match.
+                Patterns use <code>*</code>, and a pattern ending in <code>/</code> means everything under it.
+              </p>
+              {runbooks.length === 0 ? (
+                <p className="text-sm text-slate-400 mb-4">No runbooks yet.</p>
+              ) : (
+                <ul className="divide-y divide-slate-800 mb-4">
+                  {runbooks.map((rb) => (
+                    <li key={rb.id} className="py-2 text-sm flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <span className="font-medium">{rb.title}</span>
+                      <span className="text-xs text-slate-400 font-mono">
+                        {[rb.match_exception, rb.match_path, rb.match_route].filter(Boolean).join(" · ")}
+                      </span>
+                      <span className="ml-auto flex gap-2">
+                        <button onClick={() => editRunbook(rb)} className="rounded bg-slate-800 border border-slate-700 px-2 py-1 text-xs hover:bg-slate-700">
+                          Edit
+                        </button>
+                        <button onClick={() => deleteRunbook(rb)} className="rounded bg-slate-800 border border-slate-700 px-2 py-1 text-xs text-rose-300 hover:bg-slate-700">
+                          Delete
+                        </button>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <form onSubmit={saveRunbook} className="grid gap-3 sm:grid-cols-2">
+                {([
+                  ["title", "Title (shown in alerts)", "Billing totals fail"],
+                  ["url", "Link to your own page (https, optional)", "https://wiki.example.com/runbooks/billing"],
+                  ["match_exception", "Error type", "ZeroDivisionError"],
+                  ["match_path", "File", "app/billing/"],
+                  ["match_route", "Route", "/checkout*"],
+                ] as const).map(([key, label, placeholder]) => (
+                  <label key={key} className="text-xs text-slate-400">
+                    {label}
+                    <input
+                      value={rbForm[key]}
+                      onChange={(e) => setRbForm({ ...rbForm, [key]: e.target.value })}
+                      placeholder={placeholder}
+                      className="mt-1 w-full rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+                    />
+                  </label>
+                ))}
+                <label className="text-xs text-slate-400 sm:col-span-2">
+                  Steps
+                  <textarea
+                    value={rbForm.steps}
+                    onChange={(e) => setRbForm({ ...rbForm, steps: e.target.value })}
+                    rows={5}
+                    placeholder={"1. Check the discounts table for zero values\n2. Roll back if more than 1% of checkouts fail"}
+                    className="mt-1 w-full rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+                  />
+                </label>
+                <div className="sm:col-span-2 flex flex-wrap items-center gap-2">
+                  <button type="submit" className="rounded-md bg-brand hover:bg-teal-700 px-4 py-2 text-sm font-medium text-white">
+                    {rbEditing ? "Save runbook" : "Add runbook"}
+                  </button>
+                  {rbEditing && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRbEditing(null);
+                        setRbForm({ ...EMPTY_RUNBOOK });
+                      }}
+                      className="rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-sm hover:bg-slate-700"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  {rbStatus && <span className="text-xs text-slate-400">{rbStatus}</span>}
+                </div>
+              </form>
             </section>
 
             <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-5">

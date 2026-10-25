@@ -86,6 +86,12 @@ TOOLS: List[Dict[str, Any]] = [
                         "additionalProperties": False},
     },
     {
+        "name": "list_runbooks",
+        "description": "The team's runbooks: steps for a kind of error, with the error type, file and route "
+                       "each one matches. get_incident lists the ones that match an incident.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
         "name": "get_status",
         "description": "Whether ChangeWatch itself is healthy, and whether the app's data is arriving.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -182,6 +188,8 @@ def call_tool(name: str, args: Dict[str, Any]) -> Any:
         return _get("/api/issues", {"status": status, "limit": _int(args, "limit", 10, 1, 50)})
     if name == "get_issue":
         return _get(f"/api/issues/{_int(args, 'issue_id')}")
+    if name == "list_runbooks":
+        return _get("/api/runbooks")
     if name == "get_status":
         return _get("/v1/status")
     raise KeyError(name)

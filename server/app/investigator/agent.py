@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 import asyncpg
 
@@ -101,6 +101,12 @@ async def pregather_context(
         conn, project_id, exclude_incident_id=incident_id, issue_id=inc_row["issue_id"], where_file=where_file,
         where_function=inc_row["where_function"], title=inc_row["title"], before=inc_row["created_at"], limit=3,
     )
+    from app.runbooks import find_runbooks
+
+    runbooks = await find_runbooks(
+        conn, project_id, title=inc_row["title"], where_file=where_file, issue_id=inc_row["issue_id"],
+        since=inc_row["created_at"] - timedelta(hours=1), limit=2,
+    )
 
     # Context file excerpt (±30 lines around error frame)
     code_excerpt = await get_file_at_commit(
@@ -128,6 +134,7 @@ async def pregather_context(
         "similar_incidents": similar,
         "app_logs": app_logs,
         "deploy_review": deploy_review,
+        "runbooks": runbooks,
     }
 
 
@@ -200,6 +207,9 @@ def build_investigation_prompt(context: Dict[str, Any]) -> str:
                                                 "resolved_after", "rated")}
                         for s in context.get("similar_incidents") or []]) if context.get("similar_incidents") else "None",
                  1500),
+        _section("The team's runbooks for errors like this (cite them, and say if a step does not fit this case)",
+                 "\n\n".join(f"{r['title']} (matched on {', '.join(r['matched_on'])}):\n{r['steps'] or '(no steps written)'}"
+                               for r in context.get("runbooks") or []) or "None", 2500),
     ]
 
     prompt = "\n".join(sections) + """
@@ -209,7 +219,7 @@ Use only the data above. Return a JSON object conforming exactly to:
   "what_broke": "...",
   "where": {"file": "...", "line": 0, "function": "..."},
   "cause": "...",
-  "evidence": [{"kind": "diff|file|dependency|config|events|error_rate|previous_deploy|request|timeline|past_incident|logs", "detail": "...", "ref": "..."}],
+  "evidence": [{"kind": "diff|file|dependency|config|events|error_rate|previous_deploy|request|timeline|past_incident|logs|runbook", "detail": "...", "ref": "..."}],
   "suggested_fix": {"description": "...", "code_hint": "...", "rollback_recommended": false, "rollback_to_sha": null},
   "confidence": "high|medium|low",
   "not_sure_reason": null

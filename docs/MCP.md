@@ -15,11 +15,12 @@ Claude Desktop and others) read ChangeWatch for one project: "is the deploy I ju
 | Tool | What it returns |
 |---|---|
 | `get_release_verdict` | `safe` / `watch` / `rollback` / `no_data` for a commit, with the reasons |
-| `list_incidents`, `get_incident` | Incidents: file and line, whether that line changed, owners, the AI investigation, the full timeline |
+| `list_incidents`, `get_incident` | Incidents: file and line, whether that line changed, owners, the AI investigation, the full timeline, matching runbooks |
 | `get_postmortem` | The blameless postmortem draft (Markdown) for an incident |
 | `get_deploy_review` | The risk review of a deploy's diff: risk, findings with file and line, tests to add |
 | `list_deploys` | Recent deploys and their verdicts (without the diffs) |
 | `list_issues`, `get_issue` | Error groups with counts and recent occurrences (secrets removed) |
+| `list_runbooks` | The team's runbooks and what each one matches (error type, file, route) |
 | `get_status` | Whether ChangeWatch is healthy and the app's data is arriving |
 
 ## Claude Code

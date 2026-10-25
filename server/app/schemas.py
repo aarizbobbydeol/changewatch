@@ -246,6 +246,8 @@ class IncidentDetailResponse(BaseModel):
     logs_before_error: List[Dict[str, Any]] = Field(default_factory=list)
     # Failed requests, minutes, AI investigation cost, estimated impact (app/costs.py)
     cost: Optional[Dict[str, Any]] = None
+    # The team's runbooks that match this error, best first (app/runbooks.py)
+    runbooks: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class ProjectSettingsResponse(BaseModel):
