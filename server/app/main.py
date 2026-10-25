@@ -95,6 +95,10 @@ def setup_structured_logging():
     root.handlers = [handler]
     root.addFilter(filter_)
     root.setLevel(logging.INFO)
+    # httpx and httpcore log every request with its full URL at INFO; for webhooks the URL is the
+    # credential. Their warnings and errors still come through (and are redacted).
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 setup_structured_logging()

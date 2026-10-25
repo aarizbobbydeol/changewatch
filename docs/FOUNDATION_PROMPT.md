@@ -114,7 +114,7 @@ docker compose exec api python -m app.cli create-project "name" --slack-webhook 
 docker compose exec api python -m app.cli add-channel <id> discord --config '{"webhook_url": "..."}'
 ```
 
-Other CLI subcommands: `list-projects`, `generate-master-key`, `rotate-master-key`, `rotate-project-key`, `delete-project`, `price-book`, `publish`, `price-lock`, `list-channels`, `add-member`, `list-members`.
+Other CLI subcommands: `list-projects`, `generate-master-key`, `rotate-master-key`, `rotate-project-key` (refuses for now, see SECURITY_MODEL.md), `delete-project`, `price-book`, `publish`, `price-lock`, `list-channels`, `add-member`, `list-members`.
 
 ## 8. Known gaps
 

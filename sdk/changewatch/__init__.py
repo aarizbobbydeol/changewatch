@@ -33,11 +33,32 @@ logger = logging.getLogger("changewatch")
 
 # Secret scrubbing patterns (Standard library regex)
 _AWS_KEY_PATTERN = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
-_GITHUB_TOKEN_PATTERN = re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{36,}\b")
-_SK_TOKEN_PATTERN = re.compile(r"\bsk-[A-Za-z0-9_-]{10,}\b")
+_GITHUB_TOKEN_PATTERN = re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{36,}|github_pat_[A-Za-z0-9_]{20,})\b")
+_SK_TOKEN_PATTERN = re.compile(r"\b(?:sk-[A-Za-z0-9_-]{10,}|[rs]k_(?:live|test)_[A-Za-z0-9]{10,}|xox[abprs]-[A-Za-z0-9-]{10,})\b")
+_BEARER_PATTERN = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9_\-.~+/]{10,}=*")
+# A secret assigned to a named key, also with a prefix (DB_PASSWORD, client_secret, refresh_token)
+# or quotes ("password": "..."). Same pattern as the server's app/scrub.py. A match only starts
+# where a word starts and the prefix has no hyphens, so the scan stays linear.
 _KV_PATTERN = re.compile(
-    r"""(?i)(?P<prefix>\b(?:api[_-]?key|secret|token|password|auth[_-]?token|access[_-]?token)\b\s*[:=]\s*["']?)(?P<val>[^\s"',;]+)(?P<suffix>["']?)"""
+    r"(?i)(?P<prefix>(?<![A-Za-z0-9_])[A-Za-z0-9_]*?"
+    r"(?:password|passwd|pwd|secret(?:[_-]?key)?|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credentials?|auth)"
+    r"(?![A-Za-z0-9_])[\"']?\s*[:=]\s*)"
+    r"(?P<val>(?![\"']?\[REDACTED_)(?:\"[^\"\n]{0,500}\"|'[^'\n]{0,500}'|[^\s\"',;&)}\]]+))"
 )
+_TOKEN_LABELS = (
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED_AWS_KEY]"),
+    (re.compile(r"(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}"), "[REDACTED_GITHUB_TOKEN]"),
+    (re.compile(r"(?:sk-|[rs]k_(?:live|test)_|xox[abprs]-)[A-Za-z0-9_-]{10,}"), "[REDACTED_SECRET_KEY]"),
+)
+
+
+def _redact_kv(match: "re.Match") -> str:
+    val = match.group("val")
+    quote = val[0] if val[:1] in ("'", '"') and len(val) >= 2 and val[-1] == val[0] else ""
+    inner = val[1:-1] if quote else val
+    label = next((name for pattern, name in _TOKEN_LABELS if pattern.match(inner)), "[REDACTED_SECRET]")
+    return f"{match.group('prefix')}{quote}{label}{quote}"
+
 
 # PII patterns
 # The lookbehind lets a match start only where a run of local-part characters starts. Without it,
@@ -56,7 +77,8 @@ def _scrub(text: Optional[str]) -> Optional[str]:
     scrubbed = _AWS_KEY_PATTERN.sub("[REDACTED_AWS_KEY]", text)
     scrubbed = _GITHUB_TOKEN_PATTERN.sub("[REDACTED_GITHUB_TOKEN]", scrubbed)
     scrubbed = _SK_TOKEN_PATTERN.sub("[REDACTED_SECRET_KEY]", scrubbed)
-    scrubbed = _KV_PATTERN.sub(r"\g<prefix>[REDACTED_SECRET]\g<suffix>", scrubbed)
+    scrubbed = _BEARER_PATTERN.sub("Bearer [REDACTED_SECRET]", scrubbed)
+    scrubbed = _KV_PATTERN.sub(_redact_kv, scrubbed)
 
     # PII Scrubbing (SCRUB_PII=true by default)
     if os.getenv("SCRUB_PII", "1").lower() in ("1", "true", "yes"):

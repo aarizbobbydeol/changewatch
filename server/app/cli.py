@@ -184,10 +184,16 @@ async def rotate_master_key_cmd():
             rows = await conn.fetch(
                 "SELECT id, data_key_enc FROM projects WHERE data_key_enc IS NOT NULL"
             )
-            count = 0
+            count = skipped = 0
             for r in rows:
                 old_enc = r["data_key_enc"]
-                data_key = decrypt_data_key(old_enc, prev_key)
+                try:
+                    data_key = decrypt_data_key(old_enc, prev_key)
+                except Exception:
+                    # Already wrapped with the new key (an earlier run stopped part-way): skip it
+                    decrypt_data_key(old_enc, current_key)  # raises if neither key opens it
+                    skipped += 1
+                    continue
                 new_enc = encrypt_data_key(data_key, current_key)
                 await conn.execute(
                     "UPDATE projects SET data_key_enc = $1 WHERE id = $2",
@@ -197,29 +203,28 @@ async def rotate_master_key_cmd():
                 invalidate_project_data_key_cache(r["id"])
                 count += 1
 
-            print(f"\nSuccessfully re-wrapped {count} project data keys with new MASTER_KEY.\n")
+            print(f"\nSuccessfully re-wrapped {count} project data keys with new MASTER_KEY"
+                  f" ({skipped} already used it).\n")
     finally:
         await close_db_pool()
 
 
 async def rotate_project_key_cmd(project_id: int):
-    """Generate a new data key for a specific project."""
-    master_key = get_master_key_bytes()
-    new_data_key = AESGCM.generate_key(bit_length=256)
-    new_enc = encrypt_data_key(new_data_key, master_key)
+    """Refuse: replacing a project's data key in place would make its stored data unreadable.
 
-    await init_db_pool()
-    try:
-        async with get_connection() as conn:
-            await conn.execute(
-                "UPDATE projects SET data_key_enc = $1 WHERE id = $2",
-                new_enc,
-                project_id,
-            )
-            invalidate_project_data_key_cache(project_id)
-            print(f"\nGenerated and stored new data key for project {project_id}.\n")
-    finally:
-        await close_db_pool()
+    The old command wrote a new key without re-encrypting anything, while the running services
+    kept encrypting with the old key held in memory. Every encrypted column of the project
+    (traces, diffs, AI results, the alert webhook) became undecryptable, so alerts silently
+    stopped. Rotation needs versioned project keys; until then, rotate MASTER_KEY instead.
+    """
+    print(
+        f"\nrotate-project-key is not available: it would make every encrypted record of project "
+        f"{project_id} unreadable.\n"
+        "To change the key that protects all project keys, set MASTER_KEY_PREVIOUS to the current "
+        "key and MASTER_KEY to a new one, then run: python -m app.cli rotate-master-key\n",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 
 async def delete_project_cmd(project_id: int, purge: bool):

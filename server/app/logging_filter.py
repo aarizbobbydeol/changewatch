@@ -1,6 +1,9 @@
 import logging
 import re
 
+from app.pii import EMAIL_PATTERN
+from app.scrub import KEY_VALUE_PATTERN, redact_kv_match
+
 # 1. API Keys: cw_live_..., cw_test_..., cw_ingest_..., cw_read_..., cw_...
 CW_KEY_PATTERN = re.compile(r"\bcw_[A-Za-z0-9_\-]{6,}\b")
 
@@ -11,14 +14,12 @@ WEBHOOK_URL_PATTERN = re.compile(
 
 # 3. Cloud & Provider Tokens
 AWS_KEY_PATTERN = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
-GITHUB_TOKEN_PATTERN = re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{30,}\b")
-SK_TOKEN_PATTERN = re.compile(r"\bsk-[a-zA-Z0-9_\-]{10,}\b")
+GITHUB_TOKEN_PATTERN = re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{30,}|github_pat_[A-Za-z0-9_]{20,})\b")
+SK_TOKEN_PATTERN = re.compile(r"\b(?:sk-[a-zA-Z0-9_\-]{10,}|[rs]k_(?:live|test)_[A-Za-z0-9]{10,}|xox[abprs]-[A-Za-z0-9-]{10,})\b")
 BEARER_PATTERN = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9_\-\.\$\/]{10,}\b")
 
-# 4. Key-Value Secret Assignments
-KV_SECRET_PATTERN = re.compile(
-    r"""(?i)(?P<prefix>\b(?:api[_-]?key|secret|token|password|auth[_-]?token|access[_-]?token)\b\s*[:=]\s*["']?)(?P<val>[^\s"',;]+)(?P<suffix>["']?)"""
-)
+# 4. Key-Value Secret Assignments (the same pattern the scrubber uses: DB_PASSWORD=, "token": ...)
+KV_SECRET_PATTERN = KEY_VALUE_PATTERN
 
 # 5. Git Diff Blocks
 DIFF_PATTERN = re.compile(
@@ -59,10 +60,10 @@ def redact_sensitive_data(text: str) -> str:
     redacted = BEARER_PATTERN.sub("Bearer [REDACTED_TOKEN]", redacted)
 
     # Redact key-value secret assignments
-    def _redact_kv(m: re.Match) -> str:
-        return f"{m.group('prefix')}[REDACTED_SECRET]{m.group('suffix')}"
+    redacted = KV_SECRET_PATTERN.sub(redact_kv_match, redacted)
 
-    redacted = KV_SECRET_PATTERN.sub(_redact_kv, redacted)
+    # Email addresses are personal data (SMTP errors quote the refused recipients)
+    redacted = EMAIL_PATTERN.sub("[REDACTED_EMAIL]", redacted)
 
     # Redact Git diffs
     redacted = DIFF_PATTERN.sub("[DIFF REDACTED]", redacted)
@@ -104,9 +105,10 @@ class LogRedactionFilter(logging.Filter):
         except Exception:
             pass
 
-        # 2. Redact all sensitive patterns from final message
+        # 2. Redact all sensitive patterns from final message. Every URL is cut to its host:
+        # for Teams workflows, generic webhooks and Zapier the path or query is the credential
         if isinstance(record.msg, str):
-            record.msg = redact_sensitive_data(record.msg)
+            record.msg = redact_delivery_error(record.msg)
 
         # 3. Redact stack traces from exception info
         if record.exc_info:

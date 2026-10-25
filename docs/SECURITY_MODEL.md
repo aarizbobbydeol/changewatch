@@ -82,14 +82,11 @@ $$\text{AAD} = \texttt{"\{table\}.\{column\}.\{project\_id\}"}$$
 If an adversary copies ciphertext from `events.stack_trace_enc` of Project 1 to `deploys.diff_enc` of Project 2, decryption will fail with a cryptographic authentication error.
 
 ### Key Rotation & Crypto-Shredding
-- **Rotate Master Key:** Re-wraps all project data keys using `MASTER_KEY_PREVIOUS` without requiring re-encryption of millions of historical database rows:
+- **Rotate Master Key:** Set `MASTER_KEY_PREVIOUS` to the current key and `MASTER_KEY` to a new one, then re-wrap all project data keys without re-encrypting the historical rows. If it stops part-way, run it again: keys already wrapped with the new master key are skipped.
   ```bash
   python -m app.cli rotate-master-key
   ```
-- **Rotate Project Key:** Re-encrypts all data for a specific project under a fresh project data key:
-  ```bash
-  python -m app.cli rotate-project-key --project-id 1
-  ```
+- **Rotate a single project's data key:** not available yet. Doing it safely needs versioned project keys (services cache the current key, and every encrypted row would have to be re-encrypted). `rotate-project-key` refuses and explains this instead of replacing the key, which would make the project's data unreadable.
 - **Crypto-Shredding:** Permanently destroys a project's data key and associated records:
   ```bash
   python -m app.cli delete-project --project-id 1 --purge
