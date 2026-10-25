@@ -60,7 +60,7 @@ class RunbookIn(BaseModel):
     @model_validator(mode="after")
     def _a_matcher(self) -> "RunbookIn":
         if not (self.match_exception or self.match_path or self.match_route):
-            raise ValueError("set at least one of match_exception, match_path or match_route")
+            raise ValueError("set at least one of: error type (match_exception), file (match_path) or route (match_route)")
         return self
 
 

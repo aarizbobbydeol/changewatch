@@ -53,11 +53,11 @@ async def deploy_undo(conn: asyncpg.Connection, project_id: int, deploy_id: int)
         commands.append({"kind": "revert", "label": "Revert every commit of this deploy",
                          "command": f"git revert --no-edit {prev}..{sha}",
                          "explain": f"Undoes the commits after the previous {env} deploy ({prev[:8]}), newest first, "
-                                    "as new commits. A merge commit in the range needs `git revert -m 1 <sha>` instead."})
+                                    "as new commits. A merge commit in the range needs git revert -m 1 <sha> instead."})
     elif sha:
         commands.append({"kind": "revert", "label": "Revert this deploy's commit",
                          "command": f"git revert --no-edit {sha}",
-                         "explain": f"Undoes {sha[:8]} as a new commit. For a merge commit use `git revert -m 1 {sha}`."})
+                         "explain": f"Undoes {sha[:8]} as a new commit. For a merge commit use git revert -m 1 {sha} instead."})
     return {
         "commit_sha": dep["commit_sha"],
         "rollback_to": {"sha": dep["previous_sha"], "text": f"Redeploy {_short(dep['previous_sha'])}, the last {env} deploy before this one."}
