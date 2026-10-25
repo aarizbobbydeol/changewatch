@@ -388,10 +388,13 @@ async def create_deploy(
     except Exception as exc:
         logger.warning("Failed recording usage for deploy %d: %s", deploy_id, exc)
 
-    # Risk review of the diff, by the investigator service (rules, plus AI when available)
+    # Risk review of the diff, by the investigator service (rules, plus AI when available), on its
+    # own queue so that incident investigations go first
     try:
+        from app.investigator.worker import REVIEWS_QUEUE
+
         await get_redis().lpush(
-            "investigations", json.dumps({"kind": "deploy_review", "project_id": project_id, "deploy_id": deploy_id})
+            REVIEWS_QUEUE, json.dumps({"kind": "deploy_review", "project_id": project_id, "deploy_id": deploy_id})
         )
     except Exception as exc:
         logger.warning("Deploy %d: risk review not queued: %s", deploy_id, exc)

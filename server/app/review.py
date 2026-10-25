@@ -27,23 +27,42 @@ _SEVERITY = {"low": 0, "medium": 1, "high": 2}
 _CODE = (".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rb", ".java", ".kt", ".php", ".cs")
 _HUNK = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 _STRING = re.compile(r"""("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')""")
+# A regex literal such as /[^a-z]/g (JS, Ruby): it starts where a value is expected, so it is not a division
+_REGEX_LITERAL = re.compile(r"(^|[(,=:\[!&|?{};~]|\breturn)(\s*)/(?![/*])(?:\\.|\[(?:\\.|[^\]\\]){0,100}\]|[^/\\\[]){1,200}/[A-Za-z]*")
+# Docstrings (Python) and /* comments */ (C-like) can span lines; a Python string can only start
+# after one of these, or on a line of its own below a line ending in one (such as "def f():")
+_PY_BLOCK = re.compile(r"\"\"\"|'''")
+_C_BLOCK = re.compile(r"//|/\*|\*/")
+_STRING_START = re.compile(r"(?:[=(,\[{:+]|\breturn|\byield)$")
+# SQL in the shape of a statement, all upper or all lower case: "Could not update {name}" is English
+_SQL = (r"\b(?:SELECT\b[^\"']*\bFROM|UPDATE\s+[^\s\"']+\s+SET|DELETE\s+FROM|INSERT\s+INTO"
+        r"|select\b[^\"']*\bfrom|update\s+[^\s\"']+\s+set|delete\s+from|insert\s+into)\b")
 
 # (severity, pattern on an added line with strings and comments removed, message)
 _LINE_RULES: List[Tuple[str, re.Pattern, str]] = [
     ("medium", re.compile(r"[\w)\]]\s*//?\s*(?!\d)[A-Za-z_][\w.]*"), "Divides by a value that may be zero"),
     ("medium", re.compile(r"^\s*except\s*:|^\s*except\s+(?:Base)?Exception\b[^:]*:\s*pass\b"), "Swallows every exception"),
-    ("high", re.compile(r"\b(?:eval|exec)\s*\("), "Runs code built at runtime (eval/exec)"),
+    # Not a method such as regex.exec(...) or session.exec(...)
+    ("high", re.compile(r"(?<![\w.])(?:eval|exec)\s*\("), "Runs code built at runtime (eval/exec)"),
     ("high", re.compile(r"\b(?:verify\s*=\s*False|rejectUnauthorized\s*:\s*false)"), "Turns off TLS certificate checks"),
 ]
 _RAW_RULES: List[Tuple[str, re.Pattern, str]] = [
-    ("high", re.compile(r"""f["'][^"']*\b(?:SELECT|INSERT|UPDATE|DELETE)\b[^"']*\{""", re.I), "Builds SQL from an f-string (injection risk)"),
-    ("high", re.compile(r"""["'][^"']*\b(?:SELECT|INSERT|UPDATE|DELETE)\b[^"']*["']\s*\.format\(""", re.I), "Builds SQL with .format() (injection risk)"),
-    ("high", re.compile(r"\[REDACTED_[A-Z_]+\]"), "A secret was committed (ChangeWatch removed it from its copy: rotate it)"),
+    ("high", re.compile(r"""f["'](?=[^"']*\{)[^"']*""" + _SQL), "Builds SQL from an f-string (injection risk)"),
+    ("high", re.compile(r"""["'][^"']*""" + _SQL + r"""[^"']*["']\s*\.format\("""), "Builds SQL with .format() (injection risk)"),
+    # Only the labels of recognisable keys. The stored diff is scrubbed, so any value assigned to a
+    # name like token or password reads [REDACTED_SECRET], and emails and IPs are redacted too:
+    # those are ordinary code, not a committed secret.
+    ("high", re.compile(r"\[REDACTED_(?:AWS_KEY|GITHUB_TOKEN|SECRET_KEY|PRIVATE_KEY)\]"),
+     "A secret was committed (ChangeWatch removed it from its copy: rotate it)"),
     ("low", re.compile(r"\b(?:TODO|FIXME|HACK|XXX)\b"), "Leaves a TODO/FIXME in released code"),
 ]
 # "Path(base) / name" joins paths, it does not divide
 _PATH_JOIN = re.compile(r"(?i)(?:\bPath\(|\w*(?:path|dir|root|base|folder|home|url|uri)\w*\)?\s*/)")
 _GUARD = re.compile(r"^\s*(?:if|elif|guard|assert)\b.*(?:\bis None\b|\bis not None\b|\bnot\s+\w|==\s*0\b|!=\s*0\b|\blen\()")
+_NOT_NAMES = {"if", "elif", "guard", "assert", "not", "is", "None", "and", "or", "in", "len", "let", "return",
+              "raise", "throw", "nil", "null", "undefined", "true", "false", "True", "False"}
+# "except Exception:" with "pass" on the next line swallows every exception too
+_EXCEPT_ALL = re.compile(r"^\s*except\s+(?:Base)?Exception\b[^:]*:\s*$")
 
 
 class ReviewFinding(BaseModel):
@@ -62,26 +81,65 @@ class AIReview(BaseModel):
     tests_to_add: List[str] = Field(default_factory=list, max_length=5)
 
 
-def _code_only(line: str, path: str) -> str:
-    """The line without string contents and comments, so '/' in a URL or '#' text is not code."""
-    line = _STRING.sub('""', line)
-    marker = "#" if path.endswith((".py", ".rb")) else "//"
-    return line.split(marker, 1)[0]
+def _opens_string(before: str, prev: Optional[str]) -> bool:
+    """Whether a Python triple quote after `before` (on its line) starts a string. prev is the code of
+    the line above, or None on the file's first line."""
+    before = re.sub(r"\b[rRbBuUfF]{1,2}$", "", before).rstrip()  # f""" r""" b"""
+    if before:
+        return bool(_STRING_START.search(before))
+    return prev is None or bool(_STRING_START.search(prev.rstrip()))
+
+
+def _code_only(line: str, path: str, block: Optional[str] = None, prev: Optional[str] = "") -> Tuple[str, Optional[str]]:
+    """The line without string contents, comments, regex literals and docstrings, so '/' in a URL,
+    '#' text or 'and/or' in a docstring is not code; and the docstring or /* comment */ still open
+    after it. A closing mark while none is open means the hunk began inside one: the text before it
+    is not code either."""
+    python = path.endswith(".py")
+    if not python:
+        line = _REGEX_LITERAL.sub(r'\1\2""', _STRING.sub('""', line))
+    marks = _PY_BLOCK if python else None if path.endswith(".rb") else _C_BLOCK
+    code: List[str] = []
+    pos, end = 0, len(line)
+    for match in marks.finditer(line) if marks else ():
+        mark, before = match.group(), line[pos:match.start()]
+        if block is None and mark == "//":
+            end = match.start()
+            break
+        if block is None and (mark == "/*" or python and _opens_string(before, prev)):
+            code.append(before)
+            block = mark
+        elif block is None or mark == ("*/" if block == "/*" else block):
+            block = None
+        else:
+            continue
+        pos = match.end()
+    if block is None:
+        code.append(line[pos:end])
+    line = " ".join(code)
+    if python:
+        line = _STRING.sub('""', line)
+    return (line.split("#", 1)[0] if python or path.endswith(".rb") else line), block
 
 
 def _diff_lines(diff: str) -> Iterator[Tuple[str, str, Optional[int], str]]:
-    """(path, '+' or '-', new-side line number for '+', text) for every changed line."""
+    """(path, '+', '-' or ' ', new-side line number (None for '-'), text) for every changed and
+    context line. '+++'/'---' are file headers only before a file's first hunk: inside one, they
+    are an added '++i;' or a removed '-- comment'."""
     path, new_line = "", None
     for raw in diff.splitlines():
         if raw.startswith("diff --git "):
             parts = raw.split(" b/", 1)
-            path, new_line = (parts[1].strip() if len(parts) == 2 else ""), None
+            path, new_line = (parts[1].strip().strip('"') if len(parts) == 2 else ""), None
             continue
         match = _HUNK.match(raw)
         if match:
             new_line = int(match.group(2))
             continue
-        if new_line is None or raw.startswith(("+++", "---")):
+        if new_line is None:
+            if raw.startswith("+++ ") and raw[4:].strip() != "/dev/null":
+                path = raw[4:].strip().strip('"')
+                path = path[2:] if path.startswith("b/") else path  # 'diff --git "a/x y" "b/x y"' has no ' b/'
             continue
         if raw.startswith("+"):
             yield path, "+", new_line, raw[1:]
@@ -89,7 +147,14 @@ def _diff_lines(diff: str) -> Iterator[Tuple[str, str, Optional[int], str]]:
         elif raw.startswith("-"):
             yield path, "-", None, raw[1:]
         elif not raw.startswith("\\"):
+            yield path, " ", new_line, raw[1:]
             new_line += 1
+
+
+def _names(guard: str) -> frozenset:
+    """The names a guard checks: `if not items:` and `if len(items) == 0:` both check {items}."""
+    condition = re.split(r":(?:\s|$)", _STRING.sub('""', guard), 1)[0]
+    return frozenset(re.findall(r"[A-Za-z_]\w*", condition)) - _NOT_NAMES
 
 
 def rules_review(diff: str, paths: List[str]) -> List[Dict[str, Any]]:
@@ -98,31 +163,48 @@ def rules_review(diff: str, paths: List[str]) -> List[Dict[str, Any]]:
     added_by_file: Dict[str, int] = {}
     removed_guards: Dict[str, List[str]] = {}
     added_guards: Dict[str, List[str]] = {}
+    # The line above on the new side (context or added): its code, its sign, and where it was
+    block: Optional[str] = None
+    prev: Optional[str] = None
+    prev_sign, last = "", ("", 0)
     for path, sign, line_no, text in _diff_lines(diff or ""):
-        if sign == "+":
-            added_by_file[path] = added_by_file.get(path, 0) + 1
         is_code = path.endswith(_CODE)
-        if sign == "-" and is_code and _GUARD.match(text):
-            removed_guards.setdefault(path, []).append(text.strip())
+        if sign == "-":
+            if is_code and _GUARD.match(text):
+                removed_guards.setdefault(path, []).append(text.strip())
             continue
+        if (path, line_no - 1) != last:  # another file or hunk: no docstring or comment known to be open
+            block, prev, prev_sign = None, (None if line_no == 1 else ""), ""
+        last = (path, line_no)
+        code, block = _code_only(text, path, block, prev) if is_code else (text, None)
+        if (path.endswith(".py") and code.strip() in ("pass", "...") and "+" in (sign, prev_sign)
+                and _EXCEPT_ALL.match(prev or "")):
+            findings.append({"file": path, "line": line_no - 1, "severity": "medium", "issue": "Swallows every exception",
+                             "source": "rules"})
+        prev, prev_sign = code, sign
         if sign != "+":
             continue
+        added_by_file[path] = added_by_file.get(path, 0) + 1
         if is_code and _GUARD.match(text):
             added_guards.setdefault(path, []).append(text.strip())
         for severity, pattern, message in _RAW_RULES:
             if pattern.search(text):
                 findings.append({"file": path, "line": line_no, "severity": severity, "issue": message, "source": "rules"})
         if is_code:
-            code = _code_only(text, path)
             for severity, pattern, message in _LINE_RULES:
                 if message.startswith("Divides") and _PATH_JOIN.search(code):
                     continue
                 if pattern.search(code):
                     findings.append({"file": path, "line": line_no, "severity": severity, "issue": message, "source": "rules"})
     for path, guards in removed_guards.items():
-        kept = set(added_guards.get(path, []))
+        # Kept when an added guard starts with the same condition (tightened: `if user is None or
+        # user.deleted:`) or checks the same names (rewritten: `if len(items) == 0:`)
+        added = added_guards.get(path, [])
+        added_names = {_names(guard) for guard in added}
         for guard in guards:
-            if guard not in kept:
+            condition = guard.rstrip(":{ ")
+            tightened = any(a.startswith(condition) and not re.match(r"\w", a[len(condition):]) for a in added)
+            if not tightened and _names(guard) not in added_names:
                 findings.append({"file": path, "line": None, "severity": "medium", "source": "rules",
                                  "issue": f"Removes a check: `{guard[:120]}`"})
     for path in paths:
@@ -149,9 +231,32 @@ SYSTEM_PROMPT = """You review the diff of a release that was just deployed, for 
 You are read-only: you only report. Point at concrete added or removed lines (file and new line
 number) that could fail in production: crashes, wrong results, data loss, security, performance.
 No style comments. If nothing is risky, say so with risk "low" and no findings.
+Report at most 8 findings, most serious first, and at most 5 tests_to_add. Keep the summary under
+600 characters, each issue under 300 and each why under 500.
 Output only JSON: {"risk": "low|medium|high", "summary": "...", "findings": [{"file": "...",
 "line": 0, "severity": "low|medium|high", "issue": "...", "why": "..."}], "tests_to_add": ["..."]}
 """
+
+
+def _within_limits(data: Any) -> Any:
+    """The model's answer cut to AIReview's limits, so a long answer is kept rather than thrown away.
+    An unknown severity counts as medium; an unknown risk is the highest finding's."""
+    if not isinstance(data, dict):
+        return data
+
+    def items(value: Any) -> List[Any]:
+        return value if isinstance(value, list) else []
+
+    def level(value: Any) -> str:
+        return str(value).lower() if str(value).lower() in _SEVERITY else "medium"
+
+    findings = [{"file": str(f.get("file") or "")[:300], "line": int(f["line"]) if str(f.get("line")).isdecimal() else None,
+                 "severity": level(f.get("severity")), "issue": str(f["issue"])[:300],
+                 "why": str(f["why"])[:500] if f.get("why") else None}
+                for f in items(data.get("findings")) if isinstance(f, dict) and f.get("issue")][:8]
+    risk = str(data.get("risk")).lower()
+    return {"risk": risk if risk in _SEVERITY else _risk(findings), "summary": str(data.get("summary") or "")[:600],
+            "findings": findings, "tests_to_add": [t[:300] for t in items(data.get("tests_to_add")) if isinstance(t, str)][:5]}
 
 
 async def _ai_review(conn: asyncpg.Connection, project_id: int, deploy_id: int, diff: str, message: str,
@@ -176,12 +281,10 @@ async def _ai_review(conn: asyncpg.Connection, project_id: int, deploy_id: int, 
         return None, getattr(llm, "model", None), 0, 0
     usage = getattr(llm, "last_usage", None)
     tokens_in, tokens_out = usage if isinstance(usage, tuple) and len(usage) == 2 else (0, 0)
-    text = (raw or "").strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else ""
-        text = text.rsplit("```", 1)[0]
+    text = raw or ""
+    start, end = text.find("{"), text.rfind("}")  # the JSON object, also inside ``` or after a preamble
     try:
-        review = AIReview.model_validate(json.loads(text))
+        review = AIReview.model_validate(_within_limits(json.loads(text[start:end + 1])))
     except Exception:
         return None, getattr(llm, "model", None), tokens_in, tokens_out
     for finding in review.findings:

@@ -102,6 +102,7 @@ async def test_retention_cleans_up_code_diffs_older_than_cutoff():
         "DELETE 2",   # traffic
         "UPDATE 3",   # deploys diffs nulled
         "DELETE 0",   # deploy_files
+        "DELETE 1",   # deploy_reviews (they quote diff lines)
     ]
 
     stats = await cleanup_old_records(
@@ -113,8 +114,8 @@ async def test_retention_cleans_up_code_diffs_older_than_cutoff():
 
     assert stats["events_deleted"] == 5
     assert stats["traffic_deleted"] == 2
-    assert stats["code_records_cleaned"] == 3
-    assert mock_conn.execute.call_count == 4
+    assert stats["code_records_cleaned"] == 4
+    assert mock_conn.execute.call_count == 5
 
 
 @pytest.mark.asyncio

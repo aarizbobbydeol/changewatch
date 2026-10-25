@@ -1,7 +1,8 @@
 """Background Investigator Worker Process (Milestone 5 Stage C).
 
 Consumes investigation jobs from Redis queue 'investigations', checks budget limits,
-executes read-only AI investigation, and records usage metering.
+executes read-only AI investigation, and records usage metering. Risk reviews of deploys come
+from their own queue 'deploy_reviews' and run only when no investigation is waiting.
 """
 from __future__ import annotations
 
@@ -26,6 +27,10 @@ logger = logging.getLogger("changewatch.investigator.worker")
 INVESTIGATIONS_QUEUE = "investigations"
 INVESTIGATIONS_PROCESSING = "investigations:processing"
 INVESTIGATIONS_DEAD = "investigations:dead"
+# One per deploy (an AI call of up to a minute each), so an incident never waits behind a burst
+REVIEWS_QUEUE = "deploy_reviews"
+REVIEWS_PROCESSING = "deploy_reviews:processing"
+REVIEWS_DEAD = "deploy_reviews:dead"
 MAX_INVESTIGATION_TRIES = 3
 HEARTBEAT_KEY = "heartbeat:investigator"
 
@@ -97,9 +102,17 @@ async def process_next_investigation(redis_client, timeout: int = 2) -> bool:
 
     Jobs are moved to a processing list and removed only after they finish, so a crash
     never loses one; failures are retried MAX_INVESTIGATION_TRIES times, then dead-lettered.
+    A deploy review is taken only when no investigation is waiting.
     """
     # incident_manager LPUSHes jobs, so the oldest job is on the right
-    raw_payload = await redis_client.blmove(INVESTIGATIONS_QUEUE, INVESTIGATIONS_PROCESSING, timeout, "RIGHT", "LEFT")
+    queue, processing, dead = INVESTIGATIONS_QUEUE, INVESTIGATIONS_PROCESSING, INVESTIGATIONS_DEAD
+    raw_payload = await redis_client.lmove(queue, processing, "RIGHT", "LEFT")
+    if not raw_payload:
+        raw_payload = await redis_client.lmove(REVIEWS_QUEUE, REVIEWS_PROCESSING, "RIGHT", "LEFT")
+        if raw_payload:
+            queue, processing, dead = REVIEWS_QUEUE, REVIEWS_PROCESSING, REVIEWS_DEAD
+        else:
+            raw_payload = await redis_client.blmove(queue, processing, timeout, "RIGHT", "LEFT")
     if not raw_payload:
         return False
 
@@ -113,7 +126,7 @@ async def process_next_investigation(redis_client, timeout: int = 2) -> bool:
             logger.info("Reviewing deploy: project=%d deploy=%s", project_id, data.get("deploy_id"))
             async with project_transaction(project_id) as conn:
                 await run_deploy_review(conn, project_id, int(data["deploy_id"]))
-            await redis_client.lrem(INVESTIGATIONS_PROCESSING, 1, raw_payload)
+            await redis_client.lrem(processing, 1, raw_payload)
             return True
         incident_id = int(data["incident_id"])
         deep_mode = bool(data.get("deep_mode", False))
@@ -121,27 +134,28 @@ async def process_next_investigation(redis_client, timeout: int = 2) -> bool:
         logger.info("Processing investigation job: project=%d incident=%d deep=%s", project_id, incident_id, deep_mode)
         async with project_transaction(project_id) as conn:
             await execute_investigation(conn, project_id, incident_id, deep_mode=deep_mode)
-        await redis_client.lrem(INVESTIGATIONS_PROCESSING, 1, raw_payload)
+        await redis_client.lrem(processing, 1, raw_payload)
         return True
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         tries = int(data.get("_tries", 0)) + 1 if isinstance(data, dict) else MAX_INVESTIGATION_TRIES
         logger.error("Investigation job failed (attempt %d/%d): %s", tries, MAX_INVESTIGATION_TRIES, exc, exc_info=True)
-        target = INVESTIGATIONS_QUEUE if tries < MAX_INVESTIGATION_TRIES else INVESTIGATIONS_DEAD
+        target = queue if tries < MAX_INVESTIGATION_TRIES else dead
         retry_payload = json.dumps({**data, "_tries": tries}) if isinstance(data, dict) and data else raw_payload
         async with redis_client.pipeline(transaction=True) as pipe:
-            pipe.lrem(INVESTIGATIONS_PROCESSING, 1, raw_payload)
+            pipe.lrem(processing, 1, raw_payload)
             pipe.lpush(target, retry_payload)
             await pipe.execute()
         return False
 
 
 async def requeue_interrupted_investigations(redis_client) -> int:
-    """On startup, return jobs left in the processing list by a crashed run (single investigator)."""
+    """On startup, return jobs left in the processing lists by a crashed run (single investigator)."""
     moved = 0
-    while await redis_client.rpoplpush(INVESTIGATIONS_PROCESSING, INVESTIGATIONS_QUEUE):
-        moved += 1
+    for processing, queue in ((INVESTIGATIONS_PROCESSING, INVESTIGATIONS_QUEUE), (REVIEWS_PROCESSING, REVIEWS_QUEUE)):
+        while await redis_client.rpoplpush(processing, queue):
+            moved += 1
     if moved:
         logger.warning("Requeued %d interrupted investigation job(s)", moved)
     return moved

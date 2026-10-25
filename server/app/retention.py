@@ -140,7 +140,8 @@ async def _cleanup_with_conn(
         result["partitions_dropped"] = len(dropped_partitions)
         result["dropped_partition_names"] = dropped_partitions
 
-    # Clean up code content (deploy diffs, CODEOWNERS and deploy_files) older than code_cutoff if specified
+    # Clean up code content (deploy diffs, CODEOWNERS, deploy_files, and the risk reviews that quote
+    # diff lines) older than code_cutoff if specified
     if code_cutoff is not None:
         code_cleaned = 0
         diff_status = await conn.execute(
@@ -165,6 +166,8 @@ async def _cleanup_with_conn(
             code_cleaned += _parse_delete_count(files_status)
         except Exception:
             pass
+        reviews_status = await conn.execute("DELETE FROM deploy_reviews WHERE created_at < $1", code_cutoff)
+        code_cleaned += _parse_delete_count(reviews_status)
         result["code_records_cleaned"] = code_cleaned
 
     logger.info(
