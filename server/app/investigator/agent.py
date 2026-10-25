@@ -29,9 +29,12 @@ from app.investigator.tools import (
     get_dependency_changes,
     get_diff_files,
     get_error_rate,
+    get_error_timeline,
+    get_failing_file_diff,
     get_file_at_commit,
     get_issue_events,
     get_previous_deploys,
+    get_request_context,
     list_new_issues,
 )
 from app.llm import get_llm_client
@@ -84,6 +87,9 @@ async def pregather_context(
     error_rate = await get_error_rate(conn, project_id, deploy_id)
     prev_deploys = await get_previous_deploys(conn, project_id, deploy_id, n=3)
     events = await get_issue_events(conn, project_id, inc_row["issue_id"], limit=5)
+    file_diff = await get_failing_file_diff(conn, project_id, deploy_id, where_file, where_line)
+    request_context = await get_request_context(conn, project_id, inc_row["issue_id"], deploy_id)
+    error_timeline = await get_error_timeline(conn, project_id, inc_row["issue_id"], deploy_id)
 
     # Context file excerpt (±30 lines around error frame)
     code_excerpt = await get_file_at_commit(
@@ -105,7 +111,22 @@ async def pregather_context(
         "previous_deploys": prev_deploys,
         "recent_events": events,
         "code_excerpt": code_excerpt,
+        "file_diff": file_diff,
+        "request_context": request_context,
+        "error_timeline": error_timeline,
     }
+
+
+def _section(title: str, body: str, limit: int) -> str:
+    """One prompt section, cut to `limit` characters so no single source crowds out the others."""
+    body = (body or "").strip() or "Not available"
+    if len(body) > limit:
+        body = body[:limit] + "\n[cut to fit]"
+    return f"## {title}\n{body}\n"
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, indent=1, default=str)
 
 
 def build_investigation_prompt(context: Dict[str, Any]) -> str:
@@ -114,41 +135,59 @@ def build_investigation_prompt(context: Dict[str, Any]) -> str:
     stack_sample = ""
     if context["recent_events"]:
         stack_sample = context["recent_events"][0].get("stack_trace") or ""
+    timeline = context.get("error_timeline") or {}
+    per_minute = ", ".join(f"{m['minutes_after_deploy']:+d} min: {m['errors']}" for m in timeline.get("minutes", [])[:30])
+    file_diff = context.get("file_diff") or {}
+    other_errors = [
+        {"title": i.get("title"), "events": i.get("event_count")}
+        for i in context.get("new_issues", []) if i.get("id") != inc.get("issue_id")
+    ][:8]
+    previous = [
+        {"commit": (d.get("commit_sha") or "")[:8], "deployed_at": d.get("deployed_at"),
+         "message": (d.get("message") or "").splitlines()[0][:100] if d.get("message") else ""}
+        for d in context.get("previous_deploys", [])
+    ]
+    changed = [
+        {"path": f.get("path"), "status": f.get("status"), "added_lines": f.get("added_ranges")}
+        for f in context.get("diff_files", [])[:15]
+    ]
 
-    prompt = f"""Investigate incident #{inc['id']} after deploy {inc['commit_sha'][:8]} ('{inc['commit_message']}').
-Error Title: {inc['title']}
-Event Count: {inc['event_count']}
-Location: {inc['where_file']}:{inc['where_line']} (in diff: {inc['in_diff']})
+    sections = [
+        _section("Incident", "\n".join([
+            f"Incident #{inc['id']}: {inc['title']}",
+            f"Events: {inc['event_count']} · environment: {inc.get('environment') or 'prod'}",
+            f"Failing location: {inc['where_file']}:{inc['where_line']} (in {inc.get('where_function') or 'unknown function'});"
+            f" this line {'was' if inc['in_diff'] else 'was not'} changed by the deploy",
+            f"Deploy {inc['commit_sha'][:8]} at {inc.get('deployed_at')}: {(inc.get('commit_message') or '')[:300]}",
+        ]), 1200),
+        _section("When it started (this error per minute, relative to the deploy)",
+                 f"Before the deploy: {timeline.get('before_deploy', 0)}; after: {timeline.get('after_deploy', 0)}\n{per_minute}", 800),
+        _section("Stack trace sample", stack_sample, 2000),
+        _section(f"What this deploy changed in {file_diff.get('path') or 'the failing file'} (diff)",
+                 (file_diff.get("hunks") + ("\n[cut to fit]" if file_diff.get("truncated") else ""))
+                 if file_diff.get("hunks") else "This file is not in the deploy's diff.", 4100),
+        _section("Code around the failing line at this deploy", context["code_excerpt"].get("content") or "", 4000),
+        _section("Requests that failed (routes, methods, extra fields)", _json(context.get("request_context") or {}), 1500),
+        _section("Files changed in the deploy", _json(changed), 2000),
+        _section("Dependency changes in the deploy", _json(context["dependency_changes"][:10]), 1000),
+        _section("Configuration changes in the deploy", _json(context["config_changes"]), 1500),
+        _section("Other new errors after this deploy", _json(other_errors) if other_errors else "None", 1200),
+        _section("Error rate before and after the deploy (all errors, from request counts)", _json(context["error_rate"]), 400),
+        _section("Previous deploys", _json(previous), 600),
+    ]
 
-Recent Stack Trace Sample:
-{stack_sample}
-
-Code Excerpt Around Error Line:
-{context['code_excerpt'].get('content') or 'Not available'}
-
-Changed Files in Deploy:
-{json.dumps(context['diff_files'][:15], indent=2)}
-
-Dependency Changes:
-{json.dumps(context['dependency_changes'][:10], indent=2)}
-
-Config Changes:
-{json.dumps(context['config_changes'], indent=2)}
-
-Error Rate Before vs After Deploy:
-{json.dumps(context['error_rate'], indent=2)}
-
-Return a JSON object conforming exactly to:
-{{
+    prompt = "\n".join(sections) + """
+Use only the data above. Return a JSON object conforming exactly to:
+{
   "summary": "...",
   "what_broke": "...",
-  "where": {{"file": "...", "line": 0, "function": "..."}},
+  "where": {"file": "...", "line": 0, "function": "..."},
   "cause": "...",
-  "evidence": [{{"kind": "diff|file|dependency|config|events|error_rate|previous_deploy", "detail": "...", "ref": "..."}}],
-  "suggested_fix": {{"description": "...", "code_hint": "...", "rollback_recommended": false, "rollback_to_sha": null}},
+  "evidence": [{"kind": "diff|file|dependency|config|events|error_rate|previous_deploy|request|timeline", "detail": "...", "ref": "..."}],
+  "suggested_fix": {"description": "...", "code_hint": "...", "rollback_recommended": false, "rollback_to_sha": null},
   "confidence": "high|medium|low",
   "not_sure_reason": null
-}}
+}
 """
     return scrub_text(prompt)
 

@@ -119,8 +119,11 @@ The notifier picks the alert up within a second:
 ### 5. The AI explanation (seconds 5 to 30)
 
 The investigator takes the job, checks the project's AI budget (this is the only thing a budget
-can pause), and gathers the evidence first: the stack trace, the diff around the failing
-line, the error rate before and after. The model may then call read-only tools: database
+can pause), and gathers the evidence first: the stack trace; what the deploy changed in the
+failing file (the diff hunks near the failing line) and the code around it; the routes, methods
+and `extra` fields of the requests that failed; this error per minute around the deploy; other new
+errors from the same deploy; dependency and configuration changes; the error rate before and after;
+the previous deploys. Each part has a size limit, so one huge diff cannot crowd out the rest. The model may then call read-only tools: database
 `SELECT`s, and reading a file from GitHub when code is not stored (a code check in CI makes sure
 nothing can write to your repository). The answer is checked against the evidence (a fix that
 cites nothing, or a dangerous one, is flagged), stored encrypted, and posted as a reply in the

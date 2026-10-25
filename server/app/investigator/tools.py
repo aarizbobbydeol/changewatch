@@ -302,28 +302,33 @@ async def get_error_rate(
         return {"before": {"requests": 0, "errors": 0, "rate": 0.0}, "after": {"requests": 0, "errors": 0, "rate": 0.0}}
 
     dep_at = dep["deployed_at"]
-    # 30 min before, 30 min after
+    # 30 min before, 30 min after. Traffic is counted per minute: the deploy's own minute starts
+    # before deployed_at, so traffic is "after" when the SDK tagged it with this release, the same
+    # way the verdict counts it
     before_row = await conn.fetchrow(
         """
         SELECT COALESCE(SUM(requests), 0) AS reqs, COALESCE(SUM(errors), 0) AS errs
         FROM traffic
         WHERE project_id = $1 AND environment = $4 AND bucket >= $2 AND bucket < $3
+          AND deploy_id IS DISTINCT FROM $5
         """,
         project_id,
         dep_at - timedelta(minutes=30),
         dep_at,
         dep.get("environment") or "prod",
+        deploy_id,
     )
     after_row = await conn.fetchrow(
         """
         SELECT COALESCE(SUM(requests), 0) AS reqs, COALESCE(SUM(errors), 0) AS errs
         FROM traffic
-        WHERE project_id = $1 AND environment = $4 AND bucket >= $2 AND bucket <= $3
+        WHERE project_id = $1 AND environment = $4 AND bucket <= $3 AND (deploy_id = $5 OR bucket >= $2)
         """,
         project_id,
         dep_at,
         dep_at + timedelta(minutes=30),
         dep.get("environment") or "prod",
+        deploy_id,
     )
 
     b_reqs = int(before_row["reqs"]) if before_row else 0
@@ -332,8 +337,8 @@ async def get_error_rate(
     a_errs = int(after_row["errs"]) if after_row else 0
 
     return {
-        "before": {"requests": b_reqs, "errors": b_errs, "rate": (b_errs / b_reqs) if b_reqs > 0 else 0.0},
-        "after": {"requests": a_reqs, "errors": a_errs, "rate": (a_errs / a_reqs) if a_reqs > 0 else 0.0},
+        "before": {"requests": b_reqs, "errors": b_errs, "rate": round(b_errs / b_reqs, 4) if b_reqs > 0 else 0.0},
+        "after": {"requests": a_reqs, "errors": a_errs, "rate": round(a_errs / a_reqs, 4) if a_reqs > 0 else 0.0},
     }
 
 
@@ -374,6 +379,147 @@ async def get_previous_deploys(
         }
         for r in rows
     ]
+
+
+_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def _file_section(diff: str, path: str) -> str:
+    """The part of a unified diff for one file ('' if the file is not in it)."""
+    sections = re.split(r"(?m)^(?=diff --git )", diff)
+    for section in sections:
+        header = section.split("\n", 1)[0]
+        if header.startswith("diff --git ") and (header.endswith(" b/" + path) or header.endswith("/" + path)):
+            return section
+    return ""
+
+
+async def get_failing_file_diff(
+    conn: asyncpg.Connection,
+    project_id: int,
+    deploy_id: int,
+    path: str,
+    line: int,
+    context: int = 20,
+    max_chars: int = 4000,
+) -> Dict[str, Any]:
+    """What this deploy changed in the failing file: the diff hunks within `context` lines of the
+    failing line (else the file's first hunks), from the stored diff. Read-only, capped."""
+    row = await conn.fetchrow(
+        "SELECT diff, diff_enc FROM deploys WHERE id = $1 AND project_id = $2", deploy_id, project_id
+    )
+    diff = await decrypt_or_plain(project_id, "deploys", "diff", row.get("diff_enc"), row.get("diff")) if row else None
+    section = _file_section(diff or "", (path or "").lstrip("/")) if path else ""
+    if not section:
+        return {"path": path, "hunks": "", "available": False}
+    hunks: List[str] = []
+    current: List[str] = []
+    near: List[str] = []
+    for text_line in section.splitlines():
+        match = _HUNK_HEADER.match(text_line)
+        if match:
+            if current:
+                hunks.append("\n".join(current))
+            current = [text_line]
+            start, length = int(match.group(1)), int(match.group(2) or 1)
+            if start - context <= line <= start + length + context:
+                near.append(text_line)
+        elif current:
+            current.append(text_line)
+    if current:
+        hunks.append("\n".join(current))
+    chosen = [h for h in hunks if h.split("\n", 1)[0] in near] or hunks[:2]
+    text = "\n".join(chosen)
+    return {"path": path, "hunks": text[:max_chars], "available": True, "truncated": len(text) > max_chars}
+
+
+async def get_request_context(
+    conn: asyncpg.Connection,
+    project_id: int,
+    issue_id: int,
+    deploy_id: int,
+    limit: int = 50,
+) -> Dict[str, Any]:
+    """Who hit the error: routes, methods and the `extra` fields of recent events (already scrubbed
+    at ingest), as counts and a few sample values."""
+    rows = await conn.fetch(
+        """
+        SELECT request_path, occurred_at, extra, extra_enc
+        FROM events
+        WHERE project_id = $1 AND issue_id = $2 AND deploy_id = $3
+        ORDER BY occurred_at DESC
+        LIMIT $4
+        """,
+        project_id,
+        issue_id,
+        deploy_id,
+        min(limit, 100),
+    )
+    paths: Dict[str, int] = {}
+    methods: Dict[str, int] = {}
+    extra_values: Dict[str, List[str]] = {}
+    for r in rows:
+        path = r.get("request_path")
+        if path:
+            paths[path] = paths.get(path, 0) + 1
+        extra = await decrypt_or_plain(project_id, "events", "extra", r.get("extra_enc"), r.get("extra"))
+        if isinstance(extra, str):
+            try:
+                extra = json.loads(extra)
+            except ValueError:
+                extra = {}
+        for key, value in (extra or {}).items() if isinstance(extra, dict) else []:
+            if key == "method":
+                methods[str(value)] = methods.get(str(value), 0) + 1
+                continue
+            samples = extra_values.setdefault(str(key)[:40], [])
+            text = json.dumps(value, default=str)[:60]
+            if text not in samples and len(samples) < 3 and len(extra_values) <= 15:
+                samples.append(text)
+    return {
+        "events_sampled": len(rows),
+        "first_seen": rows[-1]["occurred_at"].isoformat() if rows and rows[-1].get("occurred_at") else None,
+        "last_seen": rows[0]["occurred_at"].isoformat() if rows and rows[0].get("occurred_at") else None,
+        "routes": sorted(({"path": k, "count": v} for k, v in paths.items()), key=lambda x: -x["count"])[:5],
+        "methods": methods,
+        "extra_fields": extra_values,
+    }
+
+
+async def get_error_timeline(
+    conn: asyncpg.Connection,
+    project_id: int,
+    issue_id: int,
+    deploy_id: int,
+) -> Dict[str, Any]:
+    """This error per minute from 30 minutes before the deploy to 60 minutes after it, so the
+    investigator sees whether it started with the deploy. Only minutes with errors are listed."""
+    dep = await conn.fetchrow("SELECT deployed_at FROM deploys WHERE id = $1 AND project_id = $2", deploy_id, project_id)
+    if not dep or not dep["deployed_at"]:
+        return {"minutes": [], "before_deploy": 0, "after_deploy": 0}
+    deployed_at = dep["deployed_at"]
+    rows = await conn.fetch(
+        """
+        SELECT date_trunc('minute', bucket) AS minute, sum(count)::int AS n
+        FROM event_rollups
+        WHERE project_id = $1 AND issue_id = $2 AND bucket >= $3 AND bucket <= $4
+        GROUP BY 1 ORDER BY 1
+        """,
+        project_id,
+        issue_id,
+        deployed_at - timedelta(minutes=30),
+        deployed_at + timedelta(minutes=60),
+    )
+    minutes = [
+        {"minutes_after_deploy": int((r["minute"] - deployed_at.replace(second=0, microsecond=0)).total_seconds() // 60),
+         "errors": r["n"]}
+        for r in rows
+    ]
+    return {
+        "minutes": minutes[:60],
+        "before_deploy": sum(m["errors"] for m in minutes if m["minutes_after_deploy"] < 0),
+        "after_deploy": sum(m["errors"] for m in minutes if m["minutes_after_deploy"] >= 0),
+    }
 
 
 async def find_similar_issues(
