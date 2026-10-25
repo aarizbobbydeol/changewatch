@@ -375,6 +375,14 @@ async def create_deploy(
     except Exception as exc:
         logger.warning("Failed recording usage for deploy %d: %s", deploy_id, exc)
 
+    # Risk review of the diff, by the investigator service (rules, plus AI when available)
+    try:
+        await get_redis().lpush(
+            "investigations", json.dumps({"kind": "deploy_review", "project_id": project_id, "deploy_id": deploy_id})
+        )
+    except Exception as exc:
+        logger.warning("Deploy %d: risk review not queued: %s", deploy_id, exc)
+
     return DeployResponse(ok=True, deploy_id=deploy_id)
 
 
@@ -696,6 +704,21 @@ async def get_deploy_ai_cost(
     if cost is None:
         raise HTTPException(status_code=404, detail="Deploy not found")
     return cost
+
+
+@app.get("/api/deploys/{id}/review", tags=["Read API"])
+async def get_deploy_risk_review(
+    id: int = Path(..., description="Deploy ID"),
+    project_id: int = Depends(require_read_project_id),
+):
+    """The risk review of a deploy's diff: risk, findings (file, line, issue), tests to add."""
+    from app.review import get_deploy_review
+
+    async with read_project_transaction(project_id) as conn:
+        if not await conn.fetchval("SELECT 1 FROM deploys WHERE id = $1 AND project_id = $2", id, project_id):
+            raise HTTPException(status_code=404, detail="Deploy not found")
+        review = await get_deploy_review(conn, project_id, id)
+    return review or {"risk": None, "status": "pending", "findings": []}
 
 
 @app.get("/api/issues", response_model=List[IssueItem], tags=["Read API"])

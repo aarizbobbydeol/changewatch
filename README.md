@@ -294,6 +294,8 @@ steps:
 
 The hook is **read-only**, **non-blocking** (`continue-on-error: true`), has a **10 s timeout**, and excludes `.env*`, `*.pem`, `*.key`, `id_rsa*`, `secrets/**` and `infra/**` from the diff. A complete example workflow is in [`action/changewatch-deploy.yml`](action/changewatch-deploy.yml).
 
+Each deploy also gets a **risk review** of its diff, inside ChangeWatch only (nothing is written to your repository or pull requests): fixed rules flag risky added lines (division by a value that may be zero, swallowed exceptions, `eval`, SQL built from strings, TLS checks turned off, a committed secret), removed checks and risky files (migrations, dependencies, very large releases); with an AI provider configured and budget left, the model adds its own findings and the tests worth writing. It shows on the deploy panel, in the AI investigation, through the MCP server, and as one line in the verdict alert when the risk is medium or high.
+
 ---
 
 ## ⚡ Performance

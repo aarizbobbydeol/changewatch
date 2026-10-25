@@ -85,6 +85,14 @@ const formatDateTime = (d?: string | null): string => {
   return isNaN(date.getTime()) ? "N/A" : date.toLocaleString();
 };
 
+interface DeployReview {
+  risk: "low" | "medium" | "high" | null;
+  summary?: string | null;
+  source?: string;
+  findings: { file: string; line: number | null; severity: string; issue: string }[];
+  tests_to_add?: string[];
+}
+
 interface AiCostWindow {
   calls: number;
   cost: string;
@@ -117,6 +125,7 @@ export default function DashboardPage() {
   const [analyticsOverview, setAnalyticsOverview] = useState<any>(null);
   const [selectedDeploy, setSelectedDeploy] = useState<Deploy | null>(null);
   const [aiCost, setAiCost] = useState<AiCost | null>(null);
+  const [review, setReview] = useState<(DeployReview & { deploy_id: number }) | null>(null);
   const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null);
 
   const [loading, setLoading] = useState<boolean>(false);
@@ -223,13 +232,22 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!apiKey || !selectedDeployId) return;
     let cancelled = false;
-    fetch(getApiUrl(`/api/deploys/${selectedDeployId}/ai-cost`), { headers: { "X-API-Key": apiKey.trim() } })
+    const headers = { "X-API-Key": apiKey.trim() };
+    fetch(getApiUrl(`/api/deploys/${selectedDeployId}/ai-cost`), { headers })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (!cancelled) setAiCost(data);
       })
       .catch(() => {
         if (!cancelled) setAiCost(null);
+      });
+    fetch(getApiUrl(`/api/deploys/${selectedDeployId}/review`), { headers })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled) setReview(data ? { ...data, deploy_id: selectedDeployId } : null);
+      })
+      .catch(() => {
+        if (!cancelled) setReview(null);
       });
     return () => {
       cancelled = true;
@@ -637,6 +655,33 @@ export default function DashboardPage() {
                         <span>✨ AI Root-Cause Explanation</span>
                       </div>
                       <p className="text-xs text-slate-200 leading-relaxed">{selectedDeploy.likely_cause}</p>
+                    </div>
+                  )}
+
+                  {/* Risk review of the diff (rules, plus AI when available); nothing is written to GitHub */}
+                  {review && review.deploy_id === selectedDeploy.id && review.risk && (
+                    <div className={`p-3.5 rounded-xl border space-y-1.5 ${
+                      review.risk === "high" ? "bg-rose-950/20 border-rose-500/40" : review.risk === "medium" ? "bg-amber-950/20 border-amber-500/40" : "bg-slate-950 border-slate-800"}`}>
+                      <div className="text-xs font-semibold text-slate-300">
+                        Risk review: <span className="uppercase">{review.risk}</span>
+                        <span className="text-slate-500 font-normal"> · {review.source === "rules+ai" ? "rules and AI" : "rules"}</span>
+                      </div>
+                      {review.summary && <p className="text-xs text-slate-300">{review.summary}</p>}
+                      {review.findings.length === 0 ? (
+                        <p className="text-xs text-slate-500">Nothing risky found in the diff.</p>
+                      ) : (
+                        <ul className="text-xs text-slate-300 space-y-0.5">
+                          {review.findings.slice(0, 6).map((f, i) => (
+                            <li key={i}>
+                              <span className="text-slate-500">[{f.severity}]</span> {f.issue}{" "}
+                              <span className="font-mono text-slate-500">{f.file}{f.line ? `:${f.line}` : ""}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {review.tests_to_add && review.tests_to_add.length > 0 && (
+                        <p className="text-[11px] text-slate-500">Tests to add: {review.tests_to_add.join(" · ")}</p>
+                      )}
                     </div>
                   )}
 

@@ -92,6 +92,9 @@ async def pregather_context(
     request_context = await get_request_context(conn, project_id, inc_row["issue_id"], deploy_id)
     error_timeline = await get_error_timeline(conn, project_id, inc_row["issue_id"], deploy_id)
     app_logs = await get_logs_before_error(conn, project_id, inc_row["issue_id"], deploy_id)
+    from app.review import get_deploy_review
+
+    deploy_review = await get_deploy_review(conn, project_id, deploy_id)
     from app.trust.memory import find_similar_incidents
 
     similar = await find_similar_incidents(
@@ -124,6 +127,7 @@ async def pregather_context(
         "error_timeline": error_timeline,
         "similar_incidents": similar,
         "app_logs": app_logs,
+        "deploy_review": deploy_review,
     }
 
 
@@ -182,6 +186,9 @@ def build_investigation_prompt(context: Dict[str, Any]) -> str:
                  if file_diff.get("hunks") else "This file is not in the deploy's diff.", 4100),
         _section("Code around the failing line at this deploy", context["code_excerpt"].get("content") or "", 4000),
         _section("Requests that failed (routes, methods, extra fields)", _json(context.get("request_context") or {}), 1500),
+        _section("Risk review of this deploy (before any error)",
+                 _json({k: (context.get("deploy_review") or {}).get(k) for k in ("risk", "summary", "findings")})
+                 if context.get("deploy_review") else "Not reviewed", 2000),
         _section("Files changed in the deploy", _json(changed), 2000),
         _section("Dependency changes in the deploy", _json(context["dependency_changes"][:10]), 1000),
         _section("Configuration changes in the deploy", _json(context["config_changes"]), 1500),

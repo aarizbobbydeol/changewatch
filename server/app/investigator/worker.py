@@ -107,6 +107,14 @@ async def process_next_investigation(redis_client, timeout: int = 2) -> bool:
     try:
         data = json.loads(raw_payload)
         project_id = int(data["project_id"])
+        if data.get("kind") == "deploy_review":
+            from app.review import run_deploy_review
+
+            logger.info("Reviewing deploy: project=%d deploy=%s", project_id, data.get("deploy_id"))
+            async with project_transaction(project_id) as conn:
+                await run_deploy_review(conn, project_id, int(data["deploy_id"]))
+            await redis_client.lrem(INVESTIGATIONS_PROCESSING, 1, raw_payload)
+            return True
         incident_id = int(data["incident_id"])
         deep_mode = bool(data.get("deep_mode", False))
 

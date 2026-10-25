@@ -60,6 +60,13 @@ TOOLS: List[Dict[str, Any]] = [
             "required": ["commit_sha"], "additionalProperties": False},
     },
     {
+        "name": "get_deploy_review",
+        "description": "The risk review of a deploy's diff (rules, plus AI when configured): overall risk, "
+                       "findings with file and line, and tests to add.",
+        "inputSchema": {"type": "object", "properties": {"deploy_id": _ID}, "required": ["deploy_id"],
+                        "additionalProperties": False},
+    },
+    {
         "name": "list_deploys",
         "description": "Recent deploys with their verdicts.",
         "inputSchema": {"type": "object", "properties": {"limit": _LIMIT, "environment": {"type": "string"}},
@@ -159,6 +166,8 @@ def call_tool(name: str, args: Dict[str, Any]) -> Any:
         if not isinstance(env, str) or not 0 < len(env) <= 50:
             raise ToolError("'environment' must be a short name such as prod.")
         return _get("/v1/verdict", {"sha": sha, "environment": env})
+    if name == "get_deploy_review":
+        return _get(f"/api/deploys/{_int(args, 'deploy_id')}/review")
     if name == "list_deploys":
         env = args.get("environment")
         if env is not None and (not isinstance(env, str) or len(env) > 50):

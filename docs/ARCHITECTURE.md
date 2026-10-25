@@ -61,6 +61,15 @@ The API scrubs the diff, encrypts the code and CODEOWNERS with the project's own
 the deploy straight to Postgres (tables `deploys`, `deploy_files`). Deploys never go through the
 queue, so they are never dropped.
 
+It then asks the investigator service for a **risk review** of the diff, before any error
+arrives. Fixed rules come first (no AI, no cost): a division by a value that may be zero, a
+swallowed exception, `eval`, SQL built from strings, TLS checks turned off, a committed secret, a
+removed `if` check, migrations, dependency files, very large releases. With an AI provider and
+budget, the model adds its findings and the tests worth writing. The result is stored encrypted
+(`deploy_reviews`), shown on the deploy panel and at `GET /api/deploys/{id}/review`, given to the
+investigator if errors follow, and added as one line to the verdict alert when the risk is
+medium or high. Nothing is written to the repository or to GitHub.
+
 ### 2. Errors arrive (seconds 1 to 5)
 
 Customers start hitting the bug. The SDK catches each `ZeroDivisionError`, removes secrets

@@ -237,6 +237,18 @@ async def dispatch_verdict_alert(
         top_errors=top_errors,
     )
 
+    # The deploy's risk review (rules, plus AI when available): its most serious finding
+    try:
+        async with conn.transaction():
+            from app.review import get_deploy_review, review_line
+
+            line = review_line(await get_deploy_review(conn, project_id, deploy_id))
+        if line:
+            payload["text"] = f"{payload.get('text', '')} {line}".strip()
+            payload.setdefault("blocks", []).append({"type": "section", "text": {"type": "mrkdwn", "text": f"*{line}*"}})
+    except Exception as exc:
+        logger.warning("Deploy %d: risk review not added to the verdict: %s", deploy_id, exc)
+
     dedupe_key = f"alert:{deploy_id}:{kind}"
 
     # 4. Insert into alerts table (unique constraint deploy_id, kind)
