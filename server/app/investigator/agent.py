@@ -418,6 +418,8 @@ async def run_investigation(
         reply_title = f"Investigation: {parsed_output.summary}"
         evidence_bullets = "\n".join([f"• [{e.kind}] {e.detail}" for e in parsed_output.evidence[:4]])
         fix_note = parsed_output.suggested_fix.description
+        if parsed_output.suggested_fix.code_hint:
+            fix_note += f"\n\nSuggested change (AI; check before using, ChangeWatch applies nothing):\n```\n{parsed_output.suggested_fix.code_hint[:1500]}\n```"
         if parsed_output.suggested_fix.warning_label:
             fix_note += f"\n⚠️ {parsed_output.suggested_fix.warning_label}"
 

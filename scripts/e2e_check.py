@@ -207,6 +207,8 @@ def main() -> int:
     if verdict:
         check("Risk review: MEDIUM: Divides by a value that may be zero (app/billing.py:42)" in verdict,
               "verdict alert carries the deploy's risk review")
+        if "ROLLBACK" in verdict:
+            check(f"Undo: `git revert --no-edit {sha}`" in verdict, "ROLLBACK verdict says how to undo the deploy")
 
     # 7. Read API, isolation, dashboard, export, exactly-once
     status, incidents = http("GET", f"{api}/api/incidents", headers=read)
@@ -222,6 +224,8 @@ def main() -> int:
         check(any(t.get("event") == "alert_sent" for t in timeline), "incident timeline shows the alert delivery")
         runbooks = detail.get("runbooks", []) if isinstance(detail, dict) else []
         check([r.get("title") for r in runbooks] == ["Billing totals fail"], "incident shows the matching runbook")
+        commands = [c.get("command") for c in ((detail.get("fix_suggestions") or {}).get("commands") or [])]
+        check(f"git restore --source={sha}^ -- app/billing.py" in commands, "incident suggests undoing only the failing file")
         status, review = http("GET", f"{api}/api/deploys/{mine[0]['deploy_id']}/review", headers=read)
         check(status == 200 and isinstance(review, dict) and review.get("risk") == "medium"
               and any(f.get("file") == "app/billing.py" and f.get("line") == 42 for f in review.get("findings", [])),

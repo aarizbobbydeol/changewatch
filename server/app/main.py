@@ -1182,6 +1182,16 @@ async def get_incident(
         except Exception as exc:
             logger.warning("Incident %d: full timeline unavailable (%s); showing the basic one", id, exc)
 
+        # Undo the deploy or only the failing file, and the AI's suggested fix (app/fixes.py)
+        fix_suggestions: Optional[Dict[str, Any]] = None
+        try:
+            async with conn.transaction():
+                from app.fixes import fix_suggestions as build_fix_suggestions
+
+                fix_suggestions = await build_fix_suggestions(conn, project_id, id)
+        except Exception as exc:
+            logger.warning("Incident %d: fix suggestions unavailable: %s", id, exc)
+
         # The team's runbooks for this kind of error (app/runbooks.py)
         runbooks: List[Dict[str, Any]] = []
         try:
@@ -1266,6 +1276,7 @@ async def get_incident(
         logs_before_error=logs_before_error,
         cost=cost,
         runbooks=runbooks,
+        fix_suggestions=fix_suggestions,
     )
 
 

@@ -249,6 +249,19 @@ async def dispatch_verdict_alert(
     except Exception as exc:
         logger.warning("Deploy %d: risk review not added to the verdict: %s", deploy_id, exc)
 
+    # On ROLLBACK: how to undo it, as text to copy (ChangeWatch runs nothing)
+    if verdict == "rollback":
+        try:
+            async with conn.transaction():
+                from app.fixes import deploy_undo, undo_line
+
+                line = undo_line(await deploy_undo(conn, project_id, deploy_id))
+            if line:
+                payload["text"] = f"{payload.get('text', '')} {line}".strip()
+                payload.setdefault("blocks", []).append({"type": "section", "text": {"type": "mrkdwn", "text": line}})
+        except Exception as exc:
+            logger.warning("Deploy %d: undo commands not added to the verdict: %s", deploy_id, exc)
+
     dedupe_key = f"alert:{deploy_id}:{kind}"
 
     # 4. Insert into alerts table (unique constraint deploy_id, kind)

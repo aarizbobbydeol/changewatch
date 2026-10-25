@@ -17,7 +17,7 @@ interface InvestigationResult {
   what_broke?: string;
   cause?: string;
   evidence?: { kind?: string; detail?: string; ref?: string }[];
-  suggested_fix?: { description?: string; rollback_recommended?: boolean; warning_label?: string };
+  suggested_fix?: { description?: string; code_hint?: string | null; rollback_recommended?: boolean; warning_label?: string };
   confidence?: "high" | "medium" | "low";
   not_sure_reason?: string | null;
 }
@@ -32,6 +32,14 @@ interface SimilarIncident {
   resolved_after?: string | null;
   rated?: string | null;
   cause?: string | null;
+}
+
+interface FixSuggestions {
+  rollback_to: { sha: string; text: string } | null;
+  commands: { kind: string; label: string; command: string; explain?: string }[];
+  ai_fix: { description: string | null; code_hint: string | null; rollback_recommended: boolean; warning: string | null } | null;
+  no_commands_reason: string | null;
+  note: string;
 }
 
 interface Runbook {
@@ -77,6 +85,7 @@ interface IncidentDetail {
     estimated_impact: string | null;
   } | null;
   runbooks?: Runbook[];
+  fix_suggestions?: FixSuggestions | null;
   ai_investigation?: {
     enabled?: boolean;
     status?: string; // running | done | partial | failed | paused
@@ -252,6 +261,17 @@ export default function IncidentDetailPage() {
       setPostmortemStatus(null);
     } catch (e: any) {
       setPostmortemStatus(`Could not write the draft: ${e.message}`);
+    }
+  };
+
+  // Copy one suggested command or patch; nothing is ever run from the dashboard
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const copyText = async (key: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedKey(key);
+    } catch {
+      setCopiedKey(`${key}:failed`);
     }
   };
 
@@ -602,6 +622,66 @@ export default function IncidentDetailPage() {
                 )}
               </div>
             </div>
+
+            {/* Undo or fix: commands and the AI's suggested change, as text to copy */}
+            {incident.fix_suggestions && (incident.fix_suggestions.commands.length > 0 || incident.fix_suggestions.ai_fix || incident.fix_suggestions.rollback_to) && (
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-200">Undo or fix</h3>
+                  <p className="text-xs text-slate-500">{incident.fix_suggestions.note}</p>
+                </div>
+                {incident.fix_suggestions.rollback_to && (
+                  <p className="text-xs text-slate-300">
+                    <span className="text-slate-400">Fastest: </span>
+                    {incident.fix_suggestions.rollback_to.text}
+                  </p>
+                )}
+                {incident.fix_suggestions.commands.map((c) => (
+                  <div key={c.kind} className="space-y-1">
+                    <div className="text-xs text-slate-400">{c.label}</div>
+                    <div className="flex items-start gap-2">
+                      <code className="flex-1 bg-slate-950 border border-slate-800 rounded px-2 py-1.5 text-[11px] text-slate-200 font-mono break-all">
+                        {c.command}
+                      </code>
+                      <button
+                        onClick={() => copyText(c.kind, c.command)}
+                        className="rounded bg-slate-800 border border-slate-700 px-2 py-1 text-xs hover:bg-slate-700"
+                      >
+                        {copiedKey === c.kind ? "Copied" : copiedKey === `${c.kind}:failed` ? "Select and copy" : "Copy"}
+                      </button>
+                    </div>
+                    {c.explain && <p className="text-[11px] text-slate-500">{c.explain}</p>}
+                  </div>
+                ))}
+                {incident.fix_suggestions.no_commands_reason && (
+                  <p className="text-xs text-slate-500">{incident.fix_suggestions.no_commands_reason}</p>
+                )}
+                {incident.fix_suggestions.ai_fix && (
+                  <div className="space-y-1 border-t border-slate-800 pt-3">
+                    <div className="text-xs text-slate-400">Fix suggested by the AI investigation</div>
+                    {incident.fix_suggestions.ai_fix.description && (
+                      <p className="text-xs text-slate-300">{incident.fix_suggestions.ai_fix.description}</p>
+                    )}
+                    {incident.fix_suggestions.ai_fix.code_hint && (
+                      <div className="flex items-start gap-2">
+                        <pre className="flex-1 bg-slate-950 border border-slate-800 rounded px-2 py-1.5 text-[11px] text-slate-200 font-mono whitespace-pre-wrap">
+                          {incident.fix_suggestions.ai_fix.code_hint}
+                        </pre>
+                        <button
+                          onClick={() => copyText("ai_fix", incident.fix_suggestions?.ai_fix?.code_hint || "")}
+                          className="rounded bg-slate-800 border border-slate-700 px-2 py-1 text-xs hover:bg-slate-700"
+                        >
+                          {copiedKey === "ai_fix" ? "Copied" : copiedKey === "ai_fix:failed" ? "Select and copy" : "Copy"}
+                        </button>
+                      </div>
+                    )}
+                    {incident.fix_suggestions.ai_fix.warning && (
+                      <p className="text-xs text-amber-300">⚠️ {incident.fix_suggestions.ai_fix.warning}</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Memory: past incidents like this one */}
             {incident.similar_incidents && incident.similar_incidents.length > 0 && (

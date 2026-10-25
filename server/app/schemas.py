@@ -248,6 +248,8 @@ class IncidentDetailResponse(BaseModel):
     cost: Optional[Dict[str, Any]] = None
     # The team's runbooks that match this error, best first (app/runbooks.py)
     runbooks: List[Dict[str, Any]] = Field(default_factory=list)
+    # Commands to undo the deploy or the failing file, and the AI's suggested fix; text only (app/fixes.py)
+    fix_suggestions: Optional[Dict[str, Any]] = None
 
 
 class ProjectSettingsResponse(BaseModel):

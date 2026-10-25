@@ -298,6 +298,8 @@ Each deploy also gets a **risk review** of its diff, inside ChangeWatch only (no
 
 **Runbooks:** write the steps for a kind of error once (Settings → Runbooks, `POST /api/runbooks`, or `python -m app.cli add-runbook`), matched by error type, file (`app/billing/`) and route (`/checkout*`). The best match is linked in the alert, shown on the incident page, read by the AI investigation, and named in the postmortem draft, which suggests writing one when none matched.
 
+**Undo or fix, as text to copy:** each incident lists the exact commands to undo it (`git revert --no-edit <previous>..<sha>` for the whole deploy, `git restore --source=<previous> -- <file>` for only the failing file, and which earlier deploy to redeploy) plus the AI's suggested change; a ROLLBACK verdict alert carries the undo line and the AI reply carries the suggested change. ChangeWatch never runs them and never writes to your repository.
+
 ---
 
 ## ⚡ Performance
