@@ -88,7 +88,8 @@ class SecurityComplianceRunner:
             c1 = "contents: read" in text and "contents: write" not in text
             c2 = "persist-credentials: false" in text
             c3 = "continue-on-error: true" in text
-            c4 = "--max-time 10" in text
+            # The example uses the composite action; its one request (action/notify.py) times out at 10 s
+            c4 = "changewatch/action@" in text and "timeout=10)" in (root_dir / "action" / "notify.py").read_text(encoding="utf-8")
             c5 = "git commit" not in text and "git push" not in text
             passed = c1 and c2 and c3 and c4 and c5
             self.record(category, "GitHub Action Read-Only & Non-Blocking Lint", passed, "contents: read, persist-credentials: false, continue-on-error: true, timeout <= 10s")

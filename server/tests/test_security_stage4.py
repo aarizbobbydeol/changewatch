@@ -184,8 +184,10 @@ def test_action_workflow_lint():
     assert "git commit" not in text, "Action must never run git commit"
     assert "git push" not in text, "Action must never run git push"
 
-    # 5. Must enforce 10s timeout
-    assert "--max-time 10" in text, "Curl request must include '--max-time 10'"
+    # 5. Uses the composite action, whose one request times out after 10 s
+    assert "aarizbobbydeol/changewatch/action@" in text, "Example must use the composite action"
+    notify = (repo_root / "action" / "notify.py").read_text(encoding="utf-8")
+    assert "timeout=10)" in notify, "The deploy request must time out after 10 seconds"
 
 
 def test_composite_action_lint():
@@ -206,4 +208,4 @@ def test_composite_action_lint():
     script = (repo_root / "action" / "notify.py").read_text(encoding="utf-8")
     for forbidden in ('"commit"', '"push"', '"checkout"', '"reset"', '"add"', '"tag"'):
         assert f"git({forbidden}" not in script and f'["git", {forbidden}' not in script
-    assert "timeout=15" in script
+    assert "timeout=10)" in script  # the documented 10 s

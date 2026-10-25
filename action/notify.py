@@ -125,7 +125,7 @@ def main() -> int:
         headers={"Content-Type": "application/json", "X-API-Key": key, "User-Agent": "changewatch-action/0.2"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             body = json.loads(resp.read() or b"{}")
         print(f"ChangeWatch: deploy {sha[:8]} registered (id {body.get('deploy_id')}, "
               f"{len(payload['files'])} changed files, CODEOWNERS {'sent' if 'codeowners' in payload else 'not found'})")

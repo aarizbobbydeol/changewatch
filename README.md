@@ -287,7 +287,7 @@ steps:
       environment: prod
 ```
 
-The hook is **read-only**, **non-blocking** (`continue-on-error: true`), has a **10 s timeout**, and excludes `.env*`, `*.pem`, `*.key`, `secrets/**` and `infra/**` from the diff. A full standalone workflow is in [`action/changewatch-deploy.yml`](action/changewatch-deploy.yml).
+The hook is **read-only**, **non-blocking** (`continue-on-error: true`), has a **10 s timeout**, and excludes `.env*`, `*.pem`, `*.key`, `id_rsa*`, `secrets/**` and `infra/**` from the diff. A complete example workflow is in [`action/changewatch-deploy.yml`](action/changewatch-deploy.yml).
 
 ---
 

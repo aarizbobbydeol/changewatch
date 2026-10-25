@@ -759,7 +759,7 @@ The deploy-hook workflow (`action/changewatch-deploy.yml`) and composite action 
 - `permissions: contents: read`
 - `persist-credentials: false` on repository checkout
 - `continue-on-error: true` (ChangeWatch outages or slow networks will never fail customer CI/CD pipelines)
-- Strict 10s request timeout (`--max-time 10`)
+- Strict 10 s request timeout (the one request in `action/notify.py`)
 - Secret exclusions (`*.env*`, `*.pem`, `*.key`, `id_rsa`, `secrets/**`, `infra/**`)
 
 ### 4. Run Automated Stage 4 Tests

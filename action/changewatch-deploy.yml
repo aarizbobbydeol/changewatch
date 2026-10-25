@@ -1,162 +1,45 @@
 # ==============================================================================
-# ChangeWatch Deploy Hook Workflow
+# ChangeWatch deploy hook: a complete example workflow
 # ==============================================================================
-# SECURITY GUARANTEES FOR CUSTOMERS:
-# 1. READ-ONLY: This workflow declares 'permissions: contents: read' and sets
-#    'persist-credentials: false' on checkout. ChangeWatch NEVER commits, pushes,
-#    or modifies customer code or repositories in any way.
-# 2. NON-BLOCKING: The notification step has 'continue-on-error: true'. If
-#    ChangeWatch is unreachable, slow, or experiencing an outage, your CI/CD
-#    pipeline and production deployments will NEVER fail.
-#    (To make this step blocking and fail the pipeline on error, change to:
-#     continue-on-error: false)
-# 3. TIMEOUT BOUNDED: All network requests time out strictly after 10 seconds.
-# 4. SECRET MINIMIZATION: Sensitive files (.env, *.pem, *.key, id_rsa, infra)
-#    are automatically excluded from diff and inspection payloads.
+# Copy to .github/workflows/ in your repository and put your own deploy step where
+# marked. ChangeWatch only reads the checkout:
+# 1. READ-ONLY: 'permissions: contents: read' and 'persist-credentials: false'.
+#    ChangeWatch never commits, pushes or changes your repository.
+# 2. NON-BLOCKING: the ChangeWatch step has 'continue-on-error: true'; an outage
+#    never fails your deploy. Its one request times out after 10 seconds.
+# 3. SECRET FILES NEVER SENT: .env*, *.pem, *.key, id_rsa*, secrets/** and the
+#    'exclude' globs (default infra/**) are left out of the diff and file list.
+# The logic lives in action/notify.py (standard-library Python, no curl).
 # ==============================================================================
 
-name: ChangeWatch Deploy Hook
+name: Deploy
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
-  notify-deploy:
+  deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 2            # the parent commit, to diff against
           persist-credentials: false
 
-      - name: Send deploy notification to ChangeWatch
+      # - name: Deploy
+      #   run: ./deploy.sh          # your deploy step
+
+      - name: Tell ChangeWatch about the deploy
         continue-on-error: true
-        env:
-          CHANGEWATCH_API_KEY: ${{ secrets.CHANGEWATCH_API_KEY }}
-          CHANGEWATCH_URL: ${{ secrets.CHANGEWATCH_URL || 'https://api.changewatch.io' }}
-          MODE: ${{ vars.CHANGEWATCH_MODE || 'minimal' }}
-        run: |
-          BEFORE="${{ github.event.before }}"
-          SHA="${{ github.sha }}"
-          AUTHOR="${{ github.actor }}"
-          MESSAGE=$(git log -1 --pretty=%B "$SHA" | head -c 2000)
-
-          # Compute git diff capped at 20,000 characters, excluding secrets and sensitive file extensions
-          EXCLUDE_PATTERNS=':(exclude)*.env* :(exclude)*.pem :(exclude)*.key :(exclude)*id_rsa* :(exclude)secrets/** :(exclude)infra/**'
-          if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
-            DIFF=$(git diff "$BEFORE" "$SHA" -- . $EXCLUDE_PATTERNS | head -c 20000)
-          else
-            DIFF=$(git show "$SHA" -- . $EXCLUDE_PATTERNS | head -c 20000)
-          fi
-
-          # Extract CODEOWNERS if present
-          CODEOWNERS=""
-          for co in .github/CODEOWNERS CODEOWNERS docs/CODEOWNERS; do
-            if [ -f "$co" ]; then
-              CODEOWNERS=$(head -c 20000 "$co")
-              break
-            fi
-          done
-
-          # Python helper to collect files metadata (up to 50 files, added ranges, authors, capped content)
-          python3 -c "
-          import os, subprocess, json, re
-
-          before = '$BEFORE'
-          sha = '$SHA'
-          exclude_exts = {'.env', '.pem', '.key', '.pfx', '.p12', '.crt', '.cert'}
-
-          diff_cmd = ['git', 'diff', '--name-status', before, sha] if before and before != '0'*40 else ['git', 'show', '--name-status', '--oneline', sha]
-          try:
-              res = subprocess.check_output(diff_cmd, text=True, stderr=subprocess.DEVNULL)
-          except Exception:
-              res = ''
-
-          files = []
-          total_content_bytes = 0
-          for line in res.splitlines():
-              parts = line.strip().split('\t')
-              if len(parts) < 2 or parts[0].startswith('commit') or parts[0].startswith(sha[:7]):
-                  continue
-              status_code = parts[0][0]
-              status = 'added' if status_code == 'A' else 'deleted' if status_code == 'D' else 'modified'
-              path = parts[-1]
-              if any(path.endswith(ext) or '/'+ext in path for ext in exclude_exts):
-                  continue
-              if len(files) >= 50:
-                  break
-
-              # Parse added ranges from git diff -U0
-              ranges = []
-              try:
-                  diff_u0 = subprocess.check_output(['git', 'diff', '-U0', before, sha, '--', path] if before and before != '0'*40 else ['git', 'show', '-U0', sha, '--', path], text=True, stderr=subprocess.DEVNULL)
-                  for h in re.finditer(r'@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@', diff_u0):
-                      start = int(h.group(1))
-                      count = int(h.group(2)) if h.group(2) is not None else 1
-                      end = start + count - 1 if count > 0 else start
-                      ranges.append([start, end])
-              except Exception:
-                  pass
-
-              # Top 2 authors from git log
-              authors = []
-              try:
-                  log_out = subprocess.check_output(['git', 'log', '-n', '30', '--format=%an', '--', path], text=True, stderr=subprocess.DEVNULL)
-                  counts = {}
-                  for a in log_out.splitlines():
-                      a = a.strip()
-                      if a:
-                          counts[a] = counts.get(a, 0) + 1
-                  sorted_auth = sorted(counts.items(), key=lambda x: x[1], reverse=True)
-                  authors = [x[0] for x in sorted_auth[:2]]
-              except Exception:
-                  pass
-
-              # File content (capped at 20 KB per file, 200 KB total)
-              content = None
-              if status != 'deleted' and os.path.isfile(path) and total_content_bytes < 200000:
-                  try:
-                      with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                          c = f.read(20480)
-                          if '\x00' not in c:
-                              content = c
-                              total_content_bytes += len(content.encode('utf-8'))
-                  except Exception:
-                      content = None
-
-              files.append({
-                  'path': path,
-                  'status': status,
-                  'added_ranges': ranges,
-                  'authors': authors,
-                  'content': content
-              })
-
-          with open('files_payload.json', 'w') as f:
-              json.dump(files, f)
-          "
-
-          # Build JSON payload safely with jq
-          PAYLOAD=$(jq -n \
-            --arg commit_sha "$SHA" \
-            --arg author "$AUTHOR" \
-            --arg message "$MESSAGE" \
-            --arg diff "$DIFF" \
-            --arg environment "prod" \
-            --arg codeowners "$CODEOWNERS" \
-            --slurpfile files files_payload.json \
-            '{commit_sha: $commit_sha, author: $author, message: $message, diff: $diff, environment: $environment, codeowners: (if $codeowners != "" then $codeowners else null end), files: $files[0]}')
-
-          rm -f files_payload.json
-
-          # POST to ChangeWatch deploy hook with strict 10s timeout
-          curl -s -f --max-time 10 -X POST "$CHANGEWATCH_URL/v1/deploys" \
-            -H "Content-Type: application/json" \
-            -H "X-API-Key: $CHANGEWATCH_API_KEY" \
-            -d "$PAYLOAD"
+        uses: aarizbobbydeol/changewatch/action@main
+        with:
+          changewatch_url: ${{ secrets.CHANGEWATCH_URL }}         # your server, e.g. https://changewatch.example.com
+          changewatch_api_key: ${{ secrets.CHANGEWATCH_API_KEY }} # the project's cw_ingest_ key
+          environment: prod
+          mode: minimal              # 'full' also sends the changed files (scrubbed, encrypted)
+          exclude: "infra/**"
