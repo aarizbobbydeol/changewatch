@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import asyncpg
 
 from app.config import settings
@@ -24,10 +24,22 @@ def resolve_team_mentions(
     Map owner handles/authors/emails to channel mentions using team_members records.
     Unknown people appear as plain text names.
     """
+    return resolve_owner_mentions(owners, team_members, channel_type)[0]
+
+
+def resolve_owner_mentions(
+    owners: List[str],
+    team_members: List[Dict[str, Any]],
+    channel_type: str = "slack",
+) -> Tuple[List[str], List[str]]:
+    """The owners as resolve_team_mentions shows them, and the chat user IDs of the mentions it
+    made: the only people the alert may ping (a mention inside an error message, a commit message
+    or an unknown owner's name is shown as text)."""
     if not owners:
-        return ["Unassigned"]
+        return ["Unassigned"], []
 
     mentions: List[str] = []
+    ids: List[str] = []
     for owner in owners:
         owner_clean = owner.lstrip("@").lower()
         matched = False
@@ -47,10 +59,12 @@ def resolve_team_mentions(
             ):
                 if channel_type == "slack" and slack_id:
                     mentions.append(f"<@{slack_id}>")
+                    ids.append(slack_id)
                     matched = True
                     break
                 elif channel_type == "discord" and discord_id:
                     mentions.append(f"<@{discord_id}>")
+                    ids.append(discord_id)
                     matched = True
                     break
                 else:
@@ -61,7 +75,7 @@ def resolve_team_mentions(
         if not matched:
             mentions.append(owner)
 
-    return mentions
+    return mentions, ids
 
 
 def format_incident_instant_message(
@@ -78,9 +92,11 @@ def format_incident_instant_message(
     owners: List[str],
     dashboard_url: str,
     triage_info: Optional[Dict[str, Any]] = None,
+    mentions: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
-    Build structured instant alert message without AI (Stage B3).
+    Build structured instant alert message without AI (Stage B3). `mentions` are the chat user IDs
+    of the owners resolved to mentions (resolve_owner_mentions): the only people the alert pings.
     """
     is_confirmed = status == "confirmed"
     badge = "🚨 *Confirmed regression*" if is_confirmed else "⚠️ *Possible regression*"
@@ -162,6 +178,7 @@ def format_incident_instant_message(
     return {
         "text": fallback_text,
         "blocks": slack_blocks,
+        "mentions": list(mentions or []),
         "details": {
             "title": f"{status.capitalize()} regression after {commit_sha[:8]}",
             "description": f"{error_title[:100]} ({event_count} occurrences)",
@@ -248,7 +265,7 @@ async def dispatch_incident_alert(
 
     # If no channels configured, still write to default outbox record for web UI / test inspection
     if not channel_rows:
-        resolved_owners = resolve_team_mentions(raw_owners, team_members, channel_type="slack")
+        resolved_owners, mention_ids = resolve_owner_mentions(raw_owners, team_members, channel_type="slack")
         payload = format_incident_instant_message(
             status=status,
             commit_sha=commit_sha,
@@ -263,6 +280,7 @@ async def dispatch_incident_alert(
             owners=resolved_owners,
             dashboard_url=dashboard_url,
             triage_info=triage_info,
+            mentions=mention_ids,
         )
         dedupe_key = f"incident:{incident_id}:{status}{dedupe_suffix}:default"
         await queue_notification(
@@ -278,7 +296,7 @@ async def dispatch_incident_alert(
     for ch in channel_rows:
         ch_id = ch["id"]
         ch_type = ch["type"]
-        resolved_owners = resolve_team_mentions(raw_owners, team_members, channel_type=ch_type)
+        resolved_owners, mention_ids = resolve_owner_mentions(raw_owners, team_members, channel_type=ch_type)
 
         payload = format_incident_instant_message(
             status=status,
@@ -294,6 +312,7 @@ async def dispatch_incident_alert(
             owners=resolved_owners,
             dashboard_url=dashboard_url,
             triage_info=triage_info,
+            mentions=mention_ids,
         )
 
         dedupe_key = f"incident:{incident_id}:{status}{dedupe_suffix}:channel:{ch_id}"

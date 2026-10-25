@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from app.auth import require_read_project_id
 from app.config import settings
 from app.db import close_db_pool, get_connection, init_db_pool, project_transaction
-from app.notifiers.channels import DiscordNotifier, SlackNotifier, _slack_safe_blocks, slack_safe
+from app.notifiers.channels import DiscordNotifier, SlackNotifier, TeamsNotifier, _slack_safe_blocks, slack_safe
 from app.runbooks import RunbookIn, match_runbook, runbook_line
 
 NOW = datetime.now(timezone.utc)
@@ -72,11 +72,12 @@ def test_slack_text_cannot_ping_everyone_or_hide_a_link(monkeypatch):
     monkeypatch.setattr(settings, "DASHBOARD_URL", "https://cw.example")
     text = ("ValueError: bad <!channel> <!here|here> <https://evil.example/login|Fix it here> & more "
             "<@U12345> <https://cw.example/incidents/7|View Incident> <https://cw.example.evil.test/x|View>")
-    safe = slack_safe(text)
+    safe = slack_safe(text, ["U12345"])
     assert "<!channel>" not in safe and "&lt;!channel&gt;" in safe and "&lt;!here|here&gt;" in safe
     assert "Fix it here (https://evil.example/login)" in safe and "<https://evil.example" not in safe
     assert "&amp; more" in safe
     assert "<@U12345>" in safe and "<https://cw.example/incidents/7|View Incident>" in safe  # ours stay
+    assert "&lt;@U12345&gt;" in slack_safe(text)  # a mention ChangeWatch did not make is only text
     assert "<https://cw.example.evil.test" not in safe  # a look-alike host is not ours
     blocks = [{"type": "header", "text": {"type": "plain_text", "text": "A & B"}},
               {"type": "section", "text": {"type": "mrkdwn", "text": "<!everyone>"}}]
@@ -122,9 +123,70 @@ async def test_slack_and_discord_messages_are_made_safe_when_sent(monkeypatch):
     for slack in _Recorder.posted[:2]:
         assert "<!channel>" not in slack["text"] and "Fix (https://evil.example)" in json.dumps(slack["blocks"])
     discord = _Recorder.posted[2]
-    assert discord["allowed_mentions"] == {"parse": ["users"]}  # "@everyone" stays text
+    assert discord["allowed_mentions"] == {"parse": [], "users": []}  # "@everyone" stays text
     assert "](" not in discord["content"] and "](" not in discord["embeds"][0]["description"]
     assert payload["text"].startswith("KeyError: '@everyone <!channel>")  # the caller's payload is not changed
+
+
+@pytest.mark.asyncio
+async def test_discord_embed_fields_never_carry_a_masked_link():
+    # Owners can be commit author emails, which any contributor sets to any text
+    _Recorder.posted = []
+    payload = {"text": "x", "details": {"title": "t", "description": "d", "where": "a.py:1",
+                                         "owners": "[Approve rollback](https://evil.example/sso)"}}
+    with patch("app.notifiers.channels.httpx.AsyncClient", _Recorder):
+        await DiscordNotifier().send(payload, {"webhook_url": "https://discord.example/api/webhooks/1/x"})
+    assert "](" not in json.dumps(_Recorder.posted[0]["embeds"])
+
+
+@pytest.mark.asyncio
+async def test_an_alert_pings_only_the_owners_changewatch_resolved(monkeypatch):
+    from app.notifiers.incident_alert import dispatch_incident_alert
+
+    monkeypatch.setattr(settings, "DASHBOARD_URL", "https://cw.example")
+    conn = AsyncMock()
+    conn.fetchrow.return_value = {"name": "shop", "notify_quiet": False}
+    conn.fetch.side_effect = [
+        [{"name": "Alice", "git_emails": ["alice@acme.example"], "slack_user_id": "U0ALICE1",
+          "discord_user_id": "111111111111111111", "email": None},
+         {"name": "Bob", "git_emails": ["bob@acme.example"], "slack_user_id": None,
+          "discord_user_id": "bob#1234", "email": None}],  # not a Discord ID: Discord would refuse the alert
+        [{"id": 1, "type": "slack", "config": {}}, {"id": 2, "type": "discord", "config": {}}],
+    ]
+    # Mentions in text ChangeWatch does not control: an error message echoing a user's input, the
+    # commit message, and an owner taken from a commit author that matches no team member
+    with patch("app.notifiers.incident_alert.queue_notification", new=AsyncMock()) as queued:
+        await dispatch_incident_alert(
+            conn, project_id=1, incident_id=7, status="confirmed", commit_sha="2222222222222222", author="alice@acme.example",
+            message="fix <@U0CEO1234>", error_title="ValueError: user <@U0CEO1234> <@222222222222222222>", event_count=3,
+            where_file="app/x.py", where_line=4, where_function="f", in_diff=True,
+            raw_owners=["alice@acme.example", "bob@acme.example", "<@U0EVIL99>"])
+    slack_payload, discord_payload = (c.kwargs["payload"] for c in queued.call_args_list)
+    _Recorder.posted = []
+    with patch("app.notifiers.channels.httpx.AsyncClient", _Recorder):
+        await SlackNotifier().send(slack_payload, {"bot_token": "xoxb-test", "channel_id": "C1"})
+        await DiscordNotifier().send(discord_payload, {"webhook_url": "https://discord.example/api/webhooks/1/x"})
+    slack = json.dumps(_Recorder.posted[0])
+    assert "<@U0ALICE1>" in slack  # the code owner is still mentioned
+    assert "<@U0CEO1234>" not in slack and "<@U0EVIL99>" not in slack and "&lt;@U0CEO1234&gt;" in slack
+    discord = _Recorder.posted[1]
+    assert "<@111111111111111111>" in discord["content"]
+    assert discord["allowed_mentions"] == {"parse": [], "users": ["111111111111111111"]}
+
+
+@pytest.mark.asyncio
+async def test_teams_cards_show_html_from_quoted_text_as_written():
+    # Teams connector cards render limited HTML as well as Markdown, links and images included
+    _Recorder.posted = []
+    payload = {"text": 'ValueError: Invalid input <a href="https://evil.example/login">View incident in ChangeWatch</a>',
+               "details": {"description": '<img src="https://evil.example/t.png"> & [Fix](https://evil.example)'}}
+    with patch("app.notifiers.channels.httpx.AsyncClient", _Recorder):
+        await TeamsNotifier().send(payload, {"webhook_url": "https://teams.example/webhook"})
+    card = _Recorder.posted[0]
+    assert "<a " not in json.dumps(card) and "<img" not in json.dumps(card) and "](" not in json.dumps(card)
+    section = card["sections"][0]
+    assert section["activityTitle"].startswith('ValueError: Invalid input &lt;a href="https://evil.example/login"&gt;')
+    assert section["facts"][0]["value"] == '&lt;img src="https://evil.example/t.png"&gt; &amp; [Fix] (https://evil.example)'
 
 
 async def _db_up() -> bool:

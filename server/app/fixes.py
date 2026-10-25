@@ -16,6 +16,9 @@ from app.crypto import decrypt_or_plain
 # Only a real commit SHA goes into a command: a deploy's "commit_sha" is whatever the client sent
 # (a release name, or text built to run something when pasted into a shell)
 _SHA = re.compile(r"^[0-9a-f]{7,64}$")
+# A release name is shown only when it is plain: other text could bring its own formatting, or a
+# fake command, into the alert line that holds the real ones
+_NAME = re.compile(r"[A-Za-z0-9._/-]{1,64}")
 NOTE = "Suggestions only: ChangeWatch never runs these and never writes to your repository. Check before using."
 
 
@@ -24,19 +27,24 @@ def _sha(value: Optional[str]) -> Optional[str]:
     return value if _SHA.match(value) else None
 
 
-def _short(release: str) -> str:
-    """A SHA cut to 12 characters; a release name as sent."""
-    return release[:12] if _sha(release) else release
+def _short(release: str) -> Optional[str]:
+    """A SHA cut to 12 characters; a plain release name as sent; None for any other text."""
+    if _sha(release):
+        return release.strip()[:12]
+    return release if _NAME.fullmatch(release) else None
 
 
 async def deploy_undo(conn: asyncpg.Connection, project_id: int, deploy_id: int) -> Optional[Dict[str, Any]]:
     """How to undo a whole deploy: redeploy what ran before it, or revert its commits. None if the
     deploy is not this project's."""
+    # The previous deploy runs other code: the same commit sent again (a second region, a re-run)
+    # is not something to roll back to
     dep = await conn.fetchrow(
         """
         SELECT d.commit_sha, d.environment,
                (SELECT p.commit_sha FROM deploys p WHERE p.project_id = d.project_id
                   AND p.environment IS NOT DISTINCT FROM d.environment AND p.deployed_at < d.deployed_at
+                  AND lower(p.commit_sha) <> lower(d.commit_sha)
                 ORDER BY p.deployed_at DESC, p.id DESC LIMIT 1) AS previous_sha
         FROM deploys d WHERE d.id = $1 AND d.project_id = $2
         """,
@@ -50,18 +58,25 @@ async def deploy_undo(conn: asyncpg.Connection, project_id: int, deploy_id: int)
     if sha and prev and prev != sha:
         commands.append({"kind": "check", "label": "See which commits this deploy added",
                          "command": f"git log --oneline {prev}..{sha}"})
+        # A merged pull request is a merge commit, which git revert stops at: skip merges, their
+        # commits are in the range and are undone one by one
         commands.append({"kind": "revert", "label": "Revert every commit of this deploy",
-                         "command": f"git revert --no-edit {prev}..{sha}",
+                         "command": f"git revert --no-edit --no-merges {prev}..{sha}",
                          "explain": f"Undoes the commits after the previous {env} deploy ({prev[:8]}), newest first, "
-                                    "as new commits. A merge commit in the range needs git revert -m 1 <sha> instead."})
+                                    "as new commits. Merge commits are skipped; the commits they merged are undone instead."})
     elif sha:
         commands.append({"kind": "revert", "label": "Revert this deploy's commit",
                          "command": f"git revert --no-edit {sha}",
                          "explain": f"Undoes {sha[:8]} as a new commit. For a merge commit use git revert -m 1 {sha} instead."})
+    rollback_to = None
+    if dep["previous_sha"]:
+        name = _short(dep["previous_sha"])
+        rollback_to = {"sha": dep["previous_sha"],
+                       "text": f"Redeploy {name}, the last {env} deploy before this one." if name
+                       else f"Redeploy the last {env} deploy before this one."}
     return {
         "commit_sha": dep["commit_sha"],
-        "rollback_to": {"sha": dep["previous_sha"], "text": f"Redeploy {_short(dep['previous_sha'])}, the last {env} deploy before this one."}
-        if dep["previous_sha"] and dep["previous_sha"] != dep["commit_sha"] else None,
+        "rollback_to": rollback_to,
         "commands": commands,
         "base": prev or (f"{sha}^" if sha else None),
         "no_commands_reason": None if sha else "The deploy's commit is not a git SHA, so no git commands are suggested.",
@@ -75,7 +90,8 @@ def undo_line(undo: Optional[Dict[str, Any]]) -> Optional[str]:
     revert = next((c["command"] for c in undo["commands"] if c["kind"] == "revert"), None)
     parts = []
     if undo.get("rollback_to"):
-        parts.append(f"redeploy {_short(undo['rollback_to']['sha'])}")
+        name = _short(undo["rollback_to"]["sha"])
+        parts.append(f"redeploy {name}" if name else "redeploy the previous release")
     if revert:
         parts.append(f"`{revert}`")
     return ("Undo: " + " or ".join(parts) + " (suggestions; ChangeWatch runs nothing)") if parts else None
