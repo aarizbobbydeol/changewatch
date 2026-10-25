@@ -182,10 +182,12 @@ async def dispatch_incident_alert(
     raw_owners: List[str],
     triage_info: Optional[Dict[str, Any]] = None,
     first_event_at: Optional[float] = None,
+    dedupe_suffix: str = "",
 ) -> bool:
     """
     Format and enqueue incident alert to all enabled notification channels.
-    Respects project.notify_quiet setting.
+    Respects project.notify_quiet setting. `dedupe_suffix` makes a second alert of the same
+    status (a reopened incident) a new message instead of a duplicate of the first.
     """
     # 1. Check project notify_quiet setting
     proj_row = await conn.fetchrow(
@@ -254,7 +256,7 @@ async def dispatch_incident_alert(
             dashboard_url=dashboard_url,
             triage_info=triage_info,
         )
-        dedupe_key = f"incident:{incident_id}:{status}:default"
+        dedupe_key = f"incident:{incident_id}:{status}{dedupe_suffix}:default"
         await queue_notification(
             conn=conn,
             project_id=project_id,
@@ -286,7 +288,7 @@ async def dispatch_incident_alert(
             triage_info=triage_info,
         )
 
-        dedupe_key = f"incident:{incident_id}:{status}:channel:{ch_id}"
+        dedupe_key = f"incident:{incident_id}:{status}{dedupe_suffix}:channel:{ch_id}"
         await queue_notification(
             conn=conn,
             project_id=project_id,

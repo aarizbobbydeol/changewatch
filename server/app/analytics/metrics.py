@@ -279,10 +279,13 @@ def compute_alerts_accuracy(feedback: List[Dict[str, Any]]) -> MetricResult:
 def compute_tool_uptime(
     status_logs: List[Dict[str, Any]],
     window_minutes: float,
+    now: Optional[datetime] = None,
 ) -> MetricResult:
     """
     1 - (degraded_minutes / window_minutes).
     Requires at least 24h (1440m) of history, otherwise 'Collecting data'.
+    A stretch still open (no ended_at) counts until `now`; overlapping stretches of different
+    components count once.
     """
     if window_minutes < 1440.0:
         return MetricResult(
@@ -295,13 +298,23 @@ def compute_tool_uptime(
             note="Requires at least 24 hours of operating history.",
         )
 
+    now = now or datetime.now(timezone.utc)
+    spans = sorted(
+        (log["started_at"], log.get("ended_at") or now)
+        for log in status_logs
+        if log.get("status") in ("degraded", "down") and log.get("started_at")
+    )
     degraded_min = 0.0
-    for log in status_logs:
-        if log.get("status") in ("degraded", "down"):
-            started = log.get("started_at")
-            ended = log.get("ended_at")
-            if started and ended:
-                degraded_min += (ended - started).total_seconds() / 60.0
+    cur_start = cur_end = None
+    for start, end in spans:
+        if cur_end is not None and start <= cur_end:
+            cur_end = max(cur_end, end)
+            continue
+        if cur_end is not None:
+            degraded_min += (cur_end - cur_start).total_seconds() / 60.0
+        cur_start, cur_end = start, end
+    if cur_end is not None:
+        degraded_min += (cur_end - cur_start).total_seconds() / 60.0
 
     uptime = max(0.0, min(100.0, round((1.0 - (degraded_min / window_minutes)) * 100.0, 1)))
 

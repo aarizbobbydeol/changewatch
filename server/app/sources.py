@@ -71,7 +71,9 @@ async def record_source_activity(
                 typical_gap = int(0.8 * typical_gap + 0.2 * gap_sec)
                 typical_gap = max(10, min(typical_gap, 3600))
 
-        if row["status"] == "silent":
+        # Only traffic (heartbeats) ends a silence: an error from a background job while the web
+        # app is still down would otherwise send a false "data is flowing again"
+        if row["status"] == "silent" and is_heartbeat:
             recovered = True
 
     # 2. Upsert source
@@ -105,9 +107,7 @@ async def record_source_activity(
             )
             VALUES ($1, $2, $3, 'active', $4, $5, now())
             ON CONFLICT (project_id, environment, app_name) DO UPDATE SET
-                status = 'active',
                 last_event_at = EXCLUDED.last_event_at,
-                silent_since = NULL,
                 updated_at = now()
             """,
             project_id,

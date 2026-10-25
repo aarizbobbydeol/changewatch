@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
 import asyncpg
@@ -234,33 +235,74 @@ async def process_outbox_item(
         return False
 
 
-async def deliver_outbox_batch(
-    limit: int = 50,
-    sender_func: Optional[Callable[[int, Dict[str, Any]], Any]] = None,
-) -> int:
-    """Deliver a batch of pending outbox messages.
+OUTBOX_LANES = 4  # messages sent at the same time by one process
+OUTBOX_BATCH_MAX_SEC = 15.0  # a batch stops claiming new messages after this long
 
-    Rows are claimed with FOR UPDATE SKIP LOCKED, so the notifier and the detector
-    (fallback sender) can run at the same time without ever sending a row twice.
-    """
-    delivered = 0
+
+def _channel_key(project_id: int, channel_id: Optional[int]) -> str:
+    return f"{project_id}:{'*' if channel_id is None else channel_id}"
+
+
+async def _claim_and_deliver(sender_func, busy: set) -> Any:
+    """Claim one due message (of a channel no other lane is sending to), send it and record the
+    result, all in its own transaction. None when nothing is due, "busy" when the claimed
+    message's channel turned out to be in use by another lane (it is left for later)."""
     async with get_connection() as conn:
         async with conn.transaction():
-            items = await conn.fetch(
+            item = await conn.fetchrow(
                 """
                 SELECT id, project_id, channel_id, dedupe_key, payload, attempts, created_at
                 FROM outbox
                 WHERE status = 'pending' AND next_attempt_at <= now()
+                  AND (project_id::text || ':' || COALESCE(channel_id::text, '*')) <> ALL($1::text[])
                 ORDER BY next_attempt_at ASC
-                LIMIT $1
+                LIMIT 1
                 FOR UPDATE SKIP LOCKED
                 """,
-                limit,
+                list(busy),
             )
+            if item is None:
+                return None
+            key = _channel_key(item["project_id"], item["channel_id"])
+            if key in busy:
+                return "busy"  # lanes claimed at the same moment; ending the transaction frees the row
+            busy.add(key)
+            try:
+                return await process_outbox_item(conn, item, sender_func)
+            finally:
+                busy.discard(key)
 
-            for item in items:
-                success = await process_outbox_item(conn, item, sender_func)
-                if success:
-                    delivered += 1
 
-    return delivered
+async def deliver_outbox_batch(
+    limit: int = 50,
+    sender_func: Optional[Callable[[int, Dict[str, Any]], Any]] = None,
+) -> int:
+    """Deliver up to `limit` pending outbox messages.
+
+    Rows are claimed with FOR UPDATE SKIP LOCKED, so the notifier and the detector
+    (fallback sender) can run at the same time without ever sending a row twice. Each message
+    is committed as sent right after its send, so a crash or a database drop re-sends at most
+    the message in flight, not the whole batch. Up to OUTBOX_LANES messages go out at once,
+    at most one per channel, so a channel that times out holds up only its own messages.
+    """
+    deadline = time.monotonic() + OUTBOX_BATCH_MAX_SEC
+    busy: set = set()
+    state = {"left": limit, "delivered": 0}
+
+    async def lane() -> None:
+        while state["left"] > 0 and time.monotonic() < deadline:
+            state["left"] -= 1
+            ok = await _claim_and_deliver(sender_func, busy)
+            if ok is None or ok == "busy":
+                state["left"] += 1
+                if ok is None and not busy:
+                    return  # nothing due and nothing in flight
+                await asyncio.sleep(0.2)  # another lane is on a slow channel: keep serving the rest
+                continue
+            state["delivered"] += int(ok)
+
+    results = await asyncio.gather(*(lane() for _ in range(max(1, min(OUTBOX_LANES, limit)))), return_exceptions=True)
+    for res in results:
+        if isinstance(res, BaseException):
+            raise res
+    return state["delivered"]

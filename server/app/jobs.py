@@ -60,7 +60,8 @@ async def run_auto_resolve(conn: asyncpg.Connection, now_dt: Optional[datetime] 
         await queue_notification(
             conn,
             project_id=item["project_id"],
-            dedupe_key=f"incident:{item['incident_id']}:resolved",
+            # An incident can be reopened and resolved again: each resolution is its own message
+            dedupe_key=f"incident:{item['incident_id']}:resolved:{int(item['resolved_at'].timestamp())}",
             payload={
                 "type": "incident_resolved",
                 "incident_id": item["incident_id"],

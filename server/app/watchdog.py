@@ -62,6 +62,46 @@ async def reap_stuck_queue_items(redis) -> int:
     return reaped
 
 
+async def outbox_delivery_stats(conn: asyncpg.Connection, now: datetime) -> tuple:
+    """(delivered, failing) among messages of the last hour. Failing means 3 or more failed
+    attempts: a row is only marked 'failed' after about 2.5 hours of retries, too late to warn."""
+    row = await conn.fetchrow(
+        """
+        SELECT
+            COUNT(*) FILTER (WHERE status = 'sent') AS delivered,
+            COUNT(*) FILTER (WHERE status <> 'sent' AND attempts >= 3) AS failed
+        FROM outbox
+        WHERE created_at >= $1::timestamptz - INTERVAL '1 hour'
+        """,
+        now,
+    )
+    return int(row["delivered"] or 0), int(row["failed"] or 0)
+
+
+async def record_status_intervals(conn: asyncpg.Connection, components: Dict[str, Any], now: datetime) -> None:
+    """One row per stretch of time a component was not ok: opened when it stops being ok or
+    changes state, closed (ended_at) when it recovers or changes state."""
+    for name, info in components.items():
+        status = info["status"]
+        await conn.execute(
+            """
+            UPDATE component_status_log SET ended_at = $3
+            WHERE project_id IS NULL AND component = $1 AND ended_at IS NULL AND status <> $2
+            """,
+            name, status, now,
+        )
+        if status != "ok":
+            await conn.execute(
+                """
+                INSERT INTO component_status_log (component, status, started_at, detail)
+                SELECT $1, $2, $3, $4
+                WHERE NOT EXISTS (SELECT 1 FROM component_status_log
+                                  WHERE project_id IS NULL AND component = $1 AND ended_at IS NULL)
+                """,
+                name, status, now, info["detail"],
+            )
+
+
 async def run_watchdog_checks(
     conn: Optional[asyncpg.Connection],
     redis: Any,
@@ -170,9 +210,10 @@ async def run_watchdog_checks(
                     detector_status = "degraded"
                     detector_detail = f"Detector delayed by {int(lag_sec)} seconds"
             else:
-                # No detector heartbeat key found
-                detector_status = "degraded"
-                detector_detail = "Detector heartbeat key not found"
+                # The heartbeat expires 5 minutes after the detector's last cycle: a detector that
+                # died or never started is down, not "degraded" (which would clear the alert)
+                detector_status = "down"
+                detector_detail = "Detector is not running (no heartbeat for over 5 minutes)"
                 verdicts_fresh = False
         except Exception as exc:
             detector_status = "degraded"
@@ -202,23 +243,11 @@ async def run_watchdog_checks(
             )
             outbox_backlog = int(backlog_count or 0)
 
-            # Failure rate in last 15 minutes
-            stats_15m = await conn.fetchrow(
-                """
-                SELECT
-                    COUNT(*) FILTER (WHERE status = 'sent') AS delivered,
-                    COUNT(*) FILTER (WHERE status = 'failed') AS failed
-                FROM outbox
-                WHERE created_at >= $1::timestamptz - INTERVAL '15 minutes'
-                """,
-                current_time,
-            )
-            delivered = int(stats_15m["delivered"] or 0)
-            failed = int(stats_15m["failed"] or 0)
+            delivered, failed = await outbox_delivery_stats(conn, current_time)
 
-            if failed > 5 and failed > delivered:
+            if failed >= 3 and failed > delivered:
                 outbox_status = "degraded"
-                outbox_detail = f"Outbox notification deliveries failing ({failed} failed, {delivered} delivered in last 15m)"
+                outbox_detail = f"Outbox notification deliveries failing ({failed} failing, {delivered} delivered in the last hour)"
                 system_alerts.append({
                     "component": "notifier",
                     "severity": "high",
@@ -308,23 +337,12 @@ async def run_watchdog_checks(
     if reaped_count > 0:
         logger.info("Watchdog reaped %d stuck items back to events queue", reaped_count)
 
-    # 8. Record component status logs in DB for any degraded/down component
+    # 8. Record how long each component was degraded or down (tool uptime, weekly digest)
     if conn and db_status == "ok":
-        for comp_name, comp_info in components.items():
-            if comp_info["status"] != "ok":
-                try:
-                    await conn.execute(
-                        """
-                        INSERT INTO component_status_log (component, status, started_at, detail)
-                        VALUES ($1, $2, $3, $4)
-                        """,
-                        comp_name,
-                        comp_info["status"],
-                        current_time,
-                        comp_info["detail"],
-                    )
-                except Exception as exc:
-                    logger.debug("Failed logging component status: %s", exc)
+        try:
+            await record_status_intervals(conn, components, current_time)
+        except Exception as exc:
+            logger.debug("Failed logging component status: %s", exc)
 
     # 9. External Ping URL (healthchecks.io style)
     if ping_external and settings.WATCHDOG_PING_URL:

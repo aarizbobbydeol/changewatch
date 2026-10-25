@@ -211,6 +211,13 @@ async def run_calm_auto_resolve(
         FROM incidents i
         JOIN deploys d ON d.id = i.deploy_id
         WHERE i.status != 'resolved' AND i.last_event_at <= $1
+          -- incidents.last_event_at stops moving once the deploy is 2 hours old or a newer
+          -- deploy takes the events: the error itself must also have gone quiet
+          AND NOT EXISTS (
+            SELECT 1 FROM events e
+            WHERE e.project_id = i.project_id AND e.issue_id = i.issue_id
+              AND e.environment = d.environment AND e.type = 'error' AND e.occurred_at > $1
+          )
           -- Incidents whose app is silent stay open: leave them out here, or 50 of them
           -- would fill every batch and stop auto-resolve for all projects
           AND NOT EXISTS (
@@ -295,6 +302,7 @@ async def run_calm_auto_resolve(
             "project_id": proj_id,
             "fix_note": fix_note,
             "is_revert": is_revert,
+            "resolved_at": current,
         })
 
     return resolved_items

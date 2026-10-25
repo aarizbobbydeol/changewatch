@@ -64,6 +64,11 @@ class SlackNotifier:
             raise ValueError("Slack configuration missing bot_token+channel_id or webhook_url")
 
 
+def _clip(text: Any, limit: int) -> str:
+    text = str(text)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 class DiscordNotifier:
     """Discord channel notifier using Discord webhooks."""
 
@@ -72,17 +77,18 @@ class DiscordNotifier:
         if not webhook_url:
             raise ValueError("Discord configuration missing webhook_url")
 
-        content = payload.get("text", "ChangeWatch Alert")
+        # Discord rejects (HTTP 400) content over 2000 characters and embed fields over their limits
+        content = _clip(payload.get("text", "ChangeWatch Alert"), 2000)
         embeds = []
         if "details" in payload:
             d = payload["details"]
             embeds.append({
-                "title": d.get("title", "Regression Detected"),
-                "description": d.get("description", ""),
+                "title": _clip(d.get("title", "Regression Detected"), 256),
+                "description": _clip(d.get("description", ""), 4096),
                 "color": 0xFF4444 if d.get("status") == "confirmed" else 0xFFA500,
                 "fields": [
-                    {"name": "Where", "value": d.get("where", "Unknown"), "inline": True},
-                    {"name": "Owners", "value": d.get("owners", "None"), "inline": True},
+                    {"name": "Where", "value": _clip(d.get("where", "Unknown") or "Unknown", 1024), "inline": True},
+                    {"name": "Owners", "value": _clip(d.get("owners", "None") or "None", 1024), "inline": True},
                 ],
             })
 

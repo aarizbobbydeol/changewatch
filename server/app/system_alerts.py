@@ -89,8 +89,12 @@ async def sync_system_alerts(
             now_dt,
         )
         if new_id:
+            delivered = await send_fallback(f"🚨 {alert['title']}\n{alert.get('detail') or ''}".strip())
+            if not delivered and settings.SYSTEM_ALERT_WEBHOOK_URL:
+                # Not sent: forget it so the next cycle raises (and sends) it again
+                await conn.execute("DELETE FROM system_alerts WHERE id = $1", new_id)
+                continue
             raised.append(component)
-            await send_fallback(f"🚨 {alert['title']}\n{alert.get('detail') or ''}".strip())
 
     active = await conn.fetch(
         "SELECT component, title FROM system_alerts WHERE project_id IS NULL AND status = 'active'"
@@ -108,8 +112,17 @@ async def sync_system_alerts(
             now_dt,
         )
         if cleared:
+            delivered = await send_fallback(f"✅ Recovered: {row['title']}")
+            if not delivered and settings.SYSTEM_ALERT_WEBHOOK_URL:
+                # Not sent: keep it active so the next cycle sends the recovery again
+                try:
+                    await conn.execute(
+                        "UPDATE system_alerts SET status = 'active', resolved_at = NULL WHERE id = $1", cleared
+                    )
+                except asyncpg.UniqueViolationError:
+                    pass  # the problem came back meanwhile and another process raised it again
+                continue
             resolved.append(row["component"])
-            await send_fallback(f"✅ Recovered: {row['title']}")
 
     return {"raised": raised, "resolved": resolved}
 

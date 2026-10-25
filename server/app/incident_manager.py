@@ -213,7 +213,7 @@ async def check_and_trigger_incident(
     # 4. Check if incident already exists
     existing = await conn.fetchrow(
         """
-        SELECT id, status, event_count, first_event_at
+        SELECT id, status, event_count, first_event_at, resolved_at
         FROM incidents
         WHERE deploy_id = $1 AND issue_id = $2 AND project_id = $3
         """,
@@ -229,7 +229,46 @@ async def check_and_trigger_incident(
 
         # Check upgrade condition: possible -> confirmed at >= CONFIRM_MIN_EVENTS (default 10)
         confirm_min = getattr(settings, "CONFIRM_MIN_EVENTS", 10)
-        if current_status == "possible" and cur_count >= confirm_min and not muted:
+        if current_status == "resolved" and should_open and not muted:
+            # It was resolved (often automatically) and is firing again: reopen and tell the team
+            await conn.execute(
+                """
+                UPDATE incidents
+                SET status = 'confirmed', confirmed_at = COALESCE(confirmed_at, now()), resolved_at = NULL,
+                    event_count = $1, last_event_at = $2
+                WHERE id = $3 AND project_id = $4
+                """,
+                cur_count,
+                occurred_at_dt,
+                inc_id,
+                project_id,
+            )
+            logger.info("Reopened incident %d: the error is back after it was resolved", inc_id)
+            inc_full = await conn.fetchrow(
+                "SELECT title, where_file, where_line, where_function, in_diff, owners FROM incidents WHERE id = $1",
+                inc_id,
+            )
+            resolved_at = existing["resolved_at"]
+            await dispatch_incident_alert(
+                conn=conn,
+                project_id=project_id,
+                incident_id=inc_id,
+                status="confirmed",
+                commit_sha=dep_row["commit_sha"],
+                author=dep_row["author"] or "Unknown",
+                message=dep_row["message"] or "",
+                error_title=inc_full["title"] or "Error",
+                event_count=recent_count,
+                where_file=inc_full["where_file"] or "unknown",
+                where_line=inc_full["where_line"] or 0,
+                where_function=inc_full["where_function"] or "unknown",
+                in_diff=bool(inc_full["in_diff"]),
+                raw_owners=json.loads(inc_full["owners"]) if inc_full["owners"] else [],
+                triage_info={"returned": True},
+                # A new message, not a repeat of the first "confirmed" alert (outbox dedupe)
+                dedupe_suffix=f":reopened:{int(resolved_at.timestamp()) if resolved_at else 0}",
+            )
+        elif current_status == "possible" and cur_count >= confirm_min and not muted:
             await conn.execute(
                 """
                 UPDATE incidents

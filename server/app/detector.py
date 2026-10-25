@@ -16,6 +16,9 @@ from app.queue import close_redis, get_redis, init_redis
 
 logger = logging.getLogger("changewatch.detector")
 
+# The AI "likely cause" on a watch/rollback verdict is optional: give up on it after this long
+LIKELY_CAUSE_TIMEOUT_SEC = 20.0
+
 
 def calculate_p95(samples: List[float]) -> float:
     """Calculate 95th percentile from a list of numerical samples."""
@@ -62,7 +65,7 @@ async def evaluate_deploy(
         """
         SELECT COALESCE(SUM(requests), 0) AS reqs, COALESCE(SUM(errors), 0) AS errs
         FROM traffic
-        WHERE project_id = $1 AND environment = $5 AND (deploy_id = $2 OR (bucket >= $3 AND bucket <= $4))
+        WHERE project_id = $1 AND environment = $5 AND bucket <= $4 AND (deploy_id = $2 OR bucket >= $3)
         """,
         project_id,
         deploy_id,
@@ -92,7 +95,7 @@ async def evaluate_deploy(
         """
         SELECT COUNT(*)
         FROM events
-        WHERE project_id = $1 AND environment = $5 AND (deploy_id = $2 OR (occurred_at >= $3 AND occurred_at <= $4))
+        WHERE project_id = $1 AND environment = $5 AND occurred_at <= $4 AND (deploy_id = $2 OR occurred_at >= $3)
         """,
         project_id,
         deploy_id,
@@ -107,7 +110,7 @@ async def evaluate_deploy(
         SELECT COUNT(*)
         FROM events
         WHERE project_id = $1 AND environment = $5 AND type = 'error'
-          AND (deploy_id = $2 OR (occurred_at >= $3 AND occurred_at <= $4))
+          AND occurred_at <= $4 AND (deploy_id = $2 OR occurred_at >= $3)
         """,
         project_id,
         deploy_id,
@@ -139,7 +142,7 @@ async def evaluate_deploy(
         JOIN events e ON e.issue_id = i.id
         WHERE i.project_id = $1 AND i.first_seen >= $2 AND i.first_seen <= $4
           AND e.environment = $5 AND e.type = 'error'
-          AND (e.deploy_id = $3 OR (e.occurred_at >= $2 AND e.occurred_at <= $4))
+          AND e.occurred_at <= $4 AND (e.deploy_id = $3 OR e.occurred_at >= $2)
         GROUP BY i.id
         """,
         project_id,
@@ -156,7 +159,7 @@ async def evaluate_deploy(
         """
         SELECT duration_ms FROM events
         WHERE project_id = $1 AND environment = $5 AND type = 'slow_request'
-          AND (deploy_id = $2 OR (occurred_at >= $3 AND occurred_at <= $4))
+          AND occurred_at <= $4 AND (deploy_id = $2 OR occurred_at >= $3)
           AND duration_ms IS NOT NULL
         """,
         project_id,
@@ -300,7 +303,14 @@ async def process_active_deploys_once() -> int:
                 # Generate AI explanation for watch / rollback if not already present
                 likely_cause = existing_cause
                 if verdict in ("watch", "rollback") and not likely_cause and await _first_ai_attempt(deploy_id):
-                    likely_cause = await generate_likely_cause(conn, project_id, deploy_id)
+                    # Optional AI text: it must never hold up this verdict's alert or the other
+                    # projects' deploys (the provider's own timeout and retries reach 2+ minutes)
+                    try:
+                        likely_cause = await asyncio.wait_for(
+                            generate_likely_cause(conn, project_id, deploy_id), timeout=LIKELY_CAUSE_TIMEOUT_SEC
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("AI explanation for deploy %d timed out; sending the verdict without it", deploy_id)
 
                 # Upsert into deploy_analysis
                 reasons_json = json.dumps(reasons)

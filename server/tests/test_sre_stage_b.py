@@ -399,8 +399,10 @@ async def test_cli_add_and_list_channels(capsys):
         {"id": 1, "type": "slack", "config": {"bot_token": "xoxb-12345", "channel_id": "C123"}, "enabled": True, "created_at": "now"}
     ]
 
+    # The config is stored encrypted only; no real data key is needed for this display test
     with patch("app.cli.init_db_pool", AsyncMock()), \
          patch("app.cli.close_db_pool", AsyncMock()), \
+         patch("app.cli.encrypt_or_keep", AsyncMock(return_value=(None, b"ciphertext"))), \
          patch("app.cli.get_connection") as mock_get_conn:
         mock_ctx = MagicMock()
         mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)

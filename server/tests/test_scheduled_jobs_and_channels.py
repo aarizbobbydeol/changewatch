@@ -44,14 +44,17 @@ async def test_escalation_notifies_team_once_per_level():
 async def test_auto_resolve_posts_resolution_with_fix_note():
     conn = MagicMock()
     conn.fetchval = AsyncMock(return_value="ZeroDivisionError in billing")
-    resolved = [{"incident_id": 4, "project_id": 1, "fix_note": "likely fixed by deploy abc12345 by dev", "is_revert": False}]
+    at = datetime(2026, 10, 25, 9, 0, tzinfo=timezone.utc)
+    resolved = [{"incident_id": 4, "project_id": 1, "fix_note": "likely fixed by deploy abc12345 by dev", "is_revert": False,
+                 "resolved_at": at}]
     with patch("app.trust.calm.run_calm_auto_resolve", new=AsyncMock(return_value=resolved)), \
          patch("app.jobs.queue_notification", new=AsyncMock(return_value=True)) as queue:
         assert await jobs.run_auto_resolve(conn) == 1
     payload = queue.await_args.kwargs["payload"]
     assert payload["title"] == "✅ Resolved: ZeroDivisionError in billing"
     assert "likely fixed by deploy abc12345" in payload["body"]
-    assert queue.await_args.kwargs["dedupe_key"] == "incident:4:resolved"
+    # Each resolution is its own message: a reopened incident can be resolved again
+    assert queue.await_args.kwargs["dedupe_key"] == f"incident:4:resolved:{int(at.timestamp())}"
 
 
 def _savepoint_conn():
