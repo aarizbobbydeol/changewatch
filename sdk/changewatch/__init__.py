@@ -14,6 +14,7 @@ minute-level traffic heartbeats with hard performance and safety guarantees:
 from __future__ import annotations
 
 import atexit
+import collections
 import json
 import logging
 import os
@@ -136,6 +137,42 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_NoRedirect)
 
 
+class _LogBuffer(logging.Handler):
+    """Keeps the process's last log lines in memory, to attach to the next error (capture_logs).
+
+    Nothing is sent on its own. Lines are cut when recorded and scrubbed only when an error takes
+    them, so logging stays cheap. With capture_logged_errors, `logger.exception(...)` (an error
+    the app caught and only logged) is also reported as an error.
+    """
+
+    def __init__(self, client: "Client", level: int, capacity: int = 50, capture_logged_errors: bool = False):
+        super().__init__(level)
+        self._client = client
+        self._lines: "collections.deque" = collections.deque(maxlen=capacity)
+        self._capture_logged_errors = capture_logged_errors
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            if record.name.startswith("changewatch"):
+                return  # our own warnings: never a loop
+            self._lines.append((record.created, record.levelname, record.name, record.getMessage()[:1000]))
+            exc = record.exc_info[1] if record.exc_info else None
+            if self._capture_logged_errors and exc is not None and record.levelno >= logging.ERROR:
+                self._client.capture_exception(exc, extra={"logger": record.name[:100]})
+        except Exception:
+            self._client._internal_errors += 1
+
+    def snapshot(self) -> List[Dict[str, Any]]:
+        """The buffered lines, oldest first, scrubbed and cut to the server's limits."""
+        with self.lock:
+            lines = list(self._lines)
+        return [
+            {"ts": ts, "level": level[:10], "logger": (_scrub(name[:100]) or "")[:100],
+             "message": (_scrub(message[:500]) or "")[:500]}
+            for ts, level, name, message in lines
+        ]
+
+
 class Client:
     """ChangeWatch SDK Client managing event batching, circuit breaking, and delivery."""
 
@@ -147,6 +184,9 @@ class Client:
         endpoint: Optional[str] = None,
         slow_ms: float = 1500.0,
         allow_insecure: bool = False,
+        capture_logs: bool = False,
+        log_level: int = logging.WARNING,
+        capture_logged_errors: bool = False,
     ):
         self.disabled = os.getenv("CHANGEWATCH_DISABLED", "0").lower() in ("1", "true", "yes")
         self.api_key = api_key
@@ -179,6 +219,12 @@ class Client:
         self._heartbeat_requests = 0
         self._heartbeat_errors = 0
         self._last_heartbeat_time = time.time()
+
+        # The app's recent log lines, attached to errors (opt-in: capture_logs)
+        self._log_handler: Optional[_LogBuffer] = None
+        if capture_logs and not self.disabled:
+            self._log_handler = _LogBuffer(self, level=log_level, capture_logged_errors=capture_logged_errors)
+            logging.getLogger().addHandler(self._log_handler)
 
         # Background worker thread (only started if not disabled)
         self._worker_thread: Optional[threading.Thread] = None
@@ -284,6 +330,12 @@ class Client:
         if self.disabled:
             return
         try:
+            if getattr(exc, "_changewatch_captured", False):
+                return  # already reported (logged with capture_logged_errors, then raised further)
+            try:
+                exc._changewatch_captured = True  # type: ignore[attr-defined]
+            except Exception:
+                pass
             exc_type = type(exc).__name__[:200]
             # Cut to the server's limits (with room for redaction markers) before scrubbing, so
             # scrubbing time stays bounded however large the exception text is
@@ -307,6 +359,10 @@ class Client:
                 "occurred_at": time.time(),
                 "extra": clean_extra,
             }
+            if self._log_handler is not None:
+                logs = self._log_handler.snapshot()
+                if logs:
+                    event["logs"] = logs
             self._queue.put_nowait(event)
         except queue.Full:
             self._dropped_events += 1
@@ -511,6 +567,9 @@ class Client:
 
     def stop(self):
         """Stop worker thread and drain remaining queue."""
+        if self._log_handler is not None:
+            logging.getLogger().removeHandler(self._log_handler)
+            self._log_handler = None
         self._running = False
         if self._worker_thread and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=1.0)
@@ -529,8 +588,15 @@ def init(
     endpoint: Optional[str] = None,
     slow_ms: float = 1500.0,
     allow_insecure: bool = False,
+    capture_logs: bool = False,
+    log_level: int = logging.WARNING,
+    capture_logged_errors: bool = False,
 ) -> Client:
-    """Initialize ChangeWatch SDK, install exception hooks, and return Client."""
+    """Initialize ChangeWatch SDK, install exception hooks, and return Client.
+
+    capture_logs: attach the app's last 50 log lines (at log_level or above) to each error.
+    capture_logged_errors: also report exceptions the app only logs (logger.exception(...)).
+    """
     global _client, _orig_sys_excepthook, _orig_threading_excepthook
 
     client = Client(
@@ -540,6 +606,9 @@ def init(
         endpoint=endpoint,
         slow_ms=slow_ms,
         allow_insecure=allow_insecure,
+        capture_logs=capture_logs,
+        log_level=log_level,
+        capture_logged_errors=capture_logged_errors,
     )
     _client = client
 

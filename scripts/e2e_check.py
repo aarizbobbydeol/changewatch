@@ -167,9 +167,12 @@ def main() -> int:
 
     def errors(n: int, tag: str) -> list:
         t = time.time()
+        # As the SDK sends them with capture_logs: the app's last log lines before the error
+        logs = [{"ts": t - 2, "level": "WARNING", "logger": "shop.billing", "message": "order has no discount"}]
         return [{"event_id": f"{run}-{tag}-{i}", "type": "error", "exc_type": "ZeroDivisionError",
                  "message": "division by zero", "stack_trace": trace, "request_path": "/checkout",
-                 "release": sha, "environment": "prod", "occurred_at": t - 1 + i * 0.01} for i in range(n)]
+                 "release": sha, "environment": "prod", "occurred_at": t - 1 + i * 0.01, "logs": logs}
+                for i in range(n)]
 
     first_batch = errors(15, "e1")
     for batch in (first_batch, errors(15, "e2")):
@@ -199,6 +202,13 @@ def main() -> int:
     mine = [i for i in (incidents if isinstance(incidents, list) else incidents.get("items", []) if isinstance(incidents, dict) else [])
             if (i.get("where_file") == "app/billing.py")]
     check(status == 200 and bool(mine), "read API lists the incident")
+    if mine:
+        status, detail = http("GET", f"{api}/api/incidents/{mine[0]['id']}", headers=read)
+        logs = detail.get("logs_before_error", []) if isinstance(detail, dict) else []
+        check(any(line.get("message") == "order has no discount" for line in logs),
+              "incident shows the app's log lines before the error")
+        timeline = detail.get("timeline", []) if isinstance(detail, dict) else []
+        check(any(t.get("event") == "alert_sent" for t in timeline), "incident timeline shows the alert delivery")
     status, v = http("GET", f"{api}/v1/verdict?sha={sha}&environment=prod", headers=read)
     check(status == 200 and isinstance(v, dict) and v.get("verdict") in ("rollback", "watch"),
           f"verdict API answers for the commit ({v.get('verdict') if isinstance(v, dict) else status})")

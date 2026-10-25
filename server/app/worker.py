@@ -129,6 +129,12 @@ def scrub_event(ev: Dict[str, Any]) -> None:
             ev[field] = scrub_text(ev[field])
     if ev.get("extra"):
         ev["extra"] = _scrub_value(ev["extra"])
+    if isinstance(ev.get("logs"), list):
+        ev["logs"] = [
+            {"ts": line.get("ts"), "level": str(line.get("level", ""))[:10], "logger": scrub_text(str(line.get("logger", ""))[:100]),
+             "message": scrub_text(str(line.get("message", ""))[:500])}
+            for line in ev["logs"][:50] if isinstance(line, dict)
+        ] if ev.get("type", "error") == "error" else None
 
 
 async def claim_new_events(conn: Any, project_id: int, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -555,16 +561,20 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
                     extra_plain, extra_enc = await encrypt_or_keep(
                         project_id, "events", "extra", json.dumps(raw_extra) if raw_extra else None
                     )
-                    return raw_trace, trace_enc, extra_plain or "", extra_enc
+                    # App log lines are stored encrypted only (no plaintext column)
+                    _, logs_enc = await encrypt_or_keep(
+                        project_id, "events", "logs", json.dumps(ev["logs"]) if ev.get("logs") else None
+                    )
+                    return raw_trace, trace_enc, extra_plain or "", extra_enc, logs_enc
 
                 if full_events_to_store:
                     enc_results = await asyncio.gather(*[_enc_ev(ev) for ev in full_events_to_store])
 
                     cols: Dict[str, List[Any]] = {k: [] for k in (
                         "event_id", "issue_id", "deploy_id", "occurred_at", "stack_trace", "stack_trace_enc",
-                        "request_path", "duration_ms", "extra", "extra_enc", "environment", "type",
+                        "request_path", "duration_ms", "extra", "extra_enc", "environment", "type", "logs_enc",
                     )}
-                    for ev, (raw_trace, trace_enc, extra_json, extra_enc) in zip(full_events_to_store, enc_results):
+                    for ev, (raw_trace, trace_enc, extra_json, extra_enc, logs_enc) in zip(full_events_to_store, enc_results):
                         cols["event_id"].append(str(ev.get("event_id") or uuid.uuid4().hex))
                         cols["issue_id"].append(ev["issue_id"])
                         cols["deploy_id"].append(ev["deploy_id"])
@@ -577,6 +587,7 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
                         cols["extra_enc"].append(extra_enc)
                         cols["environment"].append(ev["environment"])
                         cols["type"].append(ev.get("type", "error"))
+                        cols["logs_enc"].append(logs_enc)
 
                     # Single multi-row insert for stored error events in batch
                     await conn.execute(
@@ -584,19 +595,20 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
                         INSERT INTO events (
                           event_id, issue_id, project_id, deploy_id, occurred_at,
                           stack_trace, stack_trace_enc, request_path, duration_ms, extra, extra_enc,
-                          environment, type
+                          environment, type, logs_enc
                         )
                         SELECT
                           u.event_id, u.issue_id, $1, u.deploy_id, u.occurred_at,
                           u.stack_trace, u.stack_trace_enc, u.request_path, u.duration_ms,
                           COALESCE(NULLIF(u.extra, '')::jsonb, '{}'::jsonb), u.extra_enc,
-                          u.environment, u.type
+                          u.environment, u.type, u.logs_enc
                         FROM unnest(
                           $2::text[], $3::int[], $4::int[], $5::timestamptz[], $6::text[], $7::bytea[],
-                          $8::text[], $9::double precision[], $10::text[], $11::bytea[], $12::text[], $13::text[]
+                          $8::text[], $9::double precision[], $10::text[], $11::bytea[], $12::text[], $13::text[],
+                          $14::bytea[]
                         ) AS u(
                           event_id, issue_id, deploy_id, occurred_at, stack_trace, stack_trace_enc,
-                          request_path, duration_ms, extra, extra_enc, environment, type
+                          request_path, duration_ms, extra, extra_enc, environment, type, logs_enc
                         )
                         ON CONFLICT (project_id, event_id, occurred_at) WHERE event_id IS NOT NULL DO NOTHING
                         """,

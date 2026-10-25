@@ -1111,11 +1111,14 @@ async def get_incident(
         # The full story: deploy, errors, alerts delivered, AI answer, verdicts, who acted and when
         full_timeline = None
         similar_incidents: List[Dict[str, Any]] = []
+        logs_before_error: List[Dict[str, Any]] = []
         try:
             async with conn.transaction():
+                from app.investigator.tools import get_logs_before_error
                 from app.trust.memory import find_similar_incidents
                 from app.trust.timeline import build_incident_timeline
 
+                logs_before_error = await get_logs_before_error(conn, project_id, row["issue_id"], row["deploy_id"])
                 full_timeline = await build_incident_timeline(conn, project_id, id)
                 similar_incidents = await find_similar_incidents(
                     conn, project_id, exclude_incident_id=id, issue_id=row["issue_id"], where_file=row["where_file"],
@@ -1192,6 +1195,7 @@ async def get_incident(
         ai_investigation=ai_investigation,
         timeline=timeline,
         similar_incidents=similar_incidents,
+        logs_before_error=logs_before_error,
     )
 
 
@@ -1362,7 +1366,7 @@ async def export_project_data(
         event_rows = await conn.fetch(
             """
             SELECT id, event_id, issue_id, deploy_id, environment, type, request_path, duration_ms, occurred_at,
-                   stack_trace, stack_trace_enc, extra, extra_enc
+                   stack_trace, stack_trace_enc, extra, extra_enc, logs_enc
             FROM events
             WHERE project_id = $1
             ORDER BY occurred_at DESC
@@ -1377,6 +1381,8 @@ async def export_project_data(
                 extra_val = extra_str if isinstance(extra_str, dict) else json.loads(extra_str or "{}")
             except (TypeError, ValueError):
                 extra_val = {}
+            logs_raw = await decrypt_or_plain(project_id, "events", "logs", er.get("logs_enc"), None)
+            logs_val = logs_raw if isinstance(logs_raw, list) else json.loads(logs_raw) if logs_raw else None
             events_out.append({
                 "id": er["id"],
                 "event_id": er["event_id"],
@@ -1391,6 +1397,7 @@ async def export_project_data(
                     project_id, "events", "stack_trace", er["stack_trace_enc"], er["stack_trace"]
                 ),
                 "extra": extra_val,
+                "logs": logs_val,
             })
 
         # Traffic

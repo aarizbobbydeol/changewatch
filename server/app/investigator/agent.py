@@ -33,6 +33,7 @@ from app.investigator.tools import (
     get_failing_file_diff,
     get_file_at_commit,
     get_issue_events,
+    get_logs_before_error,
     get_previous_deploys,
     get_request_context,
     list_new_issues,
@@ -90,6 +91,7 @@ async def pregather_context(
     file_diff = await get_failing_file_diff(conn, project_id, deploy_id, where_file, where_line)
     request_context = await get_request_context(conn, project_id, inc_row["issue_id"], deploy_id)
     error_timeline = await get_error_timeline(conn, project_id, inc_row["issue_id"], deploy_id)
+    app_logs = await get_logs_before_error(conn, project_id, inc_row["issue_id"], deploy_id)
     from app.trust.memory import find_similar_incidents
 
     similar = await find_similar_incidents(
@@ -121,6 +123,7 @@ async def pregather_context(
         "request_context": request_context,
         "error_timeline": error_timeline,
         "similar_incidents": similar,
+        "app_logs": app_logs,
     }
 
 
@@ -170,6 +173,10 @@ def build_investigation_prompt(context: Dict[str, Any]) -> str:
         _section("When it started (this error per minute, relative to the deploy)",
                  f"Before the deploy: {timeline.get('before_deploy', 0)}; after: {timeline.get('after_deploy', 0)}\n{per_minute}", 800),
         _section("Stack trace sample", stack_sample, 2000),
+        _section("The app's log lines just before the error (oldest first)",
+                 "\n".join(f"{line.get('level', '')} {line.get('logger', '')}: {line.get('message', '')}"
+                           for line in (context.get("app_logs") or [])[-30:])
+                 or "No log lines were sent (SDK option capture_logs is off).", 2500),
         _section(f"What this deploy changed in {file_diff.get('path') or 'the failing file'} (diff)",
                  (file_diff.get("hunks") + ("\n[cut to fit]" if file_diff.get("truncated") else ""))
                  if file_diff.get("hunks") else "This file is not in the deploy's diff.", 4100),
@@ -195,7 +202,7 @@ Use only the data above. Return a JSON object conforming exactly to:
   "what_broke": "...",
   "where": {"file": "...", "line": 0, "function": "..."},
   "cause": "...",
-  "evidence": [{"kind": "diff|file|dependency|config|events|error_rate|previous_deploy|request|timeline|past_incident", "detail": "...", "ref": "..."}],
+  "evidence": [{"kind": "diff|file|dependency|config|events|error_rate|previous_deploy|request|timeline|past_incident|logs", "detail": "...", "ref": "..."}],
   "suggested_fix": {"description": "...", "code_hint": "...", "rollback_recommended": false, "rollback_to_sha": null},
   "confidence": "high|medium|low",
   "not_sure_reason": null

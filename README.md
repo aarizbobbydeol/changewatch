@@ -261,6 +261,8 @@ app.add_middleware(ASGIMiddleware, client=cw)   # errors, latency, heartbeats
 
 Uncaught exceptions on any thread are captured automatically. You can also call `changewatch.capture_exception(exc)` manually.
 
+Optional: `changewatch.init(..., capture_logs=True)` attaches the app's last 50 log lines (WARNING and above by default, `log_level=` to change) to each error, scrubbed and stored encrypted, so the incident page and the AI see what the app was saying when it failed. `capture_logged_errors=True` also reports exceptions the app catches and only logs (`logger.exception(...)`).
+
 | SDK guarantee | How |
 |---|---|
 | Never raises into your app | Every public call is wrapped and errors are counted |

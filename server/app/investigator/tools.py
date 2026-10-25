@@ -522,6 +522,36 @@ async def get_error_timeline(
     }
 
 
+async def get_logs_before_error(
+    conn: asyncpg.Connection,
+    project_id: int,
+    issue_id: int,
+    deploy_id: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """The app's log lines before the most recent occurrence of this error that carried them
+    (SDK option capture_logs), oldest first. Scrubbed on the way in, decrypted here."""
+    row = await conn.fetchrow(
+        """
+        SELECT logs_enc FROM events
+        WHERE project_id = $1 AND issue_id = $2 AND ($3::int IS NULL OR deploy_id = $3) AND logs_enc IS NOT NULL
+        ORDER BY occurred_at DESC
+        LIMIT 1
+        """,
+        project_id,
+        issue_id,
+        deploy_id,
+    )
+    if not row:
+        return []
+    logs = await decrypt_or_plain(project_id, "events", "logs", row.get("logs_enc"), None)
+    if isinstance(logs, str):
+        try:
+            logs = json.loads(logs)
+        except ValueError:
+            return []
+    return logs if isinstance(logs, list) else []
+
+
 async def find_similar_issues(
     conn: asyncpg.Connection,
     project_id: int,

@@ -33,6 +33,14 @@ class DeployResponse(BaseModel):
     deploy_id: int
 
 
+class LogLine(BaseModel):
+    """One app log line written before an error (SDK option capture_logs)."""
+    ts: float = Field(allow_inf_nan=False)
+    level: str = Field("INFO", max_length=10)
+    logger: str = Field("", max_length=100)
+    message: str = Field("", max_length=500)
+
+
 class EventItem(BaseModel):
     event_id: str = Field(default_factory=lambda: uuid.uuid4().hex, max_length=64)
     type: Literal["error", "slow_request", "heartbeat"]
@@ -46,6 +54,8 @@ class EventItem(BaseModel):
     environment: str = Field(default="prod", max_length=50)
     occurred_at: float = Field(allow_inf_nan=False)  # Unix epoch timestamp in seconds
     extra: Dict[str, Any] = Field(default_factory=dict)
+    # The app's last log lines before this error, oldest first (errors only)
+    logs: Optional[List[LogLine]] = Field(None, max_length=50)
 
     # Heartbeat specific fields (Addendum C1)
     # Stored as Postgres integer
@@ -224,6 +234,8 @@ class IncidentDetailResponse(BaseModel):
     timeline: List[Dict[str, Any]] = Field(default_factory=list)
     # Past incidents like this one and how they ended (app/trust/memory.py)
     similar_incidents: List[Dict[str, Any]] = Field(default_factory=list)
+    # The app's log lines before the latest occurrence (SDK option capture_logs)
+    logs_before_error: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class ProjectSettingsResponse(BaseModel):

@@ -59,6 +59,7 @@ interface IncidentDetail {
   code_excerpt_start: number | null; // line number of the excerpt's first line
   timeline: TimelineEvent[];
   similar_incidents?: SimilarIncident[];
+  logs_before_error?: { ts: number; level: string; logger: string; message: string }[];
   ai_investigation?: {
     enabled?: boolean;
     status?: string; // running | done | partial | failed | paused
@@ -478,6 +479,21 @@ export default function IncidentDetailPage() {
               </div>
               {renderCodeExcerpt()}
             </div>
+
+            {/* The app's own log lines before the error (SDK option capture_logs) */}
+            {incident.logs_before_error && incident.logs_before_error.length > 0 && (
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-3">
+                <h3 className="text-sm font-semibold text-slate-200">Logs before the error</h3>
+                <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 font-mono text-[11px] space-y-0.5 max-h-80 overflow-y-auto">
+                  {incident.logs_before_error.map((line, idx) => (
+                    <div key={idx} className={line.level === "ERROR" || line.level === "CRITICAL" ? "text-rose-300" : line.level === "WARNING" ? "text-amber-300" : "text-slate-400"}>
+                      <span className="text-slate-600">{new Date(line.ts * 1000).toISOString().slice(11, 19)}</span>{" "}
+                      {line.level} {line.logger}: {line.message}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Two-Column: Timeline & AI Investigation */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">

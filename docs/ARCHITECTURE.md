@@ -65,7 +65,9 @@ queue, so they are never dropped.
 
 Customers start hitting the bug. The SDK catches each `ZeroDivisionError`, removes secrets
 and emails from the message and stack trace, gives the event a unique `event_id`, and sends
-events in batches of up to 20 every 2 seconds to `POST /v1/events`.
+events in batches of up to 20 every 2 seconds to `POST /v1/events`. With `capture_logs=True`,
+each error also carries the app's last 50 log lines (scrubbed the same way); they are stored
+encrypted and shown under "Logs before the error".
 
 The API checks the key and the shape of every field, applies the rate limit, and pushes the
 batch onto the Redis list `events` in one step. It answers immediately with how many events it
