@@ -172,6 +172,10 @@ or meter them.
   adds one line to the alert ("Seen before: incident #12 on 2026-09-30 (the same function),
   resolved automatically after 25 min"), the incident page lists them under "Seen before", and the
   investigator is told how they were explained and how they ended.
+- **Cost:** if the app reports its own AI calls (`record_ai_usage`), the deploy page shows AI
+  spend per 1,000 requests before and after the deploy, and one message goes out when a release
+  at least doubles it. Each incident shows its failed requests, how long it lasted, what its AI
+  investigation cost and, with a value per failed request set in Settings, an estimated impact.
 - **Timeline and postmortem:** the incident page shows everything in time order: deploy, first
   error, each alert delivered, the AI answer, verdicts, who acknowledged or rated it, how it was
   resolved. "Write draft" turns that into a blameless postmortem in Markdown (summary, impact,

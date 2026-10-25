@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import NavLinks from "../components/NavLinks";
 import { apiUrl, loadEndpoint, loadReadKey, saveEndpoint, saveReadKey } from "../lib/session";
+import { dollarsToMicros, microsToDollars } from "../lib/money";
 
 interface Channel {
   id: number;
@@ -24,6 +25,7 @@ interface ProjectSettings {
   name: string;
   critical_routes: string[];
   notify_quiet: boolean;
+  failed_request_value_micros: number | null;
   channels: Channel[];
   team_members: Member[];
 }
@@ -44,6 +46,25 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<ProjectSettings | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [valueInput, setValueInput] = useState("");
+  const [valueStatus, setValueStatus] = useState<string | null>(null);
+
+  // Value of one failed request, used to estimate what an incident cost
+  const saveFailedRequestValue = async () => {
+    try {
+      const micros = dollarsToMicros(valueInput) ?? 0;
+      const res = await fetch(apiUrl(endpoint, "/api/settings"), {
+        method: "PUT",
+        headers: { "X-API-Key": readKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ failed_request_value_micros: micros }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setSettings((prev) => (prev ? { ...prev, failed_request_value_micros: micros || null } : prev));
+      setValueStatus(micros ? "Saved" : "Cleared");
+    } catch (e: any) {
+      setValueStatus(`Could not save: ${e.message}`);
+    }
+  };
 
   useEffect(() => {
     const key = loadReadKey();
@@ -137,6 +158,21 @@ export default function SettingsPage() {
                 <dd>{settings.name}</dd>
                 <dt className="text-slate-400">Quiet hours</dt>
                 <dd>{settings.notify_quiet ? "On: low-severity items go to the weekly digest" : "Off"}</dd>
+                <dt className="text-slate-400">Value of a failed request</dt>
+                <dd className="flex flex-wrap items-center gap-2">
+                  <span>{settings.failed_request_value_micros ? `$${microsToDollars(settings.failed_request_value_micros)}` : "Not set"}</span>
+                  <input
+                    value={valueInput}
+                    onChange={(e) => setValueInput(e.target.value)}
+                    placeholder="e.g. 0.50"
+                    className="w-24 rounded bg-slate-950 border border-slate-700 px-2 py-1 text-xs"
+                  />
+                  <button onClick={saveFailedRequestValue} className="rounded bg-slate-800 border border-slate-700 px-2 py-1 text-xs hover:bg-slate-700">
+                    Save
+                  </button>
+                  {valueStatus && <span className="text-xs text-slate-400">{valueStatus}</span>}
+                  <span className="basis-full text-xs text-slate-500">Used to estimate what an incident cost (failed requests × this value). Empty and save to clear.</span>
+                </dd>
               </dl>
             </section>
 

@@ -455,8 +455,8 @@ async def ingest_events(
         # 2. Sample repeated errors (never drop heartbeats or the first occurrence of a new fingerprint)
         for event in batch.events:
             etype = event.type
-            if etype == "heartbeat":
-                # Never drop heartbeats
+            if etype in ("heartbeat", "ai_usage"):
+                # Never drop heartbeats or AI usage summaries (small, one per minute; totals must be exact)
                 events_to_queue.append(event)
             elif etype == "slow_request":
                 # Drop slow_request first
@@ -681,6 +681,21 @@ async def list_deploys(
             )
         )
     return items
+
+
+@app.get("/api/deploys/{id}/ai-cost", tags=["Read API"])
+async def get_deploy_ai_cost(
+    id: int = Path(..., description="Deploy ID"),
+    project_id: int = Depends(require_read_project_id),
+):
+    """What the app's own AI calls cost before and after this deploy (SDK record_ai_usage)."""
+    from app.costs import ai_cost_for_deploy
+
+    async with read_project_transaction(project_id) as conn:
+        cost = await ai_cost_for_deploy(conn, project_id, id)
+    if cost is None:
+        raise HTTPException(status_code=404, detail="Deploy not found")
+    return cost
 
 
 @app.get("/api/issues", response_model=List[IssueItem], tags=["Read API"])
@@ -1112,6 +1127,7 @@ async def get_incident(
         full_timeline = None
         similar_incidents: List[Dict[str, Any]] = []
         logs_before_error: List[Dict[str, Any]] = []
+        cost: Optional[Dict[str, Any]] = None
         try:
             async with conn.transaction():
                 from app.investigator.tools import get_logs_before_error
@@ -1119,6 +1135,9 @@ async def get_incident(
                 from app.trust.timeline import build_incident_timeline
 
                 logs_before_error = await get_logs_before_error(conn, project_id, row["issue_id"], row["deploy_id"])
+                from app.costs import incident_cost
+
+                cost = await incident_cost(conn, project_id, id)
                 full_timeline = await build_incident_timeline(conn, project_id, id)
                 similar_incidents = await find_similar_incidents(
                     conn, project_id, exclude_incident_id=id, issue_id=row["issue_id"], where_file=row["where_file"],
@@ -1196,6 +1215,7 @@ async def get_incident(
         timeline=timeline,
         similar_incidents=similar_incidents,
         logs_before_error=logs_before_error,
+        cost=cost,
     )
 
 
@@ -1223,7 +1243,7 @@ async def get_project_settings(project_id: int = Depends(require_read_project_id
     """Retrieve project configuration (critical routes, quiet hours, notification channels, team members)."""
     async with read_project_transaction(project_id) as conn:
         proj = await conn.fetchrow(
-            "SELECT id, name, critical_routes, notify_quiet FROM projects WHERE id = $1",
+            "SELECT id, name, critical_routes, notify_quiet, failed_request_value_micros FROM projects WHERE id = $1",
             project_id,
         )
         if not proj:
@@ -1258,6 +1278,7 @@ async def get_project_settings(project_id: int = Depends(require_read_project_id
         name=proj["name"],
         critical_routes=critical_routes,
         notify_quiet=bool(proj["notify_quiet"]),
+        failed_request_value_micros=proj.get("failed_request_value_micros"),
         channels=channels,
         team_members=members,
     )
@@ -1266,6 +1287,8 @@ async def get_project_settings(project_id: int = Depends(require_read_project_id
 class SettingsUpdate(BaseModel):
     critical_routes: Optional[List[str]] = None
     notify_quiet: Optional[bool] = None
+    # Value of one failed request in integer micro-USD (e.g. 500000 = $0.50); 0 clears it
+    failed_request_value_micros: Optional[int] = Field(None, ge=0, le=10**12)
 
 
 @app.put("/api/settings", tags=["Settings"])
@@ -1285,6 +1308,12 @@ async def update_project_settings(
             await conn.execute(
                 "UPDATE projects SET notify_quiet = $1 WHERE id = $2",
                 payload.notify_quiet,
+                project_id,
+            )
+        if payload.failed_request_value_micros is not None:
+            await conn.execute(
+                "UPDATE projects SET failed_request_value_micros = $1 WHERE id = $2",
+                payload.failed_request_value_micros or None,
                 project_id,
             )
     return {"ok": True}

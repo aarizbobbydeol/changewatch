@@ -28,7 +28,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("changewatch")
 
@@ -220,6 +221,10 @@ class Client:
         self._heartbeat_errors = 0
         self._last_heartbeat_time = time.time()
 
+        # The app's own AI calls, summed per (model, feature, cost known) and sent once a minute
+        self._ai_usage: Dict[Tuple[str, str, bool], List[int]] = {}
+        self._last_ai_flush = time.time()
+
         # The app's recent log lines, attached to errors (opt-in: capture_logs)
         self._log_handler: Optional[_LogBuffer] = None
         if capture_logs and not self.disabled:
@@ -277,6 +282,7 @@ class Client:
             self._queue = queue.Queue(maxsize=1000)
             self._heartbeat_requests = 0
             self._heartbeat_errors = 0
+            self._ai_usage = {}
             self._consecutive_failures = 0
             self._circuit_open_until = 0.0
             self._start_worker_thread()
@@ -298,6 +304,55 @@ class Client:
                     self._emit_heartbeat_locked(now)
         except Exception:
             self._internal_errors += 1
+
+    def record_ai_usage(
+        self,
+        model: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cost_usd: Any = None,
+        feature: Optional[str] = None,
+        calls: int = 1,
+    ) -> None:
+        """Count one (or `calls`) AI call of the app for cost tracking. Never raises, never blocks.
+
+        The server prices it from its model price list unless `cost_usd` (the exact cost, as a
+        number or string) is given. `feature` names what the call is for ("search", "summary").
+        """
+        if self.disabled:
+            return
+        try:
+            cost_micros = None
+            if cost_usd is not None:
+                cost_micros = int((Decimal(str(cost_usd)) * 1_000_000).to_integral_value(rounding=ROUND_HALF_UP))
+            key = (str(model or "unknown")[:100], str(feature or "")[:100], cost_micros is not None)
+            with self._lock:
+                totals = self._ai_usage.setdefault(key, [0, 0, 0, 0])
+                totals[0] += max(0, int(calls))
+                totals[1] += max(0, int(input_tokens or 0))
+                totals[2] += max(0, int(output_tokens or 0))
+                totals[3] += max(0, cost_micros or 0)
+        except Exception:
+            self._internal_errors += 1
+
+    def _flush_ai_usage_locked(self, now: float) -> None:
+        """Queue the summed AI usage (called under the lock); what does not fit stays for later."""
+        for key in list(self._ai_usage):
+            model, feature, has_cost = key
+            calls, tokens_in, tokens_out, cost = self._ai_usage[key]
+            event: Dict[str, Any] = {
+                "event_id": uuid.uuid4().hex, "type": "ai_usage", "model": model, "feature": feature or None,
+                "calls": calls, "input_tokens": tokens_in, "output_tokens": tokens_out,
+                "release": self.release or None, "environment": self.environment, "occurred_at": now,
+            }
+            if has_cost:
+                event["cost_micros"] = cost
+            try:
+                self._queue.put_nowait(event)
+            except queue.Full:
+                return
+            del self._ai_usage[key]
+        self._last_ai_flush = now
 
     def _emit_heartbeat_locked(self, now: float):
         """Enqueue heartbeat event if requests > 0 (called under lock)."""
@@ -399,6 +454,10 @@ class Client:
         while self._running:
             try:
                 # While paused (circuit open / server asked to retry later) leave events queued
+                if self._ai_usage and time.time() - self._last_ai_flush >= 60.0:
+                    with self._lock:
+                        self._flush_ai_usage_locked(time.time())
+
                 pause = self._circuit_open_until - time.monotonic()
                 if pause > 0:
                     time.sleep(min(0.5, pause))
@@ -548,6 +607,7 @@ class Client:
         try:
             with self._lock:
                 self._emit_heartbeat_locked(time.time())
+                self._flush_ai_usage_locked(time.time())
             self._running = False
             worker = self._worker_thread
             if worker is not None and worker.is_alive() and worker is not threading.current_thread():
@@ -665,6 +725,37 @@ def capture_exception(exc: BaseException, extra: Optional[Dict[str, Any]] = None
     """Global helper to capture an exception if ChangeWatch is initialized."""
     if _client is not None and not _client.disabled:
         _client.capture_exception(exc, extra=extra)
+
+
+def record_ai_usage(model: str, input_tokens: int = 0, output_tokens: int = 0, cost_usd: Any = None,
+                    feature: Optional[str] = None, calls: int = 1) -> None:
+    """Count one AI call of the app for cost tracking (see Client.record_ai_usage)."""
+    if _client is not None and not _client.disabled:
+        _client.record_ai_usage(model, input_tokens, output_tokens, cost_usd=cost_usd, feature=feature, calls=calls)
+
+
+def record_ai_usage_from_response(response: Any, model: Optional[str] = None, feature: Optional[str] = None) -> None:
+    """Count an AI call from the response object of the Anthropic or OpenAI SDK (or a dict like
+    it): reads `model` and the token counts from `usage`. Never raises.
+
+    Anthropic prompt-cache writes count as input tokens; cache reads (a small fraction of the
+    price) are not counted. Pass the exact cost to record_ai_usage(cost_usd=...) when you have it.
+    """
+    try:
+        def field(obj: Any, *names: str) -> Any:
+            for name in names:
+                value = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+                if value is not None:
+                    return value
+            return None
+
+        usage = field(response, "usage") or {}
+        tokens_in = int(field(usage, "input_tokens", "prompt_tokens") or 0) + int(field(usage, "cache_creation_input_tokens") or 0)
+        tokens_out = int(field(usage, "output_tokens", "completion_tokens") or 0)
+        record_ai_usage(model or field(response, "model") or "unknown", tokens_in, tokens_out, feature=feature)
+    except Exception:
+        if _client is not None:
+            _client._internal_errors += 1
 
 
 class ASGIMiddleware:

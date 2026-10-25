@@ -131,6 +131,14 @@ async def build_postmortem(conn: asyncpg.Connection, project_id: int, incident_i
         )
     if routes:
         impact.append("Most affected routes: " + ", ".join(f"`{r['request_path']}` ({r['n']})" for r in routes))
+    from app.costs import incident_cost
+
+    cost = await incident_cost(conn, project_id, incident_id)
+    if cost and cost["estimated_impact"]:
+        impact.append(f"Estimated impact: {cost['estimated_impact']} ({cost['failed_requests']} failed requests at "
+                      f"{cost['value_per_failed_request']} each, the project's setting)")
+    if cost and cost["investigation_cost_micros"]:
+        impact.append(f"AI investigation cost: {cost['investigation_cost']}")
 
     detection: List[str] = []
     if alert_seconds is not None:

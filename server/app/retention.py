@@ -119,9 +119,11 @@ async def _cleanup_with_conn(
         if deleted < batch_size:
             break
 
-    # Delete expired traffic rows older than cutoff
+    # Delete expired traffic rows older than cutoff, and the app's AI usage per minute (cost
+    # tracking) with it: one statement, the count is the traffic rows
     traffic_status = await conn.execute(
         """
+        WITH expired_ai_usage AS (DELETE FROM ai_usage WHERE bucket < $1)
         DELETE FROM traffic
         WHERE bucket < $1
         """,

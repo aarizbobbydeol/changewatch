@@ -271,6 +271,54 @@ async def _check_incident(
     )
 
 
+async def _store_ai_usage(conn: asyncpg.Connection, project_id: int, events: List[Dict[str, Any]], resolve_deploy) -> None:
+    from app.costs import price_ai_call
+
+    totals: Dict[Tuple[str, datetime, str, str], Dict[str, Any]] = {}
+    for ev in events:
+        model = str(ev.get("model") or "unknown")[:100]
+        feature = str(ev.get("feature") or "")[:100]
+        bucket = ev["occurred_at_dt"].replace(second=0, microsecond=0)
+        calls = int(ev.get("calls") or 0)
+        tokens_in, tokens_out = int(ev.get("input_tokens") or 0), int(ev.get("output_tokens") or 0)
+        agg = totals.setdefault((ev["environment"], bucket, model, feature), {
+            "calls": 0, "in": 0, "out": 0, "cost": 0, "unpriced": 0, "deploy_id": None})
+        agg["calls"] += calls
+        agg["in"] += tokens_in
+        agg["out"] += tokens_out
+        if ev.get("cost_micros") is not None:
+            agg["cost"] += int(ev["cost_micros"])
+        else:
+            price = price_ai_call(model, tokens_in, tokens_out)
+            if price is None:
+                agg["unpriced"] += calls
+            else:
+                agg["cost"] += price
+        agg["deploy_id"] = agg["deploy_id"] or await resolve_deploy(ev)
+    keys = list(totals)
+    await conn.execute(
+        """
+        INSERT INTO ai_usage (project_id, environment, bucket, model, feature, deploy_id,
+                              calls, input_tokens, output_tokens, cost_micros, unpriced_calls)
+        SELECT $1, u.env, u.bucket, u.model, u.feature, u.deploy_id, u.calls, u.tin, u.tout, u.cost, u.unpriced
+        FROM unnest($2::text[], $3::timestamptz[], $4::text[], $5::text[], $6::int[], $7::bigint[], $8::bigint[],
+                    $9::bigint[], $10::bigint[], $11::bigint[])
+          AS u(env, bucket, model, feature, deploy_id, calls, tin, tout, cost, unpriced)
+        ON CONFLICT (project_id, environment, bucket, model, feature) DO UPDATE SET
+          calls = ai_usage.calls + EXCLUDED.calls,
+          input_tokens = ai_usage.input_tokens + EXCLUDED.input_tokens,
+          output_tokens = ai_usage.output_tokens + EXCLUDED.output_tokens,
+          cost_micros = ai_usage.cost_micros + EXCLUDED.cost_micros,
+          unpriced_calls = ai_usage.unpriced_calls + EXCLUDED.unpriced_calls,
+          deploy_id = COALESCE(ai_usage.deploy_id, EXCLUDED.deploy_id)
+        """,
+        project_id,
+        [k[0] for k in keys], [k[1] for k in keys], [k[2] for k in keys], [k[3] for k in keys],
+        [totals[k]["deploy_id"] for k in keys], [totals[k]["calls"] for k in keys], [totals[k]["in"] for k in keys],
+        [totals[k]["out"] for k in keys], [totals[k]["cost"] for k in keys], [totals[k]["unpriced"] for k in keys],
+    )
+
+
 async def _adopt_legacy_issues(conn: asyncpg.Connection, project_id: int, pairs: List[Tuple[str, str]]) -> None:
     """Move issues stored under the old fingerprint to the new one, keeping their history
     (first_seen, counts, incidents). Without this, every known error would become a new issue after
@@ -357,6 +405,7 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
             if not events:
                 continue
             heartbeats: List[Dict[str, Any]] = []
+            ai_usage: List[Dict[str, Any]] = []
             error_events: List[Dict[str, Any]] = []
 
             for ev in events:
@@ -367,6 +416,8 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
                 ev["occurred_at_dt"] = datetime.fromtimestamp(occurred_at, tz=timezone.utc)
                 if etype == "heartbeat":
                     heartbeats.append(ev)
+                elif etype == "ai_usage":
+                    ai_usage.append(ev)
                 else:
                     error_events.append(ev)
 
@@ -428,6 +479,11 @@ async def process_event_batch(batch: List[Dict[str, Any]]) -> None:
                     len(heartbeats),
                 )
                 await _record_batch_sources(conn, project_id, heartbeats, is_heartbeat=True)
+
+            # 1b. The app's own AI calls (cost tracking): summed per (environment, minute, model,
+            # feature), priced from LLM_PRICES_JSON unless the app sent the exact cost
+            if ai_usage:
+                await _store_ai_usage(conn, project_id, ai_usage, _resolve_deploy)
 
             # 2. Process Error & Slow Request Events
             if error_events:

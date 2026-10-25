@@ -263,6 +263,8 @@ Uncaught exceptions on any thread are captured automatically. You can also call 
 
 Optional: `changewatch.init(..., capture_logs=True)` attaches the app's last 50 log lines (WARNING and above by default, `log_level=` to change) to each error, scrubbed and stored encrypted, so the incident page and the AI see what the app was saying when it failed. `capture_logged_errors=True` also reports exceptions the app catches and only logs (`logger.exception(...)`).
 
+Cost tracking for apps that call AI models: after each call, `changewatch.record_ai_usage_from_response(response, feature="search")` (Anthropic or OpenAI response objects) or `changewatch.record_ai_usage(model, input_tokens, output_tokens, cost_usd=...)`. ChangeWatch shows AI spend per 1,000 requests before and after every deploy and warns when a release doubles it (a changed prompt, model or retry loop).
+
 | SDK guarantee | How |
 |---|---|
 | Never raises into your app | Every public call is wrapped and errors are counted |

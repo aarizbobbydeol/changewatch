@@ -85,6 +85,24 @@ const formatDateTime = (d?: string | null): string => {
   return isNaN(date.getTime()) ? "N/A" : date.toLocaleString();
 };
 
+interface AiCostWindow {
+  calls: number;
+  cost: string;
+  unpriced_calls: number;
+  per_1k_requests: string | null;
+  per_call: string | null;
+}
+
+interface AiCost {
+  deploy_id: number;
+  basis: "per_1k_requests" | "per_call" | null;
+  change: string | null;
+  jumped: boolean;
+  before: AiCostWindow;
+  after: AiCostWindow;
+  top: { model: string; feature: string | null; calls: number; cost: string }[];
+}
+
 export default function DashboardPage() {
   const [apiKey, setApiKey] = useState<string>("");
   const [endpoint, setEndpoint] = useState<string>("");
@@ -98,6 +116,7 @@ export default function DashboardPage() {
   const [incidents, setIncidents] = useState<any[]>([]);
   const [analyticsOverview, setAnalyticsOverview] = useState<any>(null);
   const [selectedDeploy, setSelectedDeploy] = useState<Deploy | null>(null);
+  const [aiCost, setAiCost] = useState<AiCost | null>(null);
   const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null);
 
   const [loading, setLoading] = useState<boolean>(false);
@@ -198,6 +217,24 @@ export default function DashboardPage() {
       setLoading(false);
     }
   };
+
+  // The app's own AI spend before and after the selected deploy (SDK record_ai_usage)
+  const selectedDeployId = selectedDeploy?.id;
+  useEffect(() => {
+    if (!apiKey || !selectedDeployId) return;
+    let cancelled = false;
+    fetch(getApiUrl(`/api/deploys/${selectedDeployId}/ai-cost`), { headers: { "X-API-Key": apiKey.trim() } })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled) setAiCost(data);
+      })
+      .catch(() => {
+        if (!cancelled) setAiCost(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiKey, endpoint, selectedDeployId]);
 
   // Load issue detail when clicked
   const selectIssueWithDetails = async (issue: Issue) => {
@@ -600,6 +637,27 @@ export default function DashboardPage() {
                         <span>✨ AI Root-Cause Explanation</span>
                       </div>
                       <p className="text-xs text-slate-200 leading-relaxed">{selectedDeploy.likely_cause}</p>
+                    </div>
+                  )}
+
+                  {/* The app's AI spend around this deploy */}
+                  {aiCost && aiCost.deploy_id === selectedDeploy.id && (aiCost.before.calls > 0 || aiCost.after.calls > 0) && (
+                    <div className={`p-3.5 rounded-xl border space-y-1 ${aiCost.jumped ? "bg-amber-950/20 border-amber-500/40" : "bg-slate-950 border-slate-800"}`}>
+                      <div className="text-xs font-semibold text-slate-300">
+                        AI spend {aiCost.basis === "per_call" ? "per call" : "per 1,000 requests"}
+                        {aiCost.change && <span className={aiCost.jumped ? "text-amber-300" : "text-slate-400"}> · {aiCost.change}</span>}
+                      </div>
+                      <p className="text-xs text-slate-300">
+                        Before: {(aiCost.basis === "per_call" ? aiCost.before.per_call : aiCost.before.per_1k_requests) ?? "no data"} ·
+                        After: {(aiCost.basis === "per_call" ? aiCost.after.per_call : aiCost.after.per_1k_requests) ?? "no data"} ·
+                        {" "}{aiCost.after.cost} on {aiCost.after.calls} calls since the deploy
+                        {aiCost.after.unpriced_calls > 0 && ` (${aiCost.after.unpriced_calls} calls to models without a price)`}
+                      </p>
+                      {aiCost.top.length > 0 && (
+                        <p className="text-[11px] text-slate-500">
+                          {aiCost.top.map((t) => `${t.model}${t.feature ? ` (${t.feature})` : ""}: ${t.cost}`).join(" · ")}
+                        </p>
+                      )}
                     </div>
                   )}
 

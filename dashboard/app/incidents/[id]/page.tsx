@@ -60,6 +60,14 @@ interface IncidentDetail {
   timeline: TimelineEvent[];
   similar_incidents?: SimilarIncident[];
   logs_before_error?: { ts: number; level: string; logger: string; message: string }[];
+  cost?: {
+    failed_requests: number;
+    minutes: number | null;
+    investigation_cost: string | null;
+    investigation_cost_micros: number;
+    value_per_failed_request: string | null;
+    estimated_impact: string | null;
+  } | null;
   ai_investigation?: {
     enabled?: boolean;
     status?: string; // running | done | partial | failed | paused
@@ -465,6 +473,18 @@ export default function IncidentDetailPage() {
                   <span className="text-slate-200 font-bold">{incident.event_count} events</span>
                 </div>
               </div>
+
+              {incident.cost && (
+                <div className="text-xs text-slate-400 pt-3 border-t border-slate-800">
+                  <span className="text-slate-500">Cost: </span>
+                  {incident.cost.failed_requests} failed requests
+                  {incident.cost.minutes !== null && ` over ${incident.cost.minutes} min`}
+                  {incident.cost.estimated_impact
+                    ? ` · estimated impact ${incident.cost.estimated_impact} (${incident.cost.value_per_failed_request} per failed request)`
+                    : " · set a value per failed request in Settings to estimate the impact"}
+                  {incident.cost.investigation_cost_micros > 0 && ` · AI investigation ${incident.cost.investigation_cost}`}
+                </div>
+              )}
             </div>
 
             {/* Code Excerpt & Diff Location */}

@@ -382,6 +382,15 @@ async def process_active_deploys_once() -> int:
                             likely_cause=likely_cause,
                         )
 
+                # Cost tracking: once, between the first and the final check, tell the team if the
+                # app's own AI spend per request jumped with this release (not part of the verdict)
+                if settings.VERDICT_FIRST_MIN <= age_min <= max(settings.VERDICT_FINAL_MIN, settings.VERDICT_FIRST_MIN):
+                    try:
+                        async with conn.transaction():
+                            await _maybe_alert_ai_cost(conn, project_id, deploy_id, dep["commit_sha"])
+                    except Exception as exc:
+                        logger.warning("AI cost check failed for deploy %d: %s", deploy_id, exc)
+
                 # Checkpoint 2: Final check (verdict_change)
                 final_alert_exists = await conn.fetchval(
                     "SELECT 1 FROM alerts WHERE deploy_id = $1 AND kind IN ('verdict_final', 'verdict_change')",
@@ -466,6 +475,22 @@ async def process_active_deploys_once() -> int:
     await deliver_outbox_batch()
     return processed_count
 
+
+
+async def _maybe_alert_ai_cost(conn: asyncpg.Connection, project_id: int, deploy_id: int, commit_sha: str) -> None:
+    """Queue one 'AI spend up Nx' message for a release whose AI cost per request doubled."""
+    key = f"ai_cost:{deploy_id}"
+    if await conn.fetchval("SELECT 1 FROM outbox WHERE project_id = $1 AND dedupe_key LIKE $2 LIMIT 1", project_id, key + "%"):
+        return
+    if not await conn.fetchval("SELECT 1 FROM ai_usage WHERE project_id = $1 AND deploy_id = $2 LIMIT 1", project_id, deploy_id):
+        return  # the app does not report AI usage (or not for this release)
+    from app.costs import ai_cost_for_deploy, ai_cost_jump_message
+    from app.outbox import queue_notification
+
+    cost = await ai_cost_for_deploy(conn, project_id, deploy_id)
+    if cost and cost["jumped"]:
+        await queue_notification(conn, project_id=project_id, dedupe_key=key,
+                                 payload={**ai_cost_jump_message(cost, commit_sha or ""), "deploy_id": deploy_id})
 
 
 async def _first_ai_attempt(deploy_id: int) -> bool:

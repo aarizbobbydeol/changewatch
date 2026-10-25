@@ -43,7 +43,7 @@ class LogLine(BaseModel):
 
 class EventItem(BaseModel):
     event_id: str = Field(default_factory=lambda: uuid.uuid4().hex, max_length=64)
-    type: Literal["error", "slow_request", "heartbeat"]
+    type: Literal["error", "slow_request", "heartbeat", "ai_usage"]
     message: Optional[str] = Field(None, max_length=2000)
     exc_type: Optional[str] = Field(None, max_length=200)
     stack_trace: Optional[str] = Field(None, max_length=20000)
@@ -56,6 +56,14 @@ class EventItem(BaseModel):
     extra: Dict[str, Any] = Field(default_factory=dict)
     # The app's last log lines before this error, oldest first (errors only)
     logs: Optional[List[LogLine]] = Field(None, max_length=50)
+
+    # ai_usage (SDK record_ai_usage, summed per minute): the app's own AI calls for cost tracking
+    model: Optional[str] = Field(None, max_length=100)
+    feature: Optional[str] = Field(None, max_length=100)
+    calls: Optional[int] = Field(None, ge=0, le=2_147_483_647)
+    input_tokens: Optional[int] = Field(None, ge=0, le=10**12)
+    output_tokens: Optional[int] = Field(None, ge=0, le=10**12)
+    cost_micros: Optional[int] = Field(None, ge=0, le=10**12)  # when the app knows the exact cost
 
     # Heartbeat specific fields (Addendum C1)
     # Stored as Postgres integer
@@ -236,6 +244,8 @@ class IncidentDetailResponse(BaseModel):
     similar_incidents: List[Dict[str, Any]] = Field(default_factory=list)
     # The app's log lines before the latest occurrence (SDK option capture_logs)
     logs_before_error: List[Dict[str, Any]] = Field(default_factory=list)
+    # Failed requests, minutes, AI investigation cost, estimated impact (app/costs.py)
+    cost: Optional[Dict[str, Any]] = None
 
 
 class ProjectSettingsResponse(BaseModel):
@@ -243,6 +253,8 @@ class ProjectSettingsResponse(BaseModel):
     name: str
     critical_routes: List[str] = Field(default_factory=list)
     notify_quiet: bool = False
+    # Business value of one failed request in micro-USD (incident cost estimate); None when not set
+    failed_request_value_micros: Optional[int] = None
     channels: List[Dict[str, Any]] = Field(default_factory=list)
     team_members: List[Dict[str, Any]] = Field(default_factory=list)
 

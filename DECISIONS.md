@@ -1134,3 +1134,24 @@ The bug hunt's second round (areas a critic said the first round missed) confirm
 - **Privacy and limits:** lines are cut to 500 characters, scrubbed in the SDK (when an error takes them, so logging stays cheap) and again by the worker, and stored encrypted only (migration 027, `events.logs_enc`, no plaintext column). They live in the event row, so retention drops them with the event. The API accepts at most 50 lines per error; they are ignored on slow-request events.
 - **Where they show:** "Logs before the error" on the incident page (`logs_before_error` in the incident API, so the MCP server returns them too), a section of the AI investigation (evidence kind `logs`), and the project export.
 - **Verification:** SDK tests: lines attached and scrubbed, levels respected, our own logs never kept, nothing installed when off, only the last 50 kept, the handler removed on stop, a logged exception reported exactly once. Live server tests: the API's limits, scrubbing (email, Stripe key), encryption only (no plaintext in the stored bytes), read back in order, ignored on slow requests. The CI end-to-end job now sends log lines with the errors and checks the incident shows them.
+
+### 95. Backlog 6: cost tracking (AI spend per release, cost of each incident)
+The user chose both meanings.
+- **AI spend per release:**
+  - The SDK counts the app's own AI calls with `record_ai_usage(model, input_tokens, output_tokens, cost_usd=None, feature=None)`. `record_ai_usage_from_response(response)` reads the model and token counts from Anthropic or OpenAI response objects or dicts.
+  - Calls are summed in memory per model and feature and sent once a minute (and at exit), so there is no request per call.
+  - The worker stores them per environment, minute, model and feature, tied to the deploy (migration 028, `ai_usage`, with row-level security and the system-scope policy). It prices them from `LLM_PRICES_JSON` unless the app sent the exact cost. A model with no price is counted as unpriced calls, never guessed.
+  - `GET /api/deploys/{id}/ai-cost` compares spend per 1,000 requests (or per call without traffic) in the 30 minutes before and after the deploy. The deploy panel on the home page shows it.
+  - Between the first and final check, one "AI spend up 4.5x after deploy …" message goes to the project's channels when it at least doubles, on 20 or more calls and $0.10 or more. This is not part of the verdict: cost is not a safety signal.
+  - Under backpressure these summaries are never shed, like heartbeats. Retention removes them with the traffic.
+- **Cost of each incident:**
+  - The failed requests of that error from start to resolution, the minutes it lasted, and what its AI investigations cost.
+  - An estimated impact when the project sets a value per failed request (`failed_request_value_micros`, editable in Settings, 0 clears it). Shown on the incident page, in the incident API and in the postmortem's Impact section.
+- **Money:**
+  - Integer micro-USD everywhere; prices are parsed as Decimal, `cost_usd` from the SDK is converted through Decimal, and the dashboard converts dollars to micros with string arithmetic (`lib/money.ts`, now shared with the Usage page).
+  - Display keeps cents, with four decimals only for amounts under 10 cents that are not whole cents.
+- **Verification:**
+  - Live tests: usage summed across events and minutes, priced exactly, a re-send not counted twice, the app's exact cost used, unpriced models counted.
+  - The before/after windows and the "4.5x" jump with exactly one message.
+  - Incident cost, the setting (and a negative value rejected), the API and the postmortem lines. Retention removes old usage.
+  - SDK tests: summing, exact `cost_usd`, Anthropic and OpenAI shapes, and bad input never raising.

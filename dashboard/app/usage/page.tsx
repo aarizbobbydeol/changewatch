@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { dollarsToMicros } from "../lib/money";
 import Link from "next/link";
 import { apiUrl, downloadWithKey, loadEndpoint, loadReadKey, saveEndpoint, saveReadKey } from "../lib/session";
 import NavLinks from "../components/NavLinks";
@@ -25,15 +26,6 @@ interface UsageResponse {
     our_cost_micros: number;
     billed_micros: number;
   };
-}
-
-/** "12.34" dollars to integer micro-dollars without floating point; "" is no limit. */
-function dollarsToMicros(input: string): number | null {
-  const text = input.trim();
-  if (!text) return null;
-  const match = /^(\d{1,9})(?:\.(\d{1,6}))?$/.exec(text);
-  if (!match) throw new Error(`"${text}" is not an amount in dollars (for example 25 or 12.50)`);
-  return Number(match[1]) * 1_000_000 + Number((match[2] || "").padEnd(6, "0"));
 }
 
 interface ForecastResponse {
