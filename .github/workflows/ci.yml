@@ -128,6 +128,9 @@ jobs:
       - name: Install dependencies from the lock file
         run: npm ci --no-audit --no-fund
 
+      - name: Unit tests (no framework, node's own runner)
+        run: node --test app/lib/*.test.mjs
+
       - name: Lint
         env:
           NEXT_TELEMETRY_DISABLED: "1"
