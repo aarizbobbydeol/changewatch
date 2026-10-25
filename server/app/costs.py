@@ -75,8 +75,14 @@ async def _window(conn: asyncpg.Connection, project_id: int, env: str, deploy_id
 
 
 def _per(total: int, count: int, unit: int = 1) -> Optional[int]:
-    """Integer micro-USD per `unit` items (rounded down), or None without items."""
+    """Integer micro-USD per `unit` items (rounded down, for display), or None without items."""
     return total * unit // count if count > 0 else None
+
+
+def _change(before_cost: int, before_count: int, after_cost: int, after_count: int) -> Decimal:
+    """The exact ratio of cost per item after to before, from the raw totals (the rounded-down
+    per-item figures can turn 1.9 and 2.0 micros into 1 and 2, a '2x' that is really 5%)."""
+    return Decimal(after_cost * before_count) / Decimal(before_cost * after_count)
 
 
 async def ai_cost_for_deploy(conn: asyncpg.Connection, project_id: int, deploy_id: int) -> Optional[Dict[str, Any]]:
@@ -100,18 +106,24 @@ async def ai_cost_for_deploy(conn: asyncpg.Connection, project_id: int, deploy_i
         end = min(end, dep["next_deployed_at"])
     before = await _window(conn, project_id, env, deploy_id, deployed_at - timedelta(minutes=30), deployed_at, after=False)
     after = await _window(conn, project_id, env, deploy_id, deployed_at, end + timedelta(minutes=1), after=True)
-    for w in (before, after):
+    # Calls to a model without a price add nothing to the cost, so "per call" leaves them out
+    priced_before, priced_after = (w["calls"] - w["unpriced_calls"] for w in (before, after))
+    for w, priced in ((before, priced_before), (after, priced_after)):
         w["per_1k_requests_micros"] = _per(w["cost_micros"], w["requests"], 1000)
-        w["per_call_micros"] = _per(w["cost_micros"], w["calls"])
+        w["per_call_micros"] = _per(w["cost_micros"], priced)
         w["cost"] = usd(w["cost_micros"])
         w["per_1k_requests"] = usd(w["per_1k_requests_micros"])
         w["per_call"] = usd(w["per_call_micros"])
 
+    # Not compared when half or more of either window's calls have no price: most of that cost is
+    # unknown, and moving calls to a priced model would look like a jump
     basis, ratio = None, None
-    if before["per_1k_requests_micros"] and after["per_1k_requests_micros"] is not None:
-        basis, ratio = "per_1k_requests", Decimal(after["per_1k_requests_micros"]) / Decimal(before["per_1k_requests_micros"])
-    elif before["per_call_micros"] and after["per_call_micros"] is not None:
-        basis, ratio = "per_call", Decimal(after["per_call_micros"]) / Decimal(before["per_call_micros"])
+    known = all(w["unpriced_calls"] * 2 < w["calls"] for w in (before, after) if w["calls"] > 0)
+    if known and before["cost_micros"] > 0:
+        if before["requests"] > 0 and after["requests"] > 0:
+            basis, ratio = "per_1k_requests", _change(before["cost_micros"], before["requests"], after["cost_micros"], after["requests"])
+        elif priced_before > 0 and priced_after > 0:
+            basis, ratio = "per_call", _change(before["cost_micros"], priced_before, after["cost_micros"], priced_after)
 
     top = await conn.fetch(
         """
@@ -124,7 +136,7 @@ async def ai_cost_for_deploy(conn: asyncpg.Connection, project_id: int, deploy_i
     )
     jumped = bool(
         ratio is not None and ratio >= AI_COST_JUMP_RATIO
-        and after["calls"] >= AI_COST_MIN_CALLS and after["cost_micros"] >= AI_COST_MIN_MICROS
+        and priced_after >= AI_COST_MIN_CALLS and after["cost_micros"] >= AI_COST_MIN_MICROS
     )
     return {
         "deploy_id": deploy_id,
@@ -160,8 +172,8 @@ async def incident_cost(conn: asyncpg.Connection, project_id: int, incident_id: 
     inc = await conn.fetchrow(
         """
         SELECT i.issue_id, i.deploy_id, i.created_at, i.first_event_at, i.last_event_at, i.resolved_at,
-               p.failed_request_value_micros
-        FROM incidents i JOIN projects p ON p.id = i.project_id
+               p.failed_request_value_micros, d.environment
+        FROM incidents i JOIN projects p ON p.id = i.project_id JOIN deploys d ON d.id = i.deploy_id
         WHERE i.id = $1 AND i.project_id = $2
         """,
         incident_id, project_id,
@@ -170,12 +182,15 @@ async def incident_cost(conn: asyncpg.Connection, project_id: int, incident_id: 
         return None
     start = inc["first_event_at"] or inc["created_at"]
     end = inc["resolved_at"] or inc["last_event_at"] or datetime.now(timezone.utc)
+    # Issues are shared by environments: count only this error's failures in the environment of
+    # the incident's deploy (each error is tied to a deploy of its own environment), not staging's
     failed = await conn.fetchval(
         """
-        SELECT coalesce(sum(count), 0) FROM event_rollups
-        WHERE project_id = $1 AND issue_id = $2 AND bucket >= $3 AND bucket <= $4
+        SELECT coalesce(sum(r.count), 0) FROM event_rollups r
+        JOIN deploys d ON d.id = r.deploy_id AND d.project_id = r.project_id
+        WHERE r.project_id = $1 AND r.issue_id = $2 AND r.bucket >= $3 AND r.bucket <= $4 AND d.environment = $5
         """,
-        project_id, inc["issue_id"], start.replace(second=0, microsecond=0), end,
+        project_id, inc["issue_id"], start.replace(second=0, microsecond=0), end, inc["environment"],
     )
     investigations: List[Any] = await conn.fetch(
         "SELECT model, input_tokens, output_tokens FROM investigations WHERE project_id = $1 AND incident_id = $2",

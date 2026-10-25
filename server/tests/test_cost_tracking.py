@@ -115,6 +115,61 @@ async def test_live_release_that_doubles_ai_spend_per_request_is_called_out_once
 
 
 @pytest.mark.asyncio
+async def test_live_ai_cost_change_is_exact_and_leaves_out_calls_without_a_price(project):
+    deployed = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=15)
+    cases = {  # environment: (requests, calls, unpriced calls, cost) before, then after
+        "tiny": ((0, 1000, 0, 1_900), (0, 60_000, 0, 120_000)),  # 1.9 then 2.0 micros a call
+        "mixed": ((0, 1000, 400, 60_000), (0, 1000, 0, 130_000)),  # 100 then 130 per priced call
+        "unknown": ((1000, 100, 60, 40_000), (1000, 100, 0, 100_000)),  # most calls before had no price
+    }
+    costs = {}
+    async with project_transaction(project) as conn:
+        for env, windows in cases.items():
+            dep = await conn.fetchval("INSERT INTO deploys (project_id, commit_sha, deployed_at, environment) "
+                                      "VALUES ($1, $2, $3, $4) RETURNING id", project, f"c-{env}", deployed, env)
+            for (requests, calls, unpriced, cost), minute, dep_id in zip(windows, (-10, 5), (None, dep)):
+                if requests:
+                    await conn.execute("INSERT INTO traffic (project_id, environment, bucket, requests, errors, deploy_id) "
+                                       "VALUES ($1, $2, $3, $4, 0, $5)", project, env, deployed + timedelta(minutes=minute),
+                                       requests, dep_id)
+                await conn.execute("INSERT INTO ai_usage (project_id, environment, bucket, model, feature, deploy_id, calls, "
+                                   "unpriced_calls, cost_micros) VALUES ($1, $2, $3, 'm', '', $4, $5, $6, $7)",
+                                   project, env, deployed + timedelta(minutes=minute), dep_id, calls, unpriced, cost)
+            costs[env] = await ai_cost_for_deploy(conn, project, dep)
+    # Not 1 then 2 micros (rounded down) and "2.0x": the real change is 5%
+    assert (costs["tiny"]["basis"], costs["tiny"]["change"], costs["tiny"]["jumped"]) == ("per_call", "1.1x", False)
+    # Calls to a model without a price cost nothing here, so they do not dilute the cost per call
+    assert (costs["mixed"]["before"]["per_call_micros"], costs["mixed"]["after"]["per_call_micros"]) == (100, 130)
+    assert (costs["mixed"]["change"], costs["mixed"]["jumped"]) == ("1.3x", False)
+    # 2.5x per 1,000 requests only because most calls before had no known cost: not compared
+    assert (costs["unknown"]["basis"], costs["unknown"]["change"], costs["unknown"]["jumped"]) == (None, None, False)
+
+
+@pytest.mark.asyncio
+async def test_live_ai_cost_alert_is_not_held_back_by_another_deploys_alert(project):
+    from app.detector import _maybe_alert_ai_cost
+    from app.outbox import queue_notification
+
+    deployed = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=15)
+    async with project_transaction(project) as conn:
+        dep = await conn.fetchval("INSERT INTO deploys (project_id, commit_sha, deployed_at) VALUES ($1, 'aicost5678', $2) RETURNING id",
+                                  project, deployed)
+        for m in range(-20, 15):  # AI cost per request 4.5x after the deploy
+            after = m >= 0
+            await conn.execute("INSERT INTO traffic (project_id, environment, bucket, requests, errors, deploy_id) "
+                               "VALUES ($1, 'prod', $2, 100, 0, $3)", project, deployed + timedelta(minutes=m), dep if after else None)
+            await conn.execute("INSERT INTO ai_usage (project_id, environment, bucket, model, feature, deploy_id, calls, cost_micros) "
+                               "VALUES ($1, 'prod', $2, 'claude-sonnet-5-5', 'summary', $3, 4, $4)",
+                               project, deployed + timedelta(minutes=m), dep if after else None, 9_000 if after else 2_000)
+        # A deploy whose id starts with this one's digits (deploy 7 and deploy 73) already alerted
+        await queue_notification(conn, project, f"ai_cost:{dep}3:channel:1", {"text": "other deploy"}, fan_out=False)
+        await _maybe_alert_ai_cost(conn, project, dep, "aicost5678")
+        await _maybe_alert_ai_cost(conn, project, dep, "aicost5678")
+        mine = await conn.fetchval("SELECT count(*) FROM outbox WHERE project_id = $1 AND dedupe_key = $2", project, f"ai_cost:{dep}")
+    assert mine == 1
+
+
+@pytest.mark.asyncio
 async def test_live_incident_cost_and_the_value_setting(project):
     start = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=30)
     async with project_transaction(project) as conn:
@@ -153,6 +208,30 @@ async def test_live_incident_cost_and_the_value_setting(project):
     assert detail["cost"]["estimated_impact"] == "$37.50"  # 75 x $0.50
     assert "Estimated impact: $37.50 (75 failed requests at $0.50 each" in draft
     assert "AI investigation cost: $0.06" in draft
+
+
+@pytest.mark.asyncio
+async def test_live_incident_cost_counts_only_the_incidents_environment(project):
+    start = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=60)
+    async with project_transaction(project) as conn:
+        prod = await conn.fetchval("INSERT INTO deploys (project_id, commit_sha, deployed_at, environment) "
+                                   "VALUES ($1, 'p1', $2, 'prod') RETURNING id", project, start)
+        staging = await conn.fetchval("INSERT INTO deploys (project_id, commit_sha, deployed_at, environment) "
+                                      "VALUES ($1, 's1', $2, 'staging') RETURNING id", project, start - timedelta(minutes=60))
+        issue = await conn.fetchval(
+            "INSERT INTO issues (project_id, fingerprint, title, first_seen, last_seen, status, event_count) "
+            "VALUES ($1, $2, 'E', now(), now(), 'open', 1) RETURNING id", project, uuid.uuid4().hex)
+        inc = await conn.fetchval(
+            "INSERT INTO incidents (project_id, deploy_id, issue_id, status, first_event_at, last_event_at, resolved_at) "
+            "VALUES ($1, $2, $3, 'resolved', $4, $5, $6) RETURNING id",
+            project, prod, issue, start + timedelta(minutes=1), start + timedelta(minutes=20), start + timedelta(minutes=30))
+        # The same error during the incident: in prod, in staging under a load test, and from an
+        # environment with no deploys (no deploy_id)
+        for dep_id, minute, count in ((prod, 5, 25), (staging, 6, 50_000), (None, 7, 300)):
+            await conn.execute("INSERT INTO event_rollups (project_id, issue_id, deploy_id, bucket, count) VALUES ($1, $2, $3, $4, $5)",
+                               project, issue, dep_id, start + timedelta(minutes=minute), count)
+        cost = await incident_cost(conn, project, inc)
+    assert cost["failed_requests"] == 25
 
 
 def test_sdk_ai_usage_reaches_the_server_format():

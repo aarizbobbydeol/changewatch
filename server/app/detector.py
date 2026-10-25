@@ -480,7 +480,9 @@ async def process_active_deploys_once() -> int:
 async def _maybe_alert_ai_cost(conn: asyncpg.Connection, project_id: int, deploy_id: int, commit_sha: str) -> None:
     """Queue one 'AI spend up Nx' message for a release whose AI cost per request doubled."""
     key = f"ai_cost:{deploy_id}"
-    if await conn.fetchval("SELECT 1 FROM outbox WHERE project_id = $1 AND dedupe_key LIKE $2 LIMIT 1", project_id, key + "%"):
+    # This deploy's own keys only ('ai_cost:7' or 'ai_cost:7:channel:N'), not deploy 73's
+    if await conn.fetchval("SELECT 1 FROM outbox WHERE project_id = $1 AND (dedupe_key = $2 OR dedupe_key LIKE $3) LIMIT 1",
+                           project_id, key, key + ":%"):
         return
     if not await conn.fetchval("SELECT 1 FROM ai_usage WHERE project_id = $1 AND deploy_id = $2 LIMIT 1", project_id, deploy_id):
         return  # the app does not report AI usage (or not for this release)
