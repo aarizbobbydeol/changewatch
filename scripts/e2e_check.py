@@ -207,6 +207,22 @@ def main() -> int:
     check(status == 200 and not any(i.get("where_file") == "app/billing.py" for i in other_list),
           "the other project cannot see this incident")
     check(http("GET", f"{api}/api/incidents", headers=ingest)[0] == 403, "ingest key cannot read")
+
+    # The MCP server (what an AI assistant would use) sees the same incident and its postmortem
+    calls = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25",
+              "capabilities": {}, "clientInfo": {"name": "e2e", "version": "1"}}},
+             {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "list_incidents", "arguments": {"limit": 5}}}]
+    if mine:
+        calls.append({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                      "params": {"name": "get_postmortem", "arguments": {"incident_id": mine[0]["id"]}}})
+    mcp = subprocess.run([sys.executable, "-I", str(REPO / "mcp-server" / "changewatch_mcp.py")],
+                         input="\n".join(json.dumps(c) for c in calls) + "\n", capture_output=True, text=True, timeout=60,
+                         env={**os.environ, "CHANGEWATCH_URL": api, "CHANGEWATCH_READ_KEY": a["read"]})
+    answers = {r.get("id"): r for r in (json.loads(x) for x in mcp.stdout.splitlines() if x.strip())}
+    listed = answers.get(2, {}).get("result", {}).get("content", [{}])[0].get("text", "")
+    check("app/billing.py" in listed, "MCP server lists the incident")
+    draft = answers.get(3, {}).get("result", {}).get("content", [{}])[0].get("text", "")
+    check(draft.startswith("# Postmortem (draft)") and "## Timeline (UTC)" in draft, "MCP server returns the postmortem draft")
     for page in ("/", "/incidents", "/analytics", "/usage", "/settings", "/trust"):
         check(http("GET", f"{args.dashboard}{page}")[0] == 200, f"dashboard page {page} loads")
     status, proxied = http("GET", f"{args.dashboard}/api/incidents", headers=read)

@@ -1111,3 +1111,13 @@ The bug hunt's second round (areas a critic said the first round missed) confirm
 - **The prompt** is now in titled sections, each with a size limit, and says when something was cut (a 5,000-line diff no longer crowds out the request data). Evidence can cite `request` and `timeline`.
 - **Bug found by the live check:** the before/after error rate counted the deploy's own minute as "before" (traffic is counted per minute and a deploy lands mid-minute), so the prompt read "after: 0 requests" while 30 of 120 requests had failed. It now counts traffic tagged with this release as "after", the way the verdict does.
 - **Verification:** live tests build an incident with a two-file diff, events with routes and `extra`, rollups and traffic, and check the prompt has the hunk at line 42 but not a hunk far away, the routes, methods, timing, the other new error and the previous deploy, and that a huge diff is cut with a marker while later sections remain. The investigator was then run through the Anthropic SDK against the local stand-in API on a real incident from the end-to-end check, and the prompt it sent was read.
+
+### 92. Backlog 3: an MCP server
+- **What:** `mcp-server/changewatch_mcp.py` lets an MCP client (Claude Code, Claude Desktop and others) read one project. It offers 8 tools: the release verdict for a commit, incidents (list, full detail with the timeline), the postmortem draft, deploys, error groups (list, detail) and status. Setup in docs/MCP.md.
+- **Choices:**
+  - **Standard library only:** the protocol over stdio is JSON-RPC, one message per line, so no MCP SDK dependency.
+  - **Read-only by design:** only GET requests with the read key, so an assistant cannot resolve, mute or acknowledge.
+  - **Same transport rules as the SDK:** https except to localhost, never follow a redirect with the key.
+  - **Bounded output:** tool output is capped at 20,000 characters, and deploy listings leave out the diffs.
+  - **Errors the assistant can act on:** a rejected key, not found or bad arguments come back as tool errors; unknown tools and methods are protocol errors.
+- **Verification:** tests run the server as a real subprocess against a recording HTTP server. They check the handshake (the client's protocol version is honoured), the tool list, and that the key is sent and only GET is used. They also check that bad arguments and unknown tools never reach the API, and that a rejected key and plain http to another host are refused. Checked live against the local stack with a real read key (verdict, incidents, deploys, postmortem). The CI end-to-end job now also lists the incident and fetches its postmortem through the MCP server.

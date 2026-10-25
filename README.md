@@ -28,6 +28,7 @@
   <a href="docs/VERIFICATION.md">Verification guide</a> ·
   <a href="docs/ARCHITECTURE.md">How it works, end to end</a> ·
   <a href="docs/DATA_PIPELINE.md">Data pipeline</a> ·
+  <a href="docs/MCP.md">MCP server</a> ·
   <a href="docs/DEMO.md">Demo</a>
 </p>
 
