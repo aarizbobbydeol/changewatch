@@ -1,0 +1,13 @@
+# End-to-end test only: adds a webhook receiver that stands in for Slack, so a test can read the
+# alerts the notifier sends. Used by the e2e job in .github/workflows/ci.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d --build
+#   python scripts/e2e_check.py --admin-key "$ADMIN_API_KEY"
+services:
+  receiver:
+    image: python:3.12-slim
+    container_name: changewatch-e2e-receiver
+    command: ["python", "-I", "/e2e_receiver.py"]
+    volumes:
+      - ./scripts/e2e_receiver.py:/e2e_receiver.py:ro
+    ports:
+      - "127.0.0.1:8099:8099"

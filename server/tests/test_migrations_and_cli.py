@@ -1,7 +1,7 @@
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 from app.cli import generate_api_key
-from app.migrations import run_migrations
+from app.migrations import MIGRATION_LOCK_ID, run_migrations
 
 
 def test_cli_generate_api_key():
@@ -36,15 +36,17 @@ async def test_migration_runner_tracking():
     assert "001_init.sql" in applied
     assert "002_verdict_and_traffic.sql" in applied
 
-    # Check that schema_migrations was queried and created
+    # Check that schema_migrations was queried and created, holding the migration lock
     mock_conn.execute.assert_any_call(
         """
-            CREATE TABLE IF NOT EXISTS schema_migrations (
-              version TEXT PRIMARY KEY,
-              applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            );
-            """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          version TEXT PRIMARY KEY,
+          applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        """
     )
+    mock_conn.execute.assert_any_call("SELECT pg_advisory_lock($1)", MIGRATION_LOCK_ID)
+    mock_conn.execute.assert_any_call("SELECT pg_advisory_unlock($1)", MIGRATION_LOCK_ID)
 
 
 @pytest.mark.asyncio
