@@ -274,6 +274,13 @@ async def check_and_trigger_incident(
                 project_id,
             )
             logger.info("Reopened incident %d: the error is back after it was resolved", inc_id)
+            from app.trust.actions import record_incident_event
+
+            await record_incident_event(
+                conn, project_id, inc_id, "reopened", actor="changewatch",
+                detail={"reason": "error_returned", "events_last_minute": recent_count},
+                occurred_at=occurred_at_dt,
+            )
             inc_full = await conn.fetchrow(
                 "SELECT title, where_file, where_line, where_function, in_diff, owners FROM incidents WHERE id = $1",
                 inc_id,

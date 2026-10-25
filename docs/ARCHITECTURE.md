@@ -160,8 +160,13 @@ or meter them.
 - **Silent apps:** if an app stops sending heartbeats for 10 minutes, the deploy gets `no_data`
   rather than a false `safe`, and the team is told once that data stopped (and again when it
   is flowing again).
-- **Feedback:** the alert's buttons and the dashboard let the team confirm, dismiss or resolve.
-  That feedback feeds the accuracy numbers on the Trust page.
+- **Feedback:** the alert's buttons and the dashboard let the team acknowledge, resolve, reopen
+  and rate an alert (real, false alarm, unclear). Ratings feed the accuracy numbers on the Trust page.
+- **Timeline and postmortem:** the incident page shows everything in time order: deploy, first
+  error, each alert delivered, the AI answer, verdicts, who acknowledged or rated it, how it was
+  resolved. "Write draft" turns that into a blameless postmortem in Markdown (summary, impact,
+  detection, timeline, cause, resolution, action items), written from these records without an
+  AI call (`GET /api/incidents/{id}/postmortem`).
 - **Retention:** event partitions older than 30 days are dropped, code after 7 days.
 - **Weekly digest:** a summary of deploys, verdicts and incidents.
 

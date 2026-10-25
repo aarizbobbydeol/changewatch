@@ -1108,18 +1108,31 @@ async def get_incident(
         except (StopAsyncIteration, Exception):
             inv_row = None
 
+        # The full story: deploy, errors, alerts delivered, AI answer, verdicts, who acted and when
+        full_timeline = None
+        try:
+            async with conn.transaction():
+                from app.trust.timeline import build_incident_timeline
+
+                full_timeline = await build_incident_timeline(conn, project_id, id)
+        except Exception as exc:
+            logger.warning("Incident %d: full timeline unavailable (%s); showing the basic one", id, exc)
+
     raw_owners = row["owners"]
     owners = raw_owners if isinstance(raw_owners, list) else json.loads(raw_owners or "[]")
 
     timeline = []
-    if row["deployed_at"]:
+    if full_timeline:
+        timeline = full_timeline
+    elif row["deployed_at"]:
         timeline.append({"event": "deployed", "at": row["deployed_at"].isoformat(), "detail": f"Deploy {row['commit_sha'][:8]}"})
-    if row["created_at"]:
-        timeline.append({"event": "first_error", "at": row["created_at"].isoformat(), "detail": "Incident opened"})
-    if row["confirmed_at"]:
-        timeline.append({"event": "confirmed", "at": row["confirmed_at"].isoformat(), "detail": "Regression confirmed"})
-    if row["resolved_at"]:
-        timeline.append({"event": "resolved", "at": row["resolved_at"].isoformat(), "detail": "Incident resolved"})
+    if not full_timeline:
+        if row["created_at"]:
+            timeline.append({"event": "first_error", "at": row["created_at"].isoformat(), "detail": "Incident opened"})
+        if row["confirmed_at"]:
+            timeline.append({"event": "confirmed", "at": row["confirmed_at"].isoformat(), "detail": "Regression confirmed"})
+        if row["resolved_at"]:
+            timeline.append({"event": "resolved", "at": row["resolved_at"].isoformat(), "detail": "Incident resolved"})
 
     ai_investigation: Dict[str, Any] = {}
     if inv_row:
@@ -2096,6 +2109,22 @@ async def submit_incident_feedback(
             comment=req.comment,
         )
     return {"status": "ok", "feedback_id": fb_id, "label": req.label}
+
+
+@app.get("/api/incidents/{id}/postmortem", tags=["Incidents"])
+async def get_incident_postmortem(
+    id: int = Path(..., description="Incident ID"),
+    project_id: int = Depends(require_read_project_id),
+):
+    """A blameless postmortem draft (Markdown) written from ChangeWatch's own records. No AI call."""
+    from app.trust.postmortem import build_postmortem
+
+    async with read_project_transaction(project_id) as conn:
+        draft = await build_postmortem(conn, project_id, id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    draft["generated_at"] = datetime.now(timezone.utc).isoformat()
+    return draft
 
 
 @app.get("/api/incidents/{id}/timeline", tags=["Incidents"])

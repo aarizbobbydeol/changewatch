@@ -68,7 +68,7 @@ Slack, Discord, Teams, email or signed webhooks, with code owners tagged. Alerts
 <td valign="top">
 
 ### 📊 Dashboard & analytics
-A Next.js dashboard with a 5-minute request/error timeline, deploy inspector, incidents, analytics with CSV export, usage, and an owner fleet view.
+A Next.js dashboard with a 5-minute request/error timeline, deploy inspector, incidents with their full timeline and a one-click **postmortem draft**, analytics with CSV export, usage, and an owner fleet view.
 
 </td>
 <td valign="top">

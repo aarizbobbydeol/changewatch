@@ -80,6 +80,7 @@ async def test_migration_runner_idempotent():
             {"version": "023_environment_and_event_type.sql"},
             {"version": "024_deploy_repository.sql"},
             {"version": "025_component_status_intervals.sql"},
+            {"version": "026_outbox_sent_at.sql"},
         ],
         [],  # unhashed projects
 

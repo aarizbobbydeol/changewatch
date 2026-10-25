@@ -134,6 +134,8 @@ export default function IncidentDetailPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const [keyChecked, setKeyChecked] = useState<boolean>(false);
+  const [postmortem, setPostmortem] = useState<string | null>(null);
+  const [postmortemStatus, setPostmortemStatus] = useState<string | null>(null);
 
   useEffect(() => {
     const savedKey = loadReadKey();
@@ -203,6 +205,43 @@ export default function IncidentDetailPage() {
     } catch (e: any) {
       setActionStatus(`Could not save: ${e.message}`);
     }
+  };
+
+  // A blameless draft written by the API from its own records (no AI call)
+  const loadPostmortem = async () => {
+    if (!apiKey || !incident) return;
+    setPostmortemStatus("Writing the draft...");
+    try {
+      const res = await fetch(getApiUrl(`/api/incidents/${incident.id}/postmortem`), {
+        headers: { "X-API-Key": apiKey.trim() },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setPostmortem(data.markdown);
+      setPostmortemStatus(null);
+    } catch (e: any) {
+      setPostmortemStatus(`Could not write the draft: ${e.message}`);
+    }
+  };
+
+  const copyPostmortem = async () => {
+    if (!postmortem) return;
+    try {
+      await navigator.clipboard.writeText(postmortem);
+      setPostmortemStatus("Copied");
+    } catch {
+      setPostmortemStatus("Copy failed: select the text and copy it");
+    }
+  };
+
+  const downloadPostmortem = () => {
+    if (!postmortem || !incident) return;
+    const url = URL.createObjectURL(new Blob([postmortem], { type: "text/markdown" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `postmortem-incident-${incident.id}.md`;
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
   const renderCodeExcerpt = () => {
@@ -479,6 +518,48 @@ export default function IncidentDetailPage() {
                   </div>
                 )}
               </div>
+            </div>
+
+            {/* Postmortem draft */}
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-200">Postmortem draft</h3>
+                  <p className="text-xs text-slate-500">
+                    Written from ChangeWatch&apos;s records: timeline, impact, cause, action items. Blameless: teams, not people.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={loadPostmortem}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-medium transition"
+                  >
+                    {postmortem ? "Write again" : "Write draft"}
+                  </button>
+                  {postmortem && (
+                    <>
+                      <button
+                        onClick={copyPostmortem}
+                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-medium transition"
+                      >
+                        Copy
+                      </button>
+                      <button
+                        onClick={downloadPostmortem}
+                        className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold transition"
+                      >
+                        Download .md
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+              {postmortemStatus && <p className="text-xs text-indigo-300">{postmortemStatus}</p>}
+              {postmortem && (
+                <pre className="whitespace-pre-wrap text-xs text-slate-300 bg-slate-950 border border-slate-800 rounded-lg p-4 max-h-[32rem] overflow-y-auto">
+                  {postmortem}
+                </pre>
+              )}
             </div>
           </>
         )}

@@ -176,7 +176,7 @@ async def process_outbox_item(
         await conn.execute(
             """
             UPDATE outbox
-            SET status = 'sent', last_error = NULL
+            SET status = 'sent', last_error = NULL, sent_at = now()
             WHERE id = $1
             """,
             item_id,
