@@ -3,8 +3,8 @@ requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-# Installed as changewatch-sdk ("changewatch" on PyPI is another project); imported as changewatch
-name = "changewatch-sdk"
+# Installed as changewatcher ("changewatch" on PyPI is another project); imported as changewatch
+name = "changewatcher"
 version = "1.0.0"
 description = "ChangeWatch Python SDK for error and performance monitoring"
 readme = "README.md"

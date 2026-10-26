@@ -239,7 +239,7 @@ PYTHONPATH=server uvicorn app.main:app --reload --port 8000
 ### 1. Add the SDK (zero dependencies)
 
 ```bash
-pip install changewatch-sdk
+pip install changewatcher
 ```
 
 It is imported as `changewatch` (the PyPI name `changewatch` belongs to another project). Straight from GitHub instead: `pip install "git+https://github.com/aarizbobbydeol/changewatch.git#subdirectory=sdk"`.

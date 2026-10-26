@@ -97,7 +97,7 @@ app.add_middleware(ASGIMiddleware, client=cw)   # ASGI apps (FastAPI/Starlette).
 changewatch.capture_exception(exc)              # manual capture
 ```
 
-Install: `pip install changewatch-sdk` (PyPI; imported as `changewatch`), or `pip install "git+https://github.com/aarizbobbydeol/changewatch.git#subdirectory=sdk"`.
+Install: `pip install changewatcher` (PyPI; imported as `changewatch`), or `pip install "git+https://github.com/aarizbobbydeol/changewatch.git#subdirectory=sdk"`.
 
 ## 7. Commands
 

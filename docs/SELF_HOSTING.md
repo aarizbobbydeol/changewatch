@@ -172,7 +172,7 @@ Map git authors to chat handles so alerts tag the right owner with `add-member` 
 **b. Install the SDK** (pure standard library):
 
 ```bash
-pip install changewatch-sdk
+pip install changewatcher
 ```
 
 ```python
