@@ -230,8 +230,8 @@ jobs:
       - name: What the new user gets
         run: |
           set -e
-          curl -fsS http://localhost:8000/healthz
-          curl -fsS -o /dev/null http://localhost:3000/
+          curl -fsS --retry 15 --retry-delay 2 --retry-all-errors http://localhost:8000/healthz
+          curl -fsS --retry 15 --retry-delay 2 --retry-all-errors -o /dev/null http://localhost:3000/
           grep -E "^Ingest Key: +cw_ingest_" "$RUNNER_TEMP/install.log"
           grep -E "^Manage Key: +cw_manage_" "$RUNNER_TEMP/install.log"
           grep "Dashboard:   http://localhost:3000" "$RUNNER_TEMP/install.log"

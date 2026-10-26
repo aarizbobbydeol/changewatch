@@ -180,20 +180,23 @@ start() {
     docker compose up -d --no-build
   fi
 }
+# After every start: services read .env, so a changed setting restarts them
+wait_healthy() {
+  local _
+  for _ in $(seq 1 120); do
+    if docker compose exec -T api python -c \
+        "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3)" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  fail "ChangeWatch did not become healthy. See: cd $DIR && docker compose logs api"
+}
 say "Starting ChangeWatch (the first start downloads the images: a few minutes)"
 start
+wait_healthy
 
 cli() { docker compose exec -T api python -m app.cli "$@"; }
-healthy=0
-for _ in $(seq 1 120); do
-  if docker compose exec -T api python -c \
-      "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3)" >/dev/null 2>&1; then
-    healthy=1
-    break
-  fi
-  sleep 2
-done
-[ "$healthy" = 1 ] || fail "ChangeWatch did not become healthy. See: cd $DIR && docker compose logs api"
 
 # ---------------------------------------------------------------------------------------------
 # 5. Projects: the first one, and the demo shop
@@ -225,6 +228,7 @@ fi
 if [ "$DEMO" = 1 ]; then
   add_profile demo
   start
+  wait_healthy
 fi
 
 # ---------------------------------------------------------------------------------------------
