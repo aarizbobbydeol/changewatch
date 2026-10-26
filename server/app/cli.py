@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+import re
 import secrets
 import sys
 from typing import Optional
@@ -657,6 +658,44 @@ async def new_manage_key_cmd(project_id: int) -> Optional[str]:
     return manage_key
 
 
+_REPOSITORY = re.compile(r"^(?!\.\.?/)[A-Za-z0-9_.-]{1,100}/(?!\.\.?$)[A-Za-z0-9_.-]{1,100}$")
+
+
+async def repo_access_cmd(action: str, project_id: int, repository: Optional[str] = None) -> bool:
+    """Which GitHub repositories a project may read with the install's GITHUB_READ_TOKEN:
+    action "allow", "remove" or "list". Returns False when refused or nothing changed."""
+    from app.db import project_transaction
+
+    repo = (repository or "").strip().lower()
+    if action != "list" and not _REPOSITORY.match(repo):
+        print("Give the repository as owner/name, e.g. acme/shop.")
+        return False
+    await init_db_pool()
+    try:
+        async with project_transaction(project_id) as conn:
+            if not await conn.fetchval("SELECT 1 FROM projects WHERE id = $1", project_id):
+                print(f"No project with ID {project_id}.")
+                return False
+            if action == "allow":
+                await conn.execute("INSERT INTO project_repositories (project_id, repository) VALUES ($1, $2) "
+                                   "ON CONFLICT DO NOTHING", project_id, repo)
+                print(f"Project {project_id} may now read {repo} with the shared GitHub token.")
+                return True
+            if action == "remove":
+                status = await conn.execute("DELETE FROM project_repositories WHERE project_id = $1 AND repository = $2",
+                                            project_id, repo)
+                removed = status.endswith(" 1")
+                print(f"Project {project_id} may no longer read {repo}." if removed else f"{repo} was not allowed for project {project_id}.")
+                return removed
+            rows = await conn.fetch("SELECT repository FROM project_repositories WHERE project_id = $1 ORDER BY repository",
+                                    project_id)
+            print("\n".join(r["repository"] for r in rows) if rows else
+                  f"Project {project_id} may read no repository with the shared GitHub token.")
+            return True
+    finally:
+        await close_db_pool()
+
+
 async def requeue_dead_cmd(limit: int = 0) -> int:
     """Move dead-lettered events back to the events queue with a fresh retry count."""
     import json
@@ -793,6 +832,15 @@ def main():
     )
     mk_parser.add_argument("project_id", type=int, help="Project ID")
 
+    # Subcommands: allow-repo, remove-repo, list-repos (reads with the install's GITHUB_READ_TOKEN)
+    for name, help_text in (("allow-repo", "Let a project read a GitHub repository with the shared GITHUB_READ_TOKEN"),
+                            ("remove-repo", "Stop a project reading a repository with the shared token")):
+        repo_parser = subparsers.add_parser(name, help=help_text)
+        repo_parser.add_argument("project_id", type=int, help="Project ID")
+        repo_parser.add_argument("repository", help="owner/name, e.g. acme/shop")
+    list_repo_parser = subparsers.add_parser("list-repos", help="Repositories a project may read with the shared token")
+    list_repo_parser.add_argument("project_id", type=int, help="Project ID")
+
     # Subcommands: add-runbook, list-runbooks
     rb_add_parser = subparsers.add_parser("add-runbook", help="Add a runbook (steps for a kind of error)")
     rb_add_parser.add_argument("project_id", type=int, help="Project ID")
@@ -859,6 +907,10 @@ def main():
         )
     elif args.command == "list-members":
         asyncio.run(list_members_cmd(args.project_id))
+    elif args.command in ("allow-repo", "remove-repo", "list-repos"):
+        action = {"allow-repo": "allow", "remove-repo": "remove", "list-repos": "list"}[args.command]
+        if not asyncio.run(repo_access_cmd(action, args.project_id, getattr(args, "repository", None))):
+            sys.exit(1)
     elif args.command == "new-manage-key":
         if not asyncio.run(new_manage_key_cmd(args.project_id)):
             sys.exit(1)

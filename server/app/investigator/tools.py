@@ -94,7 +94,16 @@ async def get_file_at_commit(
                 deploy_id,
                 project_id,
             )
-            if dep_row and dep_row["commit_sha"] and dep_row["repository"]:
+            # The token is the install owner's: a project reads only the repositories the owner
+            # allowed for it (app.cli allow-repo), not whatever repository its deploys name
+            allowed = dep_row and dep_row["repository"] and await conn.fetchval(
+                "SELECT 1 FROM project_repositories WHERE project_id = $1 AND repository = lower($2)",
+                project_id, dep_row["repository"],
+            )
+            if dep_row and dep_row["commit_sha"] and dep_row["repository"] and not allowed:
+                logger.info("Project %d may not read %s with the shared GitHub token (python -m app.cli allow-repo)",
+                            project_id, dep_row["repository"])
+            elif dep_row and dep_row["commit_sha"] and dep_row["repository"]:
                 owner, repo = dep_row["repository"].split("/", 1)
                 client = ReadOnlyGitHubClient(token=settings.GITHUB_READ_TOKEN)
                 raw = await client.get_file_content(owner, repo, path, ref=dep_row["commit_sha"])

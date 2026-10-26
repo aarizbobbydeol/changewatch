@@ -124,6 +124,6 @@ ChangeWatch splits each project's credentials into three permission scopes, plus
    - **Never** commit `.env` or `MASTER_KEY` to git repositories.
    - Keep backups of `MASTER_KEY` separate from database backups. A database backup stolen along with its master key provides zero protection.
 3. **GitHub Token Minimization:**
-   - If using `GITHUB_READ_TOKEN`, issue a **Fine-Grained Personal Access Token** with **Contents: Read-only** permissions exclusively.
+   - If using `GITHUB_READ_TOKEN`, issue a **Fine-Grained Personal Access Token** with **Contents: Read-only** permissions exclusively. It is the install owner's token, so a project reads with it only the repositories the owner allowed for it (`python -m app.cli allow-repo <project_id> owner/name`; `list-repos`, `remove-repo`): a deploy names its repository itself, and without this list one team could name another team's repository. File paths and names that would resolve the GitHub URL elsewhere (`..`) are refused.
 4. **Internal Network Isolation:**
    - In production, PostgreSQL and Redis should never expose external host ports. Use internal Docker networks and require passwords (`REDIS_PASSWORD`).

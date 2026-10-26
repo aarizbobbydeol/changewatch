@@ -371,6 +371,8 @@ See [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md) and run the audit script 
 | `SYSTEM_ALERT_WEBHOOK_URL` | `""` | Operator fallback channel: tells you when ChangeWatch itself is unwell (a service down, alerts undeliverable) |
 | `DECISION_PROVIDER` | `rules` | `rules` (deterministic, on-prem), `jev` (TypeSafe Jev), or `fake` |
 | `CODE_MODE` | `stored` | `stored` or `ephemeral` handling of deploy code |
+| `GITHUB_READ_TOKEN` | `""` | Optional read-only token to fetch a file the deploy did not send (ephemeral mode). Each project reads only repositories you allow for it: `python -m app.cli allow-repo <project_id> owner/name` |
+| `GITHUB_API_URL` | `https://api.github.com` | GitHub API for the opt-in draft revert pull requests (GitHub Enterprise: `https://HOST/api/v3`) |
 | `PUBLIC_HOSTNAME` | `localhost` | Domain Caddy provisions HTTPS for (`--profile tls`) |
 | `RETENTION_DAYS` | `30` | Days to keep events before cleanup |
 | `SCRUB_PII` | `1` | Scrub emails, IPs, JWTs and card numbers |

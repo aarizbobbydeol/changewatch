@@ -8,7 +8,9 @@ raise ReadOnlyViolationError.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -17,6 +19,27 @@ logger = logging.getLogger(__name__)
 class ReadOnlyViolationError(RuntimeError):
     """Raised whenever a non-GET or mutating request is attempted against GitHub."""
     pass
+
+
+_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
+_REF = re.compile(r"^[A-Za-z0-9_./-]{1,200}$")
+
+
+def _repo(owner: str, repo: str) -> str:
+    """'repos/owner/repo', refusing names a URL would resolve out of it ('.' or '..')."""
+    for name in (owner, repo):
+        if not _NAME.match(name or "") or name in (".", ".."):
+            raise ValueError("GitHub owner and repository must be plain names")
+    return f"/repos/{owner}/{repo}"
+
+
+def _file_path(path: str) -> str:
+    """A repository file path, each part percent-encoded. A '.' or '..' part is refused: the URL
+    would otherwise resolve to another repository's file (a stack-trace path is sent by the app)."""
+    parts = (path or "").replace("\\", "/").strip("/").split("/")
+    if not parts or any(p in ("", ".", "..") for p in parts):
+        raise ValueError("Not a plain path inside the repository")
+    return "/".join(quote(p, safe="") for p in parts)
 
 
 class ReadOnlyGitHubClient:
@@ -97,16 +120,18 @@ class ReadOnlyGitHubClient:
 
     async def get_commit(self, owner: str, repo: str, sha: str) -> Dict[str, Any]:
         """Fetch commit details (read-only)."""
-        return await self.get(f"/repos/{owner}/{repo}/commits/{sha}")
+        return await self.get(f"{_repo(owner, repo)}/commits/{quote(sha, safe='')}")
 
     async def get_diff(self, owner: str, repo: str, base: str, head: str) -> str:
         """Fetch comparison diff between base and head (read-only)."""
         headers = {"Accept": "application/vnd.github.v3.diff"}
-        res = await self.get(f"/repos/{owner}/{repo}/compare/{base}...{head}", headers=headers)
+        res = await self.get(f"{_repo(owner, repo)}/compare/{quote(base, safe='')}...{quote(head, safe='')}", headers=headers)
         return str(res)
 
     async def get_file_content(self, owner: str, repo: str, path: str, ref: str = "main") -> str:
         """Fetch raw file content from a repository (read-only)."""
         headers = {"Accept": "application/vnd.github.v3.raw"}
-        res = await self.get(f"/repos/{owner}/{repo}/contents/{path.lstrip('/')}", params={"ref": ref}, headers=headers)
+        if not _REF.match(ref or "") or ".." in ref:
+            raise ValueError("Not a plain git ref")
+        res = await self.get(f"{_repo(owner, repo)}/contents/{_file_path(path)}", params={"ref": ref}, headers=headers)
         return str(res)
