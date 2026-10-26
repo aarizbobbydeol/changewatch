@@ -73,6 +73,9 @@ export default function SettingsPage() {
   const [rbForm, setRbForm] = useState({ ...EMPTY_RUNBOOK });
   const [rbEditing, setRbEditing] = useState<number | null>(null);
   const [rbStatus, setRbStatus] = useState<string | null>(null);
+  const [undoPr, setUndoPr] = useState<boolean | null>(null);
+  const [undoToken, setUndoToken] = useState("");
+  const [undoStatus, setUndoStatus] = useState<string | null>(null);
 
   // Only the newest request's answer is shown: a slow answer for the previous key must not
   // replace the runbooks of the project the new key opens
@@ -89,6 +92,35 @@ export default function SettingsPage() {
   useEffect(() => {
     loadRunbooks();
   }, [loadRunbooks]);
+
+  // Draft revert pull requests: on only with the team's own GitHub token (never shown again)
+  const loadUndoPr = useCallback(() => {
+    if (!readKey) return;
+    fetch(apiUrl(endpoint, "/api/undo-pr"), { headers: { "X-API-Key": readKey } })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => setUndoPr(data ? Boolean(data.enabled) : null))
+      .catch(() => setUndoPr(null));
+  }, [readKey, endpoint]);
+
+  useEffect(() => {
+    loadUndoPr();
+  }, [loadUndoPr]);
+
+  const saveUndoPr = async (token: string | null) => {
+    try {
+      const res = await fetch(apiUrl(endpoint, "/api/undo-pr"), {
+        method: "PUT",
+        headers: changeHeaders(readKey),
+        body: JSON.stringify({ token }),
+      });
+      if (!res.ok) throw new Error(apiError(await res.json().catch(() => null), res.status));
+      setUndoToken("");
+      setUndoStatus(token ? "Turned on" : "Turned off");
+      loadUndoPr();
+    } catch (err: any) {
+      setUndoStatus(`Could not save: ${err.message}`);
+    }
+  };
 
   // Add a runbook, or save the one being edited; empty matchers are sent as null
   const saveRunbook = async (e: React.FormEvent) => {
@@ -420,6 +452,41 @@ export default function SettingsPage() {
                   {rbStatus && <span className="text-xs text-slate-400">{rbStatus}</span>}
                 </div>
               </form>
+            </section>
+
+            <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
+              <h2 className="font-semibold mb-1">Draft revert pull requests</h2>
+              <p className="text-sm text-slate-400 mb-3">
+                Off by default: ChangeWatch only reads your code. When on, the incident page can open a <strong>draft</strong> pull
+                request that puts the deploy&apos;s files back as they were before it (needs the manage key). ChangeWatch creates a
+                branch under <code>changewatch/</code> and the draft, and nothing else: it never pushes to existing branches, merges,
+                closes or comments. Use a fine-grained GitHub token for the repository with Contents and Pull requests set to read
+                and write; it is stored encrypted and never shown again.
+              </p>
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                <span className={undoPr ? "text-emerald-400" : "text-slate-400"}>{undoPr === null ? "…" : undoPr ? "On" : "Off"}</span>
+                <input
+                  type="password"
+                  value={undoToken}
+                  onChange={(e) => setUndoToken(e.target.value)}
+                  placeholder="github_pat_…"
+                  autoComplete="off"
+                  className="w-64 rounded-md bg-slate-950 border border-slate-700 px-3 py-1.5 text-sm text-slate-100"
+                />
+                <button
+                  onClick={() => saveUndoPr(undoToken.trim())}
+                  disabled={!undoToken.trim()}
+                  className="rounded bg-slate-800 border border-slate-700 px-2 py-1 text-xs hover:bg-slate-700 disabled:opacity-50"
+                >
+                  {undoPr ? "Replace token" : "Turn on"}
+                </button>
+                {undoPr && (
+                  <button onClick={() => saveUndoPr(null)} className="rounded bg-slate-800 border border-slate-700 px-2 py-1 text-xs text-rose-300 hover:bg-slate-700">
+                    Turn off
+                  </button>
+                )}
+                {undoStatus && <span className="text-xs text-slate-400">{undoStatus}</span>}
+              </div>
             </section>
 
             <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-5">

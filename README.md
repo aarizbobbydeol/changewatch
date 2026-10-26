@@ -166,7 +166,7 @@ sequenceDiagram
 | **AI SRE** | Pre-gathered deploy diffs, read-only `SELECT` tools, output verifiers that check evidence and flag dangerous fixes, and a deterministic fallback when no LLM is available (`DECISION_PROVIDER=rules`). |
 | **Reliability** | Reliable Redis queue (`RPOPLPUSH`), durable outbox, `event_id` idempotency, dead-man's switch (`SILENT_AFTER_MIN`), background watchdog. |
 | **Calibration** | Brier-score calibration tables track how accurate the verdicts are over time. Weekly digest. |
-| **Code handling** | `CODE_MODE=stored` or `ephemeral`. An AST guard enforces that ChangeWatch never writes to your repo. |
+| **Code handling** | `CODE_MODE=stored` or `ephemeral`. ChangeWatch never writes to your repo, except the opt-in draft revert pull requests, whose client can create nothing else (checked in CI). |
 | **Usage metering** | Integer micro-USD accounting, a configurable price book, and soft/hard budgets. Budgets can pause AI investigations only: verdicts and alerts are never metered or paused. |
 
 ---
@@ -298,7 +298,7 @@ Each deploy also gets a **risk review** of its diff, inside ChangeWatch only (no
 
 **Runbooks:** write the steps for a kind of error once (Settings → Runbooks, `POST /api/runbooks`, or `python -m app.cli add-runbook`), matched by error type, file (`app/billing/`) and route (`/checkout*`). The best match is linked in the alert, shown on the incident page, read by the AI investigation, and named in the postmortem draft, which suggests writing one when none matched.
 
-**Undo or fix, as text to copy:** each incident lists the exact commands to undo it (`git revert --no-edit <previous>..<sha>` for the whole deploy, `git restore --source=<previous> -- <file>` for only the failing file, and which earlier deploy to redeploy) plus the AI's suggested change; a ROLLBACK verdict alert carries the undo line and the AI reply carries the suggested change. ChangeWatch never runs them and never writes to your repository.
+**Undo or fix, as text to copy:** each incident lists the exact commands to undo it (`git revert --no-edit <previous>..<sha>` for the whole deploy, `git restore --source=<previous> -- <file>` for only the failing file, and which earlier deploy to redeploy) plus the AI's suggested change; a ROLLBACK verdict alert carries the undo line and the AI reply carries the suggested change. ChangeWatch never runs them. Optionally (off by default, per project, with your own GitHub token), the incident page can open a **draft** pull request that undoes the deploy or only the failing file: ChangeWatch creates a `changewatch/` branch and the draft, and never merges, closes or comments.
 
 ---
 

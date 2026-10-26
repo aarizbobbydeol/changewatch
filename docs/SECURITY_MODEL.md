@@ -6,9 +6,10 @@ ChangeWatch is designed for developer teams who care about security, transparenc
 
 ## 1. Core Security Promises
 
-1. **We never modify the customer's code or repository.**
+1. **We never modify the customer's code or repository, unless a team turns on draft revert pull requests.**
    - All code access is provably read-only (`ReadOnlyGitHubClient`).
-   - We never create commits, branches, pull requests, tags, issues, or PR comments.
+   - By default we never create commits, branches, pull requests, tags, issues, or PR comments.
+   - The one exception is opt-in, per project: with the project's own GitHub token (stored encrypted), someone holding the manage key can ask for a **draft** pull request that undoes a deploy. ChangeWatch then creates exactly a tree, a commit, a new branch under `changewatch/` and the draft pull request. `UndoPullRequestClient` (`server/app/undo_pr.py`) has no put, patch or delete, refuses any other write (an existing branch, a non-draft pull request, a merge, a comment), and is used nowhere else; `scripts/security_check.py` checks all three. It never merges, closes or comments: a person reviews and merges.
    - The GitHub Action declares `permissions: contents: read` and `persist-credentials: false`.
    - Agent analysis queries are restricted to SQL `SELECT` operations.
 

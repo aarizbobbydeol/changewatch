@@ -1386,6 +1386,56 @@ async def update_project_settings(
     return {"ok": True}
 
 
+# Draft revert pull requests (opt-in, app/undo_pr.py): the only writes to a customer's repository
+class UndoPRSetting(BaseModel):
+    # The team's GitHub token (Contents and Pull requests: read and write on the repository); null turns it off
+    token: Optional[str] = Field(None, max_length=255)
+
+
+class UndoPRRequest(BaseModel):
+    scope: Literal["deploy", "file"] = "deploy"
+
+
+@app.get("/api/undo-pr", tags=["Undo pull requests"])
+async def get_undo_pr_setting(project_id: int = Depends(require_read_project_id)) -> Dict[str, Any]:
+    """Whether draft revert pull requests are on for this project (the token is never shown)."""
+    from app.undo_pr import is_enabled
+
+    async with read_project_transaction(project_id) as conn:
+        return {"enabled": await is_enabled(conn, project_id)}
+
+
+@app.put("/api/undo-pr", tags=["Undo pull requests"])
+async def put_undo_pr_setting(payload: UndoPRSetting, project_id: int = Depends(require_manage_project_id)) -> Dict[str, Any]:
+    """Turn draft revert pull requests on with a GitHub token (stored encrypted), or off with null."""
+    from app.undo_pr import UndoPRError, set_token
+
+    try:
+        async with project_transaction(project_id) as conn:
+            return {"enabled": await set_token(conn, project_id, payload.token)}
+    except UndoPRError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from None
+
+
+@app.post("/api/incidents/{id}/undo-pr", tags=["Undo pull requests"])
+async def open_incident_undo_pr(
+    payload: UndoPRRequest,
+    id: int = Path(..., description="Incident ID"),
+    project_id: int = Depends(require_manage_project_id),
+) -> Dict[str, Any]:
+    """Open a DRAFT pull request that undoes the incident's deploy (or only its change to the failing
+    file), when the project turned this on. ChangeWatch merges nothing; the same request again
+    returns the pull request already opened."""
+    from app.undo_pr import UndoPRError, open_undo_pr
+
+    try:
+        async with project_transaction(project_id) as conn:
+            return await open_undo_pr(conn, project_id, id, payload.scope, settings.GITHUB_API_URL,
+                                      settings.dashboard_link(f"/incidents/{id}"))
+    except UndoPRError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from None
+
+
 # Runbooks: the steps the team wrote for a kind of error, shown in its alerts and incidents.
 # Read with the read key; changed with the manage key (or the read key with the admin key).
 @app.get("/api/runbooks", tags=["Runbooks"])

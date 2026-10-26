@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { loadEndpoint, loadReadKey } from "../../lib/session";
+import { changeHeaders, loadEndpoint, loadReadKey } from "../../lib/session";
 import { logClock } from "../../lib/time";
 import NavLinks from "../../components/NavLinks";
 
@@ -41,6 +41,8 @@ interface FixSuggestions {
   ai_fix: { description: string | null; code_hint: string | null; rollback_recommended: boolean; warning: string | null } | null;
   no_commands_reason: string | null;
   note: string;
+  // Draft revert pull requests, when the project turned them on (Settings)
+  pull_requests?: { enabled: boolean; opened: { scope: string; url: string | null; number: number | null; branch: string }[] };
 }
 
 interface Runbook {
@@ -95,6 +97,9 @@ interface IncidentDetail {
     not_sure_reason?: string | null;
   };
 }
+
+// Timeline events whose name does not read well as words
+const EVENT_LABELS: Record<string, string> = { undo_pr: "Draft pull request" };
 
 function aiStatusLabel(ai?: IncidentDetail["ai_investigation"]): string {
   if (!ai || !ai.enabled) return "No investigation yet";
@@ -262,6 +267,30 @@ export default function IncidentDetailPage() {
       setPostmortemStatus(null);
     } catch (e: any) {
       setPostmortemStatus(`Could not write the draft: ${e.message}`);
+    }
+  };
+
+  // Open a DRAFT pull request that undoes the deploy (or only the failing file): the project turned
+  // this on with its own GitHub token, and the manage key is needed; ChangeWatch merges nothing
+  const [prStatus, setPrStatus] = useState<string | null>(null);
+  const openUndoPr = async (scope: "deploy" | "file") => {
+    if (!apiKey || !incident) return;
+    setPrStatus("Opening a draft pull request...");
+    try {
+      const res = await fetch(getApiUrl(`/api/incidents/${incident.id}/undo-pr`), {
+        method: "POST",
+        headers: changeHeaders(apiKey.trim()),
+        body: JSON.stringify({ scope }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) {
+        const detail = typeof body?.detail === "string" ? body.detail : `HTTP ${res.status}`;
+        throw new Error(res.status === 403 ? `${detail} (enter it on the Settings page)` : detail);
+      }
+      await fetchIncident();
+      setPrStatus(body?.already_open ? "Already open" : "Draft pull request opened");
+    } catch (e: any) {
+      setPrStatus(`Could not open it: ${e.message}`);
     }
   };
 
@@ -582,7 +611,7 @@ export default function IncidentDetailPage() {
                         <span className="absolute left-1 top-1.5 w-2.5 h-2.5 rounded-full bg-indigo-500 ring-4 ring-slate-900"></span>
                         <div className="space-y-0.5">
                           <span className="text-xs font-semibold text-slate-200 capitalize">
-                            {item.event.replace(/_/g, " ")}
+                            {EVENT_LABELS[item.event] || item.event.replace(/_/g, " ")}
                           </span>
                           <span className="text-[11px] text-slate-400 block font-mono">
                             {formatDateTime(item.at)}
@@ -654,6 +683,35 @@ export default function IncidentDetailPage() {
                     {c.explain && <p className="text-[11px] text-slate-500">{c.explain}</p>}
                   </div>
                 ))}
+                {incident.fix_suggestions.pull_requests?.enabled && (
+                  <div className="space-y-2 border-t border-slate-800 pt-3">
+                    <div className="text-xs text-slate-400">
+                      Or let ChangeWatch open a <strong>draft</strong> pull request on GitHub (needs the manage key). It never merges it.
+                    </div>
+                    {incident.fix_suggestions.pull_requests.opened.map((pr) => (
+                      <div key={pr.branch} className="text-xs">
+                        <a href={pr.url || "#"} target="_blank" rel="noopener noreferrer" className="text-indigo-300 hover:underline">
+                          Draft pull request #{pr.number}
+                        </a>{" "}
+                        <span className="text-slate-500">({pr.scope === "file" ? "only the failing file" : "the whole deploy"})</span>
+                      </div>
+                    ))}
+                    <div className="flex flex-wrap gap-2">
+                      {!incident.fix_suggestions.pull_requests.opened.some((pr) => pr.scope === "deploy") && (
+                        <button onClick={() => openUndoPr("deploy")} className="rounded bg-slate-800 border border-slate-700 px-2 py-1 text-xs hover:bg-slate-700">
+                          Open a draft pull request: undo the deploy
+                        </button>
+                      )}
+                      {incident.fix_suggestions.commands.some((c) => c.kind === "revert_file") &&
+                        !incident.fix_suggestions.pull_requests.opened.some((pr) => pr.scope === "file") && (
+                          <button onClick={() => openUndoPr("file")} className="rounded bg-slate-800 border border-slate-700 px-2 py-1 text-xs hover:bg-slate-700">
+                            Open a draft pull request: undo only {incident.where_file}
+                          </button>
+                        )}
+                    </div>
+                    {prStatus && <p className="text-xs text-slate-400">{prStatus}</p>}
+                  </div>
+                )}
                 {incident.fix_suggestions.no_commands_reason && (
                   <p className="text-xs text-slate-500">{incident.fix_suggestions.no_commands_reason}</p>
                 )}

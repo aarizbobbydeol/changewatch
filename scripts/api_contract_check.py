@@ -34,11 +34,13 @@ CHANGES_DATA = {
     ("POST", "/api/incidents/{id}/investigate"), ("DELETE", "/v1/project-data"), ("POST", "/v1/telemetry/opt-in"),
     ("POST", "/v1/events"), ("POST", "/v1/deploys"),
     ("POST", "/api/runbooks"), ("PUT", "/api/runbooks/{id}"), ("DELETE", "/api/runbooks/{id}"),
+    ("PUT", "/api/undo-pr"), ("POST", "/api/incidents/{id}/undo-pr"),
 }
 # Changing a project's settings needs its manage key (or the read key with the admin key)
 MANAGE_ONLY = {
     ("PUT", "/api/settings"), ("PUT", "/v1/budget"), ("POST", "/api/mutes"), ("DELETE", "/api/mutes/{id}"),
     ("POST", "/api/runbooks"), ("PUT", "/api/runbooks/{id}"), ("DELETE", "/api/runbooks/{id}"),
+    ("PUT", "/api/undo-pr"), ("POST", "/api/incidents/{id}/undo-pr"),
 }
 SAMPLES = {"sha": "deadbeefcafe", "metric": "overview", "meter": "ai_investigation", "token": "not-a-real-token"}
 NOT_FOUND_OK = {("GET", "/v1/verdict")}  # the sample sha has no deploy

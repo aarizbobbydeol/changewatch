@@ -26,6 +26,14 @@ class DeployCreate(BaseModel):
     # "owner/name" on GitHub: lets the investigator read a file at this commit in ephemeral mode
     repository: Optional[str] = Field(None, max_length=200, pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
+    @field_validator("repository")
+    @classmethod
+    def _no_dot_segments(cls, value: Optional[str]) -> Optional[str]:
+        """'.' or '..' as owner or name would resolve out of /repos/ in a GitHub API URL."""
+        if value is not None and any(part in (".", "..") for part in value.split("/")):
+            raise ValueError("repository must be owner/name")
+        return value
+
 
 
 class DeployResponse(BaseModel):

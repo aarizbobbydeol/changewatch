@@ -28,6 +28,7 @@ VALID_ACTION_TYPES = {
     "escalated",
     "muted",
     "feedback",
+    "undo_pr",  # a draft revert pull request was opened (app/undo_pr.py)
 }
 
 

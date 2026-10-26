@@ -57,6 +57,7 @@ class SecurityComplianceRunner:
         self.check_github_read_only()
         self.check_action_workflow_safety()
         self.check_ast_codebase_write_calls()
+        self.check_undo_pr_writes_only()
         self.check_sdk_safety_and_overhead()
         self.check_envelope_encryption()
         self.check_api_key_role_isolation()
@@ -79,6 +80,30 @@ class SecurityComplianceRunner:
             self.record(category, "GitHub Client Mutating Verbs Prohibited", blocked, "POST/PUT/DELETE/PATCH raise ReadOnlyViolationError")
         except Exception as exc:
             self.record(category, "GitHub Client Mutating Verbs Prohibited", False, str(exc))
+
+    def check_undo_pr_writes_only(self):
+        """The one write path (opt-in draft revert pull requests) can create nothing but a tree, a
+        commit, a changewatch/ branch and a DRAFT pull request, and only app/undo_pr.py uses it."""
+        category = "1. Read-Only Code Guarantee"
+        try:
+            from app.undo_pr import UndoPullRequestClient, check_write
+
+            refused = 0
+            attempts = [("repos/o/r/git/refs", {"ref": "refs/heads/main"}), ("repos/o/r/pulls", {"draft": False}),
+                        ("repos/o/r/merges", {}), ("repos/o/r/issues/1/comments", {}), ("repos/../../git/trees", {})]
+            for path, body in attempts:
+                try:
+                    check_write(path, body)
+                except ReadOnlyViolationError:
+                    refused += 1
+            no_verbs = not any(hasattr(UndoPullRequestClient, v) for v in ("put", "patch", "delete"))
+            users = [f.name for f in root_dir.glob("server/app/**/*.py")
+                     if "UndoPullRequestClient(" in f.read_text(encoding="utf-8") and f.name != "undo_pr.py"]
+            passed = refused == len(attempts) and no_verbs and not users
+            self.record(category, "Opt-in Draft Revert PRs: Only Allowed Writes", passed,
+                        f"{refused}/{len(attempts)} other writes refused; no put/patch/delete; used outside undo_pr.py: {users or 'nowhere'}")
+        except Exception as exc:
+            self.record(category, "Opt-in Draft Revert PRs: Only Allowed Writes", False, str(exc))
 
     def check_action_workflow_safety(self):
         category = "1. Read-Only Code Guarantee"

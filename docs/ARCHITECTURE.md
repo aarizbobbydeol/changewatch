@@ -185,7 +185,9 @@ or meter them.
   --no-edit <previous>..<sha>`) or only the failing file (`git restore --source=<previous> --
   <file>`), which earlier deploy to redeploy, and the AI's suggested change, each with a Copy
   button. A ROLLBACK verdict alert carries the undo line and the AI reply carries the change.
-  ChangeWatch only suggests: it never runs them or writes to the repository.
+  ChangeWatch only suggests: it never runs them. If a project turned on draft revert pull requests
+  (its own GitHub token), the panel can also open a *draft* pull request that puts the deploy's
+  files back (or only the failing file) on a new `changewatch/` branch; nothing is ever merged.
 - **Runbooks:** the team writes steps for a kind of error once (Settings → Runbooks), matched by
   error type, file and route. The best match adds a line to the alert ("Runbook: Billing totals
   fail (https://wiki…)"), its steps are on the incident page and in the AI investigation, and the

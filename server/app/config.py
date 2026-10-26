@@ -288,6 +288,10 @@ class Settings(BaseModel):
     GITHUB_READ_TOKEN: str = Field(
         default_factory=lambda: os.getenv("GITHUB_READ_TOKEN", "")
     )
+    # GitHub API for draft revert pull requests (opt-in per project); GitHub Enterprise: https://HOST/api/v3
+    GITHUB_API_URL: str = Field(
+        default_factory=lambda: os.getenv("GITHUB_API_URL", "https://api.github.com")
+    )
     DECISION_SEND_CODE: bool = Field(
         default_factory=lambda: os.getenv("DECISION_SEND_CODE", "0") in ("1", "true", "True")
     )

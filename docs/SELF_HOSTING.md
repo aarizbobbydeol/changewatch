@@ -143,6 +143,8 @@ The CLI prints three keys **once**. Only their SHA-256 hashes are stored.
 
 Projects created before manage keys existed get one with `docker compose exec api python -m app.cli new-manage-key <project_id>`; the same command replaces a manage key (the old one stops working within a minute).
 
+**Optional: draft revert pull requests.** Off by default; ChangeWatch only reads your code. To let the incident page open a *draft* pull request that undoes a deploy, create a fine-grained GitHub token for the repository with **Contents** and **Pull requests** set to read and write, and paste it under Settings → Draft revert pull requests (or `PUT /api/undo-pr` with the manage key). ChangeWatch then creates a branch under `changewatch/` and the draft only when someone with the manage key clicks the button; it never merges, closes or comments. Deploys must carry the repository (the GitHub Action sends it). For GitHub Enterprise Server set `GITHUB_API_URL=https://YOUR-HOST/api/v3`.
+
 Add more alert channels (Discord, Teams, email, generic webhook) with `add-channel`:
 
 ```bash

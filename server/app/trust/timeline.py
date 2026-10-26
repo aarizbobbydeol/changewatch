@@ -55,6 +55,9 @@ def _event_text(etype: str, actor: str, detail: Dict[str, Any], blameless: bool 
                 note = _FIX_AUTHOR.sub(r"\1", note)
             return f"Resolved automatically: {note}"
         return f"Resolved by {actor}"
+    if etype == "undo_pr":
+        what = "the change to the failing file" if detail.get("scope") == "file" else "the deploy"
+        return f"Draft pull request opened to undo {what}: {detail.get('url') or 'on GitHub'}"
     if etype == "reopened":
         if detail.get("reason") == "error_returned":
             return "Reopened: the error came back"

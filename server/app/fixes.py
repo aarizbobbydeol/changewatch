@@ -19,7 +19,8 @@ _SHA = re.compile(r"^[0-9a-f]{7,64}$")
 # A release name is shown only when it is plain: other text could bring its own formatting, or a
 # fake command, into the alert line that holds the real ones
 _NAME = re.compile(r"[A-Za-z0-9._/-]{1,64}")
-NOTE = "Suggestions only: ChangeWatch never runs these and never writes to your repository. Check before using."
+NOTE = ("Suggestions only: ChangeWatch never runs these. It writes to your repository only when you open a draft "
+        "pull request here, if the project turned that on. Check before using.")
 
 
 def _sha(value: Optional[str]) -> Optional[str]:
@@ -118,7 +119,7 @@ async def fix_suggestions(conn: asyncpg.Connection, project_id: int, incident_id
         best = max(matches, key=lambda f: len(f["path"]), default=None)
         if best and (best["status"] or "modified") == "modified":
             path = best["path"].lstrip("/")
-            commands.append({"kind": "revert_file", "label": f"Undo only the change to {path}",
+            commands.append({"kind": "revert_file", "label": f"Undo only the change to {path}", "path": path,
                              "command": f"git restore --source={undo['base']} -- {shlex.quote(path)}",
                              "explain": "Puts this one file back as it was before the deploy and keeps the rest; "
                                         "review it, then commit."})
@@ -145,5 +146,9 @@ async def fix_suggestions(conn: asyncpg.Connection, project_id: int, incident_id
             ai_fix = {"description": fix.get("description"), "code_hint": fix.get("code_hint"),
                       "rollback_recommended": bool(fix.get("rollback_recommended")), "warning": fix.get("warning_label")}
 
+    # Draft revert pull requests, when the project turned them on (app/undo_pr.py)
+    from app.undo_pr import is_enabled, opened
+
+    pull_requests = {"enabled": await is_enabled(conn, project_id), "opened": await opened(conn, project_id, incident_id)}
     return {"rollback_to": undo.get("rollback_to"), "commands": commands, "ai_fix": ai_fix,
-            "no_commands_reason": undo.get("no_commands_reason"), "note": NOTE}
+            "no_commands_reason": undo.get("no_commands_reason"), "note": NOTE, "pull_requests": pull_requests}
