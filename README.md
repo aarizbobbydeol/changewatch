@@ -167,7 +167,7 @@ sequenceDiagram
 | **Reliability** | Reliable Redis queue (`RPOPLPUSH`), durable outbox, `event_id` idempotency, dead-man's switch (`SILENT_AFTER_MIN`), background watchdog. |
 | **Calibration** | Brier-score calibration tables track how accurate the verdicts are over time. Weekly digest. |
 | **Code handling** | `CODE_MODE=stored` or `ephemeral`. ChangeWatch never writes to your repo, except the opt-in draft revert pull requests, whose client can create nothing else (checked in CI). |
-| **Usage metering** | Integer micro-USD accounting, a configurable price book, and soft/hard budgets. Budgets can pause AI investigations only: verdicts and alerts are never metered or paused. |
+| **Usage metering** | Integer micro-USD accounting, a configurable price book, and soft/hard budgets. Every AI call counts (investigations, the likely cause on verdicts, the AI part of deploy risk reviews). Budgets can pause AI investigations only: verdicts and alerts are never metered or paused. |
 
 ---
 

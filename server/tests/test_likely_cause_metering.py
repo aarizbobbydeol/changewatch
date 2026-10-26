@@ -54,6 +54,10 @@ async def test_live_likely_cause_counts_toward_the_ai_budget_once(deploy, monkey
     pid, dep = deploy
     monkeypatch.setattr(settings, "LLM_PROVIDER", "anthropic")
     monkeypatch.setattr(settings, "DRY_RUN_LLM", False)
+    async with project_transaction(pid) as conn:
+        # This month's free AI units are used up, so the call is billed and the budget sees it
+        await conn.execute("INSERT INTO usage_daily (project_id, day, meter, units, our_cost_micros, billed_micros, free_units_applied) "
+                           "VALUES ($1, current_date, 'ai_investigation', 1000, 0, 0, 1000)", pid)
     with patch("app.analysis.get_llm_client", return_value=_llm()):
         for _ in range(2):  # a second explanation of the same deploy is not counted again
             async with project_transaction(pid) as conn:
@@ -63,7 +67,7 @@ async def test_live_likely_cause_counts_toward_the_ai_budget_once(deploy, monkey
         spent = await conn.fetchval("SELECT coalesce(sum(spent_micros), 0) FROM budget_state WHERE project_id = $1", pid)
     assert [(r["meter"], r["units"], r["ref_type"], r["ref_id"]) for r in rows] == [("ai_investigation", 1, "deploy", dep)]
     assert rows[0]["our_cost_micros"] > 0
-    assert spent == rows[0]["billed_micros"]  # what the budget sees
+    assert rows[0]["billed_micros"] >= rows[0]["our_cost_micros"] and spent == rows[0]["billed_micros"]  # what the budget counts
 
 
 @pytest.mark.asyncio

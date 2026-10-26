@@ -217,7 +217,7 @@ async def test_live_verdict_alert_carries_the_review_line(deploy):
 
 
 @pytest.mark.asyncio
-async def test_live_ai_adds_findings_and_is_tracked_as_our_cost(deploy, monkeypatch):
+async def test_live_ai_adds_findings_and_counts_toward_the_ai_budget(deploy, monkeypatch):
     pid, _, dep = deploy
     monkeypatch.setattr(settings, "LLM_PROVIDER", "anthropic")
     monkeypatch.setattr(settings, "DRY_RUN_LLM", False)
@@ -229,15 +229,23 @@ async def test_live_ai_adds_findings_and_is_tracked_as_our_cost(deploy, monkeypa
         "findings": [{"file": "app/billing.py", "line": 40, "severity": "high",
                       "issue": "Division by order.discount, which is 0 without a discount", "why": "ZeroDivisionError at checkout"}],
         "tests_to_add": ["total_cents with discount=0"]})
+    async with project_transaction(pid) as conn:
+        # This month's free AI units are used up, so the call is billed and the budget sees it
+        await conn.execute("INSERT INTO usage_daily (project_id, day, meter, units, our_cost_micros, billed_micros, free_units_applied) "
+                           "VALUES ($1, current_date, 'ai_investigation', 1000, 0, 0, 1000)", pid)
     with patch("app.llm.get_llm_client", return_value=llm):
+        for _ in range(2):  # a review run again (a retried job) is not counted twice
+            async with project_transaction(pid) as conn:
+                result = await run_deploy_review(conn, pid, dep)
         async with project_transaction(pid) as conn:
-            result = await run_deploy_review(conn, pid, dep)
             status = await conn.fetchval("SELECT status FROM deploy_reviews WHERE deploy_id = $1", dep)
-            usage = await conn.fetchrow("SELECT meter, our_cost_micros, billed_micros FROM usage_events WHERE project_id = $1", pid)
+            usage = await conn.fetch("SELECT meter, our_cost_micros, billed_micros FROM usage_events WHERE project_id = $1", pid)
+            spent = await conn.fetchval("SELECT coalesce(sum(spent_micros), 0) FROM budget_state WHERE project_id = $1", pid)
     assert result["source"] == "rules+ai" and status == "done"
     assert any(f["source"] == "ai" and "order.discount" in f["issue"] for f in result["findings"])
     assert result["tests_to_add"] == ["total_cents with discount=0"]
-    assert (usage["meter"], usage["our_cost_micros"], usage["billed_micros"]) == ("ai_review", 33_000, 0)
+    assert [(u["meter"], u["our_cost_micros"]) for u in usage] == [("ai_investigation", 33_000)]
+    assert usage[0]["billed_micros"] >= 33_000 and spent == usage[0]["billed_micros"]  # what the budget counts
     sent_prompt = llm.complete.call_args.kwargs["prompt"]
     assert "[REDACTED_SECRET_KEY]" in sent_prompt  # the diff went out scrubbed
 

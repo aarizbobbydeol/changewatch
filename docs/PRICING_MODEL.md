@@ -35,7 +35,7 @@ Meters are defined in `server/app/usage.py` and stored in the database:
 | Meter Name | Billable Unit | Included Free Allowance | Cost per Unit (Micros) | Margin | Price per Unit |
 |---|---|---|---|---|---|
 | `events_ingested` | 1,000 events | 100,000 events / month | 500 micros (\$0.0005) | 20% | 600 micros (\$0.0006) |
-| `ai_investigation` | 1 investigation | 50 investigations / month | 25,000 micros (\$0.025) | 15% | 28,750 micros (\$0.02875) |
+| `ai_investigation` | 1 AI call: an incident investigation, a verdict's AI likely cause, or the AI part of a deploy's risk review | 50 / month | 25,000 micros (\$0.025) | 15% | 28,750 micros (\$0.02875) |
 | `ai_tokens_input` | 1,000 tokens | 500,000 tokens / month | 3,000 micros (\$0.003) | 10% | 3,300 micros (\$0.0033) |
 | `ai_tokens_output` | 1,000 tokens | 100,000 tokens / month | 15,000 micros (\$0.015) | 10% | 16,500 micros (\$0.0165) |
 | `data_retention_days` | 1 project-day | 30 days included | 10,000 micros (\$0.010) | 0% | 10,000 micros (\$0.010) |

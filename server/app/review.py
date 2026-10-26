@@ -264,11 +264,11 @@ async def _ai_review(conn: asyncpg.Connection, project_id: int, deploy_id: int, 
     """The model's review, or None (no provider, no budget, a failure or an unusable answer)."""
     from app.config import settings
     from app.llm import get_llm_client
-    from app.metering import can_spend
+    from app.metering import Meter, can_spend
 
     if (settings.LLM_PROVIDER or "").lower() == "fake" or settings.DRY_RUN_LLM:
         return None, None, 0, 0
-    allowed, _ = await can_spend(conn, project_id, "ai_review")
+    allowed, _ = await can_spend(conn, project_id, Meter.AI_INVESTIGATION)
     if not allowed:
         return None, None, 0, 0
     llm = get_llm_client()
@@ -327,10 +327,10 @@ async def run_deploy_review(conn: asyncpg.Connection, project_id: int, deploy_id
     )
     if tokens_in or tokens_out:
         from app.config import settings
-        from app.metering import calculate_llm_cost_micros, record_usage
+        from app.metering import Meter, calculate_llm_cost_micros, record_usage
 
-        # Tracked as our cost; billed only if the price book gives "ai_review" a price
-        await record_usage(conn, project_id, "ai_review", 1, ref_type="deploy", ref_id=deploy_id,
+        # Counts toward the project's AI budget like an investigation (the user's decision), once per deploy
+        await record_usage(conn, project_id, Meter.AI_INVESTIGATION, 1, ref_type="deploy", ref_id=deploy_id,
                            our_cost_micros=calculate_llm_cost_micros(model or "", tokens_in, tokens_out,
                                                                      provider=settings.LLM_PROVIDER),
                            idempotency_key=f"review:{deploy_id}")
