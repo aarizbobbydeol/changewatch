@@ -50,5 +50,9 @@ an individual is officially representing the community in public spaces.
 ## Reporting
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the project team at `conduct@changewatch.dev`. All complaints will
-be reviewed and investigated promptly and fairly.
+reported privately to the maintainers through the repository's private report
+form: <https://github.com/aarizbobbydeol/changewatch/security/advisories/new>. The form is labelled for security reports, but only the
+maintainers see what is sent, so it works for conduct reports too: start the
+title with "Conduct:". For content on GitHub itself you can also use GitHub's
+"Report content" option. All complaints will be reviewed and investigated
+promptly and fairly.
