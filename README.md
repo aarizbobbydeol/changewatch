@@ -188,18 +188,21 @@ Every threshold can be tuned with environment variables (see [Configuration](#%E
 
 ## 🚀 Quick start
 
-> **Requirements:** Docker + Docker Compose. That's it.
+**On a server** (Ubuntu, with your domain's DNS pointing at it), one command installs Docker if needed and gives you HTTPS, a first project and its keys:
 
 ```bash
-git clone https://github.com/aarizbobbydeol/changewatch.git && cd changewatch
-cp .env.example .env            # add ANTHROPIC_API_KEY, or set LLM_PROVIDER=ollama
-sed -i.bak "s/^MASTER_KEY=$/MASTER_KEY=$(openssl rand -hex 32)/" .env   # encryption key: back it up!
-docker compose up -d            # postgres · redis · api · worker · detector · investigator · notifier · dashboard
-docker compose exec api python -m app.cli create-project "my-app" \
-  --slack-webhook "https://hooks.slack.com/services/..."
+curl -fsSL https://raw.githubusercontent.com/aarizbobbydeol/changewatch/main/scripts/install.sh | sudo bash -s -- --domain changewatch.yourdomain.com
 ```
 
-The last command prints your **ingest key** (`cw_ingest_…`) for the SDK and the Action, your **read key** (`cw_read_…`) for the dashboard, the read APIs and the MCP server, and your **manage key** (`cw_manage_…`) for team leads: only it (or the read key together with the admin key) changes settings, the AI budget, mute rules and runbooks, and it reads nothing.
+**On your own machine** (with Docker):
+
+```bash
+git clone https://github.com/aarizbobbydeol/changewatch.git && cd changewatch && ./scripts/install.sh
+```
+
+The installer asks for a project name, an optional Slack webhook and an optional Anthropic key (without one, explanations are rules-based), creates fresh secrets, starts everything and prints where to go next. Run it again any time: it keeps your secrets and data. `--demo` adds a shop that deploys and breaks itself, for people to watch; `--help` lists the options. Prefer to do it by hand? [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) has every step.
+
+It prints your **ingest key** (`cw_ingest_…`) for the SDK and the Action, your **read key** (`cw_read_…`) for the dashboard, the read APIs and the MCP server, and your **manage key** (`cw_manage_…`) for team leads: only it (or the read key together with the admin key) changes settings, the AI budget, mute rules and runbooks, and it reads nothing.
 
 | Service | URL |
 |---|---|
@@ -230,7 +233,7 @@ PYTHONPATH=server uvicorn app.main:app --reload --port 8000
 
 </details>
 
-> 🌍 **Running it 24/7 on your own domain?** See **[docs/SELF_HOSTING.md](docs/SELF_HOSTING.md)**. It covers a $5–10 VPS, automatic Let's Encrypt HTTPS through the Caddy `tls` profile, and onboarding teams as isolated projects.
+> 🌍 **Running it 24/7 on your own domain?** The one command above does it. **[docs/SELF_HOSTING.md](docs/SELF_HOSTING.md)** explains the server ($5–10 a month), HTTPS, backups and onboarding teams as isolated projects.
 
 ---
 

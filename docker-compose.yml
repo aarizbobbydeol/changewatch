@@ -40,7 +40,8 @@ services:
     # Worker processes from API_WORKERS (auto = one per CPU, up to 4)
     command: ["python", "-m", "app.serve"]
     ports:
-      - "8000:8000"
+      # CHANGEWATCH_BIND=127.0.0.1 (the installer sets it with a domain): only Caddy faces the internet
+      - "${CHANGEWATCH_BIND:-0.0.0.0}:8000:8000"
     # All settings from .env reach the app; the explicit entries below win over it.
     env_file:
       - path: .env
@@ -230,7 +231,7 @@ services:
     container_name: changewatch-dashboard
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "${CHANGEWATCH_BIND:-0.0.0.0}:3000:3000"
     depends_on:
       - api
 

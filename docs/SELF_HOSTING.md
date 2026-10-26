@@ -2,6 +2,21 @@
 
 Run ChangeWatch on your own domain with automatic HTTPS, then onboard teams as isolated projects.
 
+## The short way: one command
+
+1. Rent a small Ubuntu server (see below) and point your domain's DNS `A` record at it.
+2. On the server:
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/aarizbobbydeol/changewatch/main/scripts/install.sh | sudo bash -s -- --domain changewatch.yourdomain.com
+   ```
+
+It installs Docker if it is missing, downloads this release, writes `/opt/changewatch/.env` with fresh secrets, starts everything behind HTTPS (only ports 80 and 443 face the internet), creates your first project and prints its keys and the dashboard address. Add `--demo` for the demo shop ([DEMO.md](DEMO.md)), `--anthropic-key` for AI explanations, `--help` for the rest. Running it again keeps your secrets and data.
+
+Afterwards everything is a plain `docker compose` command in `/opt/changewatch` (the installer saved which files and profiles to use): `docker compose pull && docker compose up -d` updates, `docker compose logs -f api` shows the logs. **Back up `/opt/changewatch/.env`:** without its `MASTER_KEY` the stored data cannot be read.
+
+The sections below are the same setup step by step, for anyone who prefers to do it by hand.
+
 ```mermaid
 flowchart LR
     U["🌐 https://changewatch.yourdomain.com"] --> C["Caddy<br/><sub>Let's Encrypt TLS</sub>"]

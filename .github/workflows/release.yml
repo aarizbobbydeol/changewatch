@@ -1,6 +1,7 @@
 name: Release
 
 # Push a version tag (git tag v1.0.0 && git push origin v1.0.0) to publish images and a release.
+# Before tagging, set the new version in sdk/pyproject.toml and scripts/install.sh (CI checks they match).
 on:
   push:
     tags: ["v*"]

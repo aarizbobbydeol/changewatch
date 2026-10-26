@@ -38,7 +38,13 @@ With ChangeWatch running (`docker compose up -d`, see the README):
 
 ## Run it 24/7 for friends
 
-Set up a server with HTTPS first: [SELF_HOSTING.md](SELF_HOSTING.md) covers a small VPS, a domain and the Caddy `tls` profile. Then:
+**One command** on a fresh Ubuntu server whose domain points at it: it installs everything, creates the demo project, starts the shop and prints the demo's read key to share.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aarizbobbydeol/changewatch/main/scripts/install.sh | sudo bash -s -- --domain demo.yourdomain.com --demo
+```
+
+By hand instead: set up a server with HTTPS first ([SELF_HOSTING.md](SELF_HOSTING.md) covers a small VPS, a domain and the Caddy `tls` profile). Then:
 
 1. Create the demo project as above and put its ingest key in `.env`:
 
