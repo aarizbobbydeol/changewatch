@@ -108,15 +108,19 @@ async def _apply_pending(conn: asyncpg.Connection) -> List[str]:
         logger.info("SEED_DEV_PROJECT is enabled: ensuring default dev project exists with hashed keys")
         dev_ingest_hash = hashlib.sha256(b"cw_test_key_123").hexdigest()
         dev_read_hash = hashlib.sha256(b"cw_read_test_123").hexdigest()
+        dev_manage_hash = hashlib.sha256(b"cw_manage_test_123").hexdigest()
         await conn.execute(
             """
-            INSERT INTO projects (name, api_key, ingest_key_hash, ingest_key_prefix, read_key_hash, read_key_prefix)
-            VALUES ('my-test-app', 'cw_test_key_123', $1, 'cw_test_key_12...', $2, 'cw_read_test_1...')
+            INSERT INTO projects (name, api_key, ingest_key_hash, ingest_key_prefix, read_key_hash, read_key_prefix,
+                                  manage_key_hash, manage_key_prefix)
+            VALUES ('my-test-app', 'cw_test_key_123', $1, 'cw_test_key_12...', $2, 'cw_read_test_1...', $3, 'cw_manage_test_...')
             ON CONFLICT (ingest_key_hash) WHERE ingest_key_hash IS NOT NULL DO UPDATE SET
-              read_key_hash = EXCLUDED.read_key_hash;
+              read_key_hash = EXCLUDED.read_key_hash, manage_key_hash = EXCLUDED.manage_key_hash,
+              manage_key_prefix = EXCLUDED.manage_key_prefix;
             """,
             dev_ingest_hash,
             dev_read_hash,
+            dev_manage_hash,
         )
 
     return applied_now

@@ -97,17 +97,18 @@ If an adversary copies ciphertext from `events.stack_trace_enc` of Project 1 to 
 
 ## 4. API Key Role Separation
 
-ChangeWatch splits credentials into two distinct permission scopes:
+ChangeWatch splits each project's credentials into three permission scopes, plus one install-wide admin key:
 
 | Key Role | Prefix | Permissions | Intended For |
 |---|---|---|---|
 | **Ingest Key** | `cw_ingest_...` | `POST /v1/events`<br>`POST /v1/deploys`<br>`POST /v1/heartbeat` | Python SDK, GitHub Actions CI/CD |
-| **Read Key** | `cw_read_...` | `GET /v1/verdict`, `GET /api/*`, `/v1/analytics/*`<br>Team actions: acknowledge, mute, feedback, investigate<br>This project's settings and budget | Web Dashboard, SRE Audit Scripts |
-| **Admin Key** | `ADMIN_API_KEY` (install-wide) | Owner pages (`/v1/owner/stats`, `/v1/admin/margin`)<br>With a project's read key: `GET /v1/export`, `DELETE /v1/project-data` | Install owner only |
+| **Read Key** | `cw_read_...` | `GET /v1/verdict`, `GET /api/*`, `/v1/analytics/*`<br>Incident actions: acknowledge, assign, resolve, reopen, rate, investigate | Web Dashboard, MCP server, SRE Audit Scripts |
+| **Manage Key** | `cw_manage_...` | Changes only: `PUT /api/settings`, `PUT /v1/budget`, `POST`/`DELETE /api/mutes`, `POST`/`PUT`/`DELETE /api/runbooks`. Reads nothing. | Team leads (the dashboard keeps it for one browser tab) |
+| **Admin Key** | `ADMIN_API_KEY` (install-wide) | Owner pages (`/v1/owner/stats`, `/v1/admin/margin`)<br>With a project's read key: `GET /v1/export`, `DELETE /v1/project-data`, and everything the manage key changes | Install owner only |
 
 - **Storage:** Keys are hashed with SHA-256 before storage; plaintext keys are never stored in the database.
 - **Verification:** Role checks and key matching are verified in constant time (`hmac.compare_digest`).
-- **Blast Radius:** If an Ingest Key leaks from client-side code or CI/CD logs, the key **cannot** be used to read or exfiltrate customer code, error histories, or release verdicts (HTTP 403 Forbidden).
+- **Blast Radius:** If an Ingest Key leaks from client-side code or CI/CD logs, the key **cannot** be used to read or exfiltrate customer code, error histories, or release verdicts (HTTP 403 Forbidden). The read key is the most widely copied (every dashboard browser, every developer's AI tool through the MCP server), so it cannot silence alerts with a mute rule, raise the AI budget, or change settings and runbooks (HTTP 403); that needs the manage key, which reads nothing.
 
 ---
 

@@ -11,7 +11,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
-from app.auth import require_read_project_id
+from app.auth import require_manage_project_id, require_read_project_id
 from app.config import settings
 from app.db import close_db_pool, get_connection, init_db_pool, project_transaction
 from app.notifiers.channels import DiscordNotifier, SlackNotifier, TeamsNotifier, _slack_safe_blocks, slack_safe
@@ -238,6 +238,7 @@ async def _client_as(pid):
     from app.main import app
 
     app.dependency_overrides[require_read_project_id] = lambda: pid
+    app.dependency_overrides[require_manage_project_id] = lambda: pid  # adding and editing runbooks
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
@@ -247,6 +248,7 @@ def as_project():
 
     yield _client_as
     app.dependency_overrides.pop(require_read_project_id, None)
+    app.dependency_overrides.pop(require_manage_project_id, None)
 
 
 BILLING = {"title": "Billing totals fail", "steps": "1. Check discounts in /admin/discounts\n2. Roll back if over 1%",

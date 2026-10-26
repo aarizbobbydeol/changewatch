@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import NavLinks from "../components/NavLinks";
-import { apiUrl, loadEndpoint, loadReadKey, saveEndpoint, saveReadKey } from "../lib/session";
+import { apiUrl, changeHeaders, loadEndpoint, loadManageKey, loadReadKey, saveEndpoint, saveManageKey, saveReadKey } from "../lib/session";
 import { dollarsToMicros, microsToDollars } from "../lib/money";
 
 interface Channel {
@@ -62,6 +62,8 @@ export default function SettingsPage() {
   const [endpoint, setEndpoint] = useState("");
   const [draftKey, setDraftKey] = useState("");
   const [draftEndpoint, setDraftEndpoint] = useState("");
+  const [draftManage, setDraftManage] = useState("");
+  const [hasManage, setHasManage] = useState(false);
   const [settings, setSettings] = useState<ProjectSettings | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -95,7 +97,7 @@ export default function SettingsPage() {
     try {
       const res = await fetch(apiUrl(endpoint, rbEditing ? `/api/runbooks/${rbEditing}` : "/api/runbooks"), {
         method: rbEditing ? "PUT" : "POST",
-        headers: { "X-API-Key": readKey, "Content-Type": "application/json" },
+        headers: changeHeaders(readKey),
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(apiError(await res.json().catch(() => null), res.status));
@@ -123,8 +125,8 @@ export default function SettingsPage() {
 
   const deleteRunbook = async (rb: Runbook) => {
     if (!window.confirm(`Delete the runbook "${rb.title}"?`)) return;
-    const res = await fetch(apiUrl(endpoint, `/api/runbooks/${rb.id}`), { method: "DELETE", headers: { "X-API-Key": readKey } });
-    setRbStatus(res.ok ? "Deleted" : `Could not delete: HTTP ${res.status}`);
+    const res = await fetch(apiUrl(endpoint, `/api/runbooks/${rb.id}`), { method: "DELETE", headers: changeHeaders(readKey) });
+    setRbStatus(res.ok ? "Deleted" : `Could not delete: ${apiError(await res.json().catch(() => null), res.status)}`);
     loadRunbooks();
   };
 
@@ -134,10 +136,10 @@ export default function SettingsPage() {
       const micros = dollarsToMicros(valueInput) ?? 0;
       const res = await fetch(apiUrl(endpoint, "/api/settings"), {
         method: "PUT",
-        headers: { "X-API-Key": readKey, "Content-Type": "application/json" },
+        headers: changeHeaders(readKey),
         body: JSON.stringify({ failed_request_value_micros: micros }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error(apiError(await res.json().catch(() => null), res.status));
       setSettings((prev) => (prev ? { ...prev, failed_request_value_micros: micros || null } : prev));
       setValueStatus(micros ? "Saved" : "Cleared");
     } catch (e: any) {
@@ -152,6 +154,7 @@ export default function SettingsPage() {
     setEndpoint(ep);
     setDraftKey(key);
     setDraftEndpoint(ep);
+    setHasManage(Boolean(loadManageKey()));
   }, []);
 
   useEffect(() => {
@@ -181,6 +184,14 @@ export default function SettingsPage() {
     };
   }, [readKey, endpoint]);
 
+  // The manage key is kept for this tab only, and never shown again once entered
+  const applyManageKey = (e: React.FormEvent) => {
+    e.preventDefault();
+    saveManageKey(draftManage);
+    setHasManage(Boolean(draftManage.trim()));
+    setDraftManage("");
+  };
+
   const save = (e: React.FormEvent) => {
     e.preventDefault();
     saveReadKey(draftKey);
@@ -203,8 +214,8 @@ export default function SettingsPage() {
           <h2 className="font-semibold mb-1">Dashboard access</h2>
           <p className="text-sm text-slate-400 mb-4">
             Saved in this browser only and used by every page. Use your project&apos;s read key (<code>cw_read_…</code>). It sees
-            this project only and cannot send events, export or delete data; it can acknowledge and mute incidents,
-            start investigations, and change this project&apos;s settings and budget.
+            this project only and cannot send events, export or delete data; it can acknowledge, assign and resolve
+            incidents and start investigations. Changing settings, the budget, mute rules or runbooks needs the manage key below.
           </p>
           <form onSubmit={save} className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] items-end">
             <label className="text-xs text-slate-400">
@@ -229,6 +240,23 @@ export default function SettingsPage() {
             </label>
             <button type="submit" className="rounded-md bg-brand hover:bg-teal-700 px-4 py-2 text-sm font-medium text-white">
               Save
+            </button>
+          </form>
+          <form onSubmit={applyManageKey} className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto] items-end">
+            <label className="text-xs text-slate-400">
+              Manage key, to change settings, the budget and runbooks (<code>cw_manage_…</code>, kept for this tab only;
+              the admin key saved on the Owner page works too)
+              <input
+                type="password"
+                value={draftManage}
+                onChange={(e) => setDraftManage(e.target.value)}
+                placeholder={hasManage ? "entered for this tab" : "cw_manage_…"}
+                autoComplete="off"
+                className="mt-1 w-full rounded-md bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-slate-100"
+              />
+            </label>
+            <button type="submit" className="rounded-md bg-slate-800 border border-slate-700 hover:bg-slate-700 px-4 py-2 text-sm">
+              {draftManage.trim() || !hasManage ? "Use" : "Forget"}
             </button>
           </form>
         </section>

@@ -86,6 +86,7 @@ async def test_migration_runner_idempotent():
             {"version": "029_deploy_reviews.sql"},
             {"version": "030_runbooks.sql"},
             {"version": "031_outbox_payload_enc.sql"},
+            {"version": "032_manage_key.sql"},
         ],
         [],  # unhashed projects
 

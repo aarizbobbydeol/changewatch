@@ -24,6 +24,7 @@ from app.auth import (
     require_ingest_project_id,
     require_read_project_id,
     require_admin_key,
+    require_manage_project_id,
 )
 from app.cache import invalidate_deploy_cache, issue_lookup_cache
 from app.codeowners import invalidate_codeowners
@@ -1360,9 +1361,9 @@ class SettingsUpdate(BaseModel):
 @app.put("/api/settings", tags=["Settings"])
 async def update_project_settings(
     payload: SettingsUpdate,
-    project_id: int = Depends(require_read_project_id),
+    project_id: int = Depends(require_manage_project_id),
 ):
-    """Update project settings."""
+    """Update project settings (the project's manage key, or its read key with the admin key)."""
     async with project_transaction(project_id) as conn:
         if payload.critical_routes is not None:
             await conn.execute(
@@ -1386,7 +1387,7 @@ async def update_project_settings(
 
 
 # Runbooks: the steps the team wrote for a kind of error, shown in its alerts and incidents.
-# Changed with the read key, like the other project settings.
+# Read with the read key; changed with the manage key (or the read key with the admin key).
 @app.get("/api/runbooks", tags=["Runbooks"])
 async def get_runbooks(project_id: int = Depends(require_read_project_id)) -> List[Dict[str, Any]]:
     """The project's runbooks with their matchers and steps."""
@@ -1395,7 +1396,7 @@ async def get_runbooks(project_id: int = Depends(require_read_project_id)) -> Li
 
 
 @app.post("/api/runbooks", status_code=status.HTTP_201_CREATED, tags=["Runbooks"])
-async def add_runbook(payload: RunbookIn, project_id: int = Depends(require_read_project_id)) -> Dict[str, Any]:
+async def add_runbook(payload: RunbookIn, project_id: int = Depends(require_manage_project_id)) -> Dict[str, Any]:
     """Add a runbook. Set at least one of match_exception, match_path, match_route; all set ones must match."""
     async with project_transaction(project_id) as conn:
         created = await create_runbook(conn, project_id, payload)
@@ -1408,7 +1409,7 @@ async def add_runbook(payload: RunbookIn, project_id: int = Depends(require_read
 async def edit_runbook(
     payload: RunbookIn,
     id: int = Path(..., description="Runbook ID"),
-    project_id: int = Depends(require_read_project_id),
+    project_id: int = Depends(require_manage_project_id),
 ) -> Dict[str, Any]:
     """Replace a runbook."""
     async with project_transaction(project_id) as conn:
@@ -1421,7 +1422,7 @@ async def edit_runbook(
 @app.delete("/api/runbooks/{id}", tags=["Runbooks"])
 async def remove_runbook(
     id: int = Path(..., description="Runbook ID"),
-    project_id: int = Depends(require_read_project_id),
+    project_id: int = Depends(require_manage_project_id),
 ) -> Dict[str, Any]:
     """Delete a runbook (only the runbook; incidents that showed it are unchanged)."""
     async with project_transaction(project_id) as conn:
@@ -1950,9 +1951,9 @@ async def get_budget(
 @app.put("/v1/budget", tags=["Usage & Metering"])
 async def put_budget(
     payload: BudgetUpdate,
-    project_id: int = Depends(require_read_project_id),
+    project_id: int = Depends(require_manage_project_id),
 ):
-    """Update project budget soft/hard limits and warning thresholds."""
+    """Update project budget soft/hard limits and warning thresholds (the manage key, or the read key with the admin key)."""
     async with project_transaction(project_id) as conn:
         return await set_project_budget(
             conn=conn,
@@ -2372,9 +2373,10 @@ async def list_mute_rules(project_id: int = Depends(require_read_project_id)):
 @app.post("/api/mutes", tags=["Mute Rules"])
 async def create_mute_rule(
     rule: IgnoreRuleCreate,
-    project_id: int = Depends(require_read_project_id),
+    project_id: int = Depends(require_manage_project_id),
 ):
-    """Create an ignore / mute rule (max 90 days, default 14 days)."""
+    """Create an ignore / mute rule (max 90 days, default 14 days). It silences alerts, so it needs the
+    manage key (or the read key with the admin key)."""
     days = min(max(1, rule.expires_in_days or 14), 90)
     expires_at = datetime.now(timezone.utc) + timedelta(days=days)
 
@@ -2403,7 +2405,7 @@ async def create_mute_rule(
 @app.delete("/api/mutes/{id}", tags=["Mute Rules"])
 async def delete_mute_rule(
     id: int = Path(...),
-    project_id: int = Depends(require_read_project_id),
+    project_id: int = Depends(require_manage_project_id),
 ):
     """Delete / unmute an active ignore rule."""
     async with project_transaction(project_id) as conn:

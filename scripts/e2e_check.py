@@ -82,11 +82,12 @@ def create_project(cli: list, name: str, webhook: str) -> dict:
     text = out.stdout + out.stderr
     ingest = re.search(r"Ingest Key:\s+(cw_ingest_\S+)", text)
     read = re.search(r"Read Key:\s+(cw_read_\S+)", text)
+    manage = re.search(r"Manage Key:\s+(cw_manage_\S+)", text)
     pid = re.search(r"Project ID:\s+(\d+)", text)
-    if not (ingest and read and pid):
+    if not (ingest and read and manage and pid):
         print(text[-1500:])
         return {}
-    return {"id": int(pid.group(1)), "ingest": ingest.group(1), "read": read.group(1)}
+    return {"id": int(pid.group(1)), "ingest": ingest.group(1), "read": read.group(1), "manage": manage.group(1)}
 
 
 def git(repo: Path, *args: str) -> str:
@@ -150,12 +151,15 @@ def main() -> int:
     def text_of(body: dict) -> str:
         return str(body.get("text") or body.get("body") or body.get("content") or body)
 
-    # The team's runbook for this kind of error, added with the read key like other settings
-    status, _ = http("POST", f"{api}/api/runbooks", {
-        "title": "Billing totals fail", "steps": "1. Check discounts\n2. Roll back if checkouts fail",
-        "match_exception": "ZeroDivisionError", "match_path": "app/billing.py",
-        "url": "https://wiki.acme.example/runbooks/billing"}, read)
-    check(status == 201, "runbook added")
+    # The team's runbook for this kind of error. Changing settings needs the manage key: the read key
+    # (in every dashboard and AI tool) is refused, and the manage key reads nothing
+    runbook = {"title": "Billing totals fail", "steps": "1. Check discounts\n2. Roll back if checkouts fail",
+               "match_exception": "ZeroDivisionError", "match_path": "app/billing.py",
+               "url": "https://wiki.acme.example/runbooks/billing"}
+    check(http("POST", f"{api}/api/runbooks", runbook, read)[0] == 403, "read key cannot change settings")
+    check(http("GET", f"{api}/api/runbooks", headers={"X-API-Key": a["manage"]})[0] == 403, "manage key cannot read")
+    status, _ = http("POST", f"{api}/api/runbooks", runbook, {"X-API-Key": a["manage"]})
+    check(status == 201, "runbook added with the manage key")
 
     # 3. Baseline: 20 minutes of normal traffic before the deploy
     now = time.time()

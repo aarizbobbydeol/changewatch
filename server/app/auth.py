@@ -20,10 +20,11 @@ def hash_api_key(api_key: str) -> str:
 
 async def get_project_id_by_api_key(
     api_key: str,
-    role: Literal["any", "ingest", "read"] = "any",
+    role: Literal["any", "ingest", "read", "manage"] = "any",
 ) -> int:
     """
-    Resolve api_key to project_id, enforcing key role permissions (ingest vs read).
+    Resolve api_key to project_id, enforcing key role permissions (ingest, read, manage). The
+    manage key only changes settings: it is not a read or ingest key, and no other key is a manage key.
     Uses SHA-256 hashing and constant-time comparison.
     Caches successful lookups in in-memory LRU+TTL cache and Redis for 60 seconds.
     """
@@ -54,10 +55,11 @@ async def get_project_id_by_api_key(
     async with get_connection() as conn:
         row = await conn.fetchrow(
             """
-            SELECT id, ingest_key_hash, read_key_hash, api_key
+            SELECT id, ingest_key_hash, read_key_hash, manage_key_hash, api_key
             FROM projects
             WHERE ingest_key_hash = $1
                OR read_key_hash = $1
+               OR manage_key_hash = $1
                OR api_key = $2
             LIMIT 1
             """,
@@ -76,10 +78,15 @@ async def get_project_id_by_api_key(
     project_id = int(row_dict["id"])
     db_ingest_hash = row_dict.get("ingest_key_hash") or ""
     db_read_hash = row_dict.get("read_key_hash") or ""
+    db_manage_hash = row_dict.get("manage_key_hash") or ""
     db_api_key = row_dict.get("api_key") or ""
+    # Only its own column makes a manage key (never the legacy single key)
+    is_manage = bool(db_manage_hash) and hmac.compare_digest(db_manage_hash, key_hash)
 
     has_hash_columns = bool(db_ingest_hash or db_read_hash or db_api_key)
-    if not has_hash_columns:
+    if is_manage:
+        is_ingest = is_read = False
+    elif not has_hash_columns:
         is_ingest = True
         is_read = True
     else:
@@ -93,7 +100,25 @@ async def get_project_id_by_api_key(
         )
 
     # 3. Role enforcement
-    if role == "ingest":
+    if is_manage and role != "manage":
+        logger.warning("Authorization failure: manage key used to %s for project %d", role, project_id)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The manage key only changes settings; use the read key to read or the ingest key to send data",
+        )
+    if role == "manage":
+        if not is_manage:
+            if is_read or is_ingest:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Changing this project's settings needs its manage key (cw_manage_...), "
+                    "or its read key together with the admin key",
+                )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid API key",
+            )
+    elif role == "ingest":
         if not is_ingest:
             if is_read:
                 logger.warning("Authorization failure: read key used on ingest endpoint for project %d", project_id)
@@ -169,6 +194,23 @@ async def require_project_id(
 
 
 ADMIN_KEY_HEADER_NAME = "X-Admin-Key"
+
+
+async def require_manage_project_id(
+    api_key: str = Depends(get_api_key),
+    x_admin_key: Optional[str] = Header(None, alias=ADMIN_KEY_HEADER_NAME),
+) -> int:
+    """FastAPI dependency for changing a project's settings, budget, mute rules and runbooks: the
+    project's manage key, or its read key (which says which project) together with the admin key."""
+    if x_admin_key:
+        await require_admin_key(x_admin_key=x_admin_key, x_api_key=None)
+        try:
+            return await get_project_id_by_api_key(api_key, role="read")
+        except HTTPException as exc:
+            if exc.status_code != status.HTTP_403_FORBIDDEN:
+                raise
+            return await get_project_id_by_api_key(api_key, role="manage")
+    return await get_project_id_by_api_key(api_key, role="manage")
 
 
 async def require_admin_key(

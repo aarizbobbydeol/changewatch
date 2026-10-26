@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react";
 import { dollarsToMicros } from "../lib/money";
 import Link from "next/link";
-import { apiUrl, downloadWithKey, loadEndpoint, loadReadKey, saveEndpoint, saveReadKey } from "../lib/session";
+import { apiUrl, changeHeaders, downloadWithKey, loadEndpoint, loadReadKey, saveEndpoint, saveReadKey } from "../lib/session";
 import NavLinks from "../components/NavLinks";
 
 interface UsageItem {
@@ -181,10 +181,8 @@ export default function UsagePage() {
 
       const res = await fetch(`${endpoint.replace(/\/$/, "")}/v1/budget`, {
         method: "PUT",
-        headers: {
-          "X-API-Key": apiKey.trim(),
-          "Content-Type": "application/json",
-        },
+        // The manage key (entered on the Settings page), or the read key with the admin key
+        headers: changeHeaders(apiKey.trim()),
         body: JSON.stringify({
           soft_limit_micros: soft,
           hard_limit_micros: hard,
@@ -194,7 +192,9 @@ export default function UsagePage() {
       });
 
       if (!res.ok) {
-        throw new Error(`Failed to update budget: ${await res.text()}`);
+        const body = await res.json().catch(() => null);
+        const detail = typeof body?.detail === "string" ? body.detail : `HTTP ${res.status}`;
+        throw new Error(`Could not update the budget: ${detail}${res.status === 403 ? " (enter it on the Settings page)" : ""}`);
       }
 
       const updated = await res.json();

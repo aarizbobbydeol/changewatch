@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.auth import require_read_project_id
+from app.auth import require_manage_project_id, require_read_project_id
 from app.config import settings
 from app.main import app
 from app.metering import PriceBookEntry
@@ -270,6 +270,7 @@ async def test_budget_get_and_put():
     """Verify GET /v1/budget and PUT /v1/budget endpoint handlers."""
     mock_conn = AsyncMock()
     app.dependency_overrides[require_read_project_id] = lambda: 1
+    app.dependency_overrides[require_manage_project_id] = lambda: 1  # changing the budget
 
     try:
         with patch("app.main.get_connection") as mock_get_conn, \
@@ -320,6 +321,7 @@ async def test_budget_get_and_put():
                     assert data_put["warn_at"] == [50, 75, 90]
     finally:
         app.dependency_overrides.pop(require_read_project_id, None)
+        app.dependency_overrides.pop(require_manage_project_id, None)
 
 
 @pytest.mark.asyncio

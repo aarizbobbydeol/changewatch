@@ -39,6 +39,11 @@ def generate_read_key() -> str:
     return f"cw_read_{secrets.token_urlsafe(24)}"
 
 
+def generate_manage_key() -> str:
+    """Generate a cryptographically secure random manage API key (changes settings only)."""
+    return f"cw_manage_{secrets.token_urlsafe(24)}"
+
+
 def _mask_url(url: str) -> str:
     """Show only scheme and host of a URL; webhook paths are credentials."""
     from urllib.parse import urlparse
@@ -71,6 +76,10 @@ async def create_project_cmd(name: str, slack_webhook: Optional[str] = None):
     read_hash = hash_api_key(read_key)
     read_prefix = read_key[:14] + "..."
 
+    manage_key = generate_manage_key()
+    manage_hash = hash_api_key(manage_key)
+    manage_prefix = manage_key[:16] + "..."
+
     # Generate 256-bit project data key and encrypt with master key
     try:
         master_key = get_master_key_bytes()
@@ -91,9 +100,11 @@ async def create_project_cmd(name: str, slack_webhook: Optional[str] = None):
                     ingest_key_hash,
                     ingest_key_prefix,
                     read_key_hash,
-                    read_key_prefix
+                    read_key_prefix,
+                    manage_key_hash,
+                    manage_key_prefix
                 )
-                VALUES ($1, $2, $3, $4, $5, $6)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 RETURNING id, name, created_at
                 """,
                 name,
@@ -102,6 +113,8 @@ async def create_project_cmd(name: str, slack_webhook: Optional[str] = None):
                 ingest_prefix,
                 read_hash,
                 read_prefix,
+                manage_hash,
+                manage_prefix,
             )
             if slack_webhook:
                 # The webhook URL is a credential: store it encrypted with the project's data key
@@ -122,12 +135,14 @@ async def create_project_cmd(name: str, slack_webhook: Optional[str] = None):
         print(f"Project Name:      {row['name']}")
         print(f"Ingest Key:        {ingest_key}")
         print(f"Read Key:          {read_key}")
+        print(f"Manage Key:        {manage_key}")
         print(f"Slack Webhook URL: {_mask_url(slack_webhook) if slack_webhook else '(None)'}")
         print(f"Envelope Security: {'Enabled (AES-256-GCM)' if data_key_enc else 'Pending'}")
         print("------------------------------------------")
         print("IMPORTANT: Save these keys now. They are hashed with SHA-256 and will NEVER be shown again.")
         print("  - Ingest Key: Use in Python SDK & GitHub Actions (can only POST events and deploys).")
-        print("  - Read Key:   Use in Dashboard & Verdict API (can only read status and timelines).")
+        print("  - Read Key:   Use in Dashboard, Verdict API & MCP server (reads; acknowledges and resolves incidents).")
+        print("  - Manage Key: For team leads (changes settings, budget, mute rules and runbooks; reads nothing).")
         print("==========================================\n")
 
     finally:
@@ -621,6 +636,27 @@ async def list_runbooks_cmd(project_id: int):
         print(f"  [{r['id']}] {r['title']} | {matchers} | {len(r['steps'])} characters of steps")
 
 
+async def new_manage_key_cmd(project_id: int) -> Optional[str]:
+    """Create a manage key for a project, replacing the one it had (which stops working within a
+    minute, when cached lookups expire). For projects created before manage keys, and to rotate."""
+    manage_key = generate_manage_key()
+    await init_db_pool()
+    try:
+        async with get_connection() as conn:
+            updated = await conn.fetchval(
+                "UPDATE projects SET manage_key_hash = $1, manage_key_prefix = $2 WHERE id = $3 RETURNING id",
+                hash_api_key(manage_key), manage_key[:16] + "...", project_id,
+            )
+    finally:
+        await close_db_pool()
+    if not updated:
+        print(f"No project with ID {project_id}.")
+        return None
+    print(f"Manage Key for project {project_id}: {manage_key}")
+    print("Save it now: it is stored hashed and will not be shown again. The previous manage key no longer works.")
+    return manage_key
+
+
 async def requeue_dead_cmd(limit: int = 0) -> int:
     """Move dead-lettered events back to the events queue with a fresh retry count."""
     import json
@@ -751,6 +787,12 @@ def main():
     mem_list_parser = subparsers.add_parser("list-members", help="List team members for a project")
     mem_list_parser.add_argument("project_id", type=int, help="Project ID")
 
+    # Subcommand: new-manage-key
+    mk_parser = subparsers.add_parser(
+        "new-manage-key", help="Create a project's manage key (changes settings, budget, mutes, runbooks); replaces the old one"
+    )
+    mk_parser.add_argument("project_id", type=int, help="Project ID")
+
     # Subcommands: add-runbook, list-runbooks
     rb_add_parser = subparsers.add_parser("add-runbook", help="Add a runbook (steps for a kind of error)")
     rb_add_parser.add_argument("project_id", type=int, help="Project ID")
@@ -817,6 +859,9 @@ def main():
         )
     elif args.command == "list-members":
         asyncio.run(list_members_cmd(args.project_id))
+    elif args.command == "new-manage-key":
+        if not asyncio.run(new_manage_key_cmd(args.project_id)):
+            sys.exit(1)
     elif args.command == "add-runbook":
         if not asyncio.run(add_runbook_cmd(args.project_id, args.title, steps_file=args.steps_file,
                                            match_exception=args.exception, match_path=args.path,

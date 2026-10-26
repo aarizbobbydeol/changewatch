@@ -58,6 +58,41 @@ export function saveAdminKey(value: string): void {
   write(ADMIN_KEY, value.trim());
 }
 
+// The manage key changes settings, budget, mute rules and runbooks. It is the key that can silence
+// alerts, so it is kept for this browser tab only (sessionStorage), not saved like the read key.
+const MANAGE_KEY = "cw_manage_key";
+
+export function loadManageKey(): string {
+  try {
+    return window.sessionStorage.getItem(MANAGE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+export function saveManageKey(value: string): void {
+  try {
+    if (value.trim()) window.sessionStorage.setItem(MANAGE_KEY, value.trim());
+    else window.sessionStorage.removeItem(MANAGE_KEY);
+  } catch {
+    // storage blocked: the key is not remembered
+  }
+}
+
+// Headers for a request that changes something: the manage key, else the read key (which says which
+// project) with a saved admin key; with neither, the API answers 403 and says what is needed
+export function changeHeaders(readKey: string): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const manage = loadManageKey();
+  const admin = loadAdminKey();
+  if (manage) headers["X-API-Key"] = manage;
+  else {
+    headers["X-API-Key"] = readKey;
+    if (admin) headers["X-Admin-Key"] = admin;
+  }
+  return headers;
+}
+
 // Empty means "same origin": the dashboard proxies /api and /v1 to the API (next.config.js),
 // which also works behind the Caddy domain where localhost:8000 is unreachable
 export function loadEndpoint(): string {

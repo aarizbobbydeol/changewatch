@@ -35,7 +35,7 @@ ChangeWatch runs as eight containers (`docker-compose.yml`), plus optional Caddy
 | **detector** | Every 60 seconds: verdicts for recent deploys, escalation and auto-resolve of incidents, the dead-man's switch for silent apps, retention, the weekly digest, the watchdog. | `server/app/detector.py`, `trust/` |
 | **investigator** | Takes investigation jobs off a Redis queue, gathers the diff, stack trace and error rates with read-only tools, asks the model, checks the answer, and stores it. | `server/app/investigator/` |
 | **notifier** | Every second: sends what is waiting in the outbox to Slack, Discord, Teams, email or a signed webhook, with retries. Watches the other processes. | `server/app/notifier.py`, `outbox.py`, `notifiers/` |
-| **dashboard** | The web UI (Next.js). It talks to the API with the project's read key. | `dashboard/` |
+| **dashboard** | The web UI (Next.js). It talks to the API with the project's read key, and the manage key for changes. | `dashboard/` |
 | **postgres**, **redis** | Postgres 16 stores everything (with row-level security per project). Redis holds the queues, caches and rate limits. | `server/sql/migrations/` |
 
 Outside the server there are two small clients that run on your side:

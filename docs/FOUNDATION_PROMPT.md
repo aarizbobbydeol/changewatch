@@ -71,7 +71,8 @@ collector/             opt-in telemetry collector
 | Auth | Endpoints |
 |---|---|
 | Ingest key | `POST /v1/deploys`, `POST /v1/events` |
-| Read key | `GET /v1/verdict`, `/api/deploys`, `/api/issues[/{id}]`, `/api/timeline`, `/api/incidents[/{id}][/timeline]`, `POST /api/incidents/{id}/actions,feedback,investigate`, `/api/mutes`, `/api/settings`, `/v1/analytics/*`, `/v1/usage*`, `/v1/budget`, `/v1/trust/summary`, `/v1/digest/preview`; with the admin key also `/v1/export` and `DELETE /v1/project-data` |
+| Read key | `GET /v1/verdict`, `/api/deploys`, `/api/issues[/{id}]`, `/api/timeline`, `/api/incidents[/{id}][/timeline]`, `POST /api/incidents/{id}/actions,feedback,investigate`, `GET /api/mutes`, `GET /api/settings`, `GET /api/runbooks`, `/v1/analytics/*`, `/v1/usage*`, `GET /v1/budget`, `/v1/trust/summary`, `/v1/digest/preview`; with the admin key also `/v1/export`, `DELETE /v1/project-data` and the manage key's changes |
+| Manage key | `PUT /api/settings`, `PUT /v1/budget`, `POST`/`DELETE /api/mutes`, `POST`/`PUT`/`DELETE /api/runbooks` (changes only; reads nothing) |
 | Other | `GET /healthz`, `GET /v1/auth/verify`, `GET /a/{token}` (signed action links), `POST /v1/integrations/slack/interactions`, `/v1/telemetry/*`, `/v1/owner/stats`, `/v1/admin/margin`, `/v1/status` |
 
 Keys go in the `X-API-Key` header.

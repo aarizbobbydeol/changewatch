@@ -199,7 +199,7 @@ docker compose exec api python -m app.cli create-project "my-app" \
   --slack-webhook "https://hooks.slack.com/services/..."
 ```
 
-The last command prints your **ingest key** (`cw_ingest_…`) and **read key** (`cw_read_…`).
+The last command prints your **ingest key** (`cw_ingest_…`) for the SDK and the Action, your **read key** (`cw_read_…`) for the dashboard, the read APIs and the MCP server, and your **manage key** (`cw_manage_…`) for team leads: only it (or the read key together with the admin key) changes settings, the AI budget, mute rules and runbooks, and it reads nothing.
 
 | Service | URL |
 |---|---|
@@ -335,7 +335,7 @@ flowchart LR
 
 - **Telemetry is off by default** (`TELEMETRY_ENABLED=0`). If you enable it, only coarse, bucketed fleet metadata is sent, and you can preview the exact payload at `GET /v1/telemetry/preview`. Source code, repository names, file paths, stack traces, emails, IPs and credentials are **never** collected, and the schema rejects them (`extra="forbid"`).
 - **Fully local mode:** `LLM_PROVIDER=ollama` + `DECISION_PROVIDER=rules` means no customer data leaves your infrastructure.
-- **Key hygiene:** ingest and read keys have separate roles and are stored hashed. Logs are redacted. Master keys can be rotated with the CLI.
+- **Key hygiene:** ingest, read and manage keys have separate roles and are stored hashed; the widely shared read key cannot silence alerts, change the budget or edit runbooks. Logs are redacted. Master keys can be rotated with the CLI.
 - **Transport:** an optional Caddy profile provides automatic TLS. Internal services sit on a private network, and outbound webhooks are signed.
 - **Your data:** configurable retention (`RETENTION_DAYS`), partition drops in O(1), and export and purge endpoints.
 

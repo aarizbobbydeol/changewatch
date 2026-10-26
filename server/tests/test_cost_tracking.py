@@ -10,7 +10,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.auth import require_read_project_id
+from app.auth import require_manage_project_id, require_read_project_id
 from app.config import settings
 from app.costs import ai_cost_for_deploy, incident_cost, price_ai_call, usd
 from app.db import close_db_pool, get_connection, init_db_pool, project_transaction
@@ -195,6 +195,7 @@ async def test_live_incident_cost_and_the_value_setting(project):
     from app.main import app
 
     app.dependency_overrides[require_read_project_id] = lambda: project
+    app.dependency_overrides[require_manage_project_id] = lambda: project  # changing settings
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             saved = await client.put("/api/settings", json={"failed_request_value_micros": 500_000})
@@ -204,6 +205,7 @@ async def test_live_incident_cost_and_the_value_setting(project):
             draft = (await client.get(f"/api/incidents/{inc}/postmortem")).json()["markdown"]
     finally:
         app.dependency_overrides.pop(require_read_project_id, None)
+        app.dependency_overrides.pop(require_manage_project_id, None)
 
     assert without_value["failed_requests"] == 75 and without_value["minutes"] == 25
     assert without_value["investigation_cost"] == "$0.06" and without_value["estimated_impact"] is None

@@ -133,12 +133,15 @@ docker compose exec api python -m app.cli create-project "friend-app" \
   --slack-webhook "https://hooks.slack.com/services/T000/B000/XXXX"
 ```
 
-The CLI prints two keys **once**. Only their SHA-256 hashes are stored.
+The CLI prints three keys **once**. Only their SHA-256 hashes are stored.
 
 | Key | Prefix | Used by |
 |---|---|---|
 | Ingest key | `cw_ingest_…` | The app's SDK and the GitHub Action |
-| Read key | `cw_read_…` | The dashboard and read APIs |
+| Read key | `cw_read_…` | The dashboard, read APIs and the MCP server; also acknowledges, assigns and resolves incidents |
+| Manage key | `cw_manage_…` | Team leads only: changes settings, the AI budget, mute rules and runbooks (reads nothing). The read key together with the admin key works too. |
+
+Projects created before manage keys existed get one with `docker compose exec api python -m app.cli new-manage-key <project_id>`; the same command replaces a manage key (the old one stops working within a minute).
 
 Add more alert channels (Discord, Teams, email, generic webhook) with `add-channel`:
 
@@ -184,6 +187,6 @@ cw = changewatch.init(
 app.add_middleware(ASGIMiddleware, client=cw)
 ```
 
-**c. Open the dashboard** at `https://changewatch.yourdomain.com`, go to **Settings** and enter the read key (`cw_read_…`) once; every page uses it. The dashboard shows deploy markers on the error timeline, incidents tagged with file, line and owner, AI root-cause investigations, a **Trust** page (alert precision, speed, calibration) and CSV exports.
+**c. Open the dashboard** at `https://changewatch.yourdomain.com`, go to **Settings** and enter the read key (`cw_read_…`) once; every page uses it. To change settings, the budget or runbooks, also enter the manage key there (kept for that browser tab only). The dashboard shows deploy markers on the error timeline, incidents tagged with file, line and owner, AI root-cause investigations, a **Trust** page (alert precision, speed, calibration) and CSV exports.
 
 **d. Smoke test.** Raise an exception from any endpoint. An incident alert arrives in the team's channel, and the first release verdict follows at the +10 minute checkpoint.

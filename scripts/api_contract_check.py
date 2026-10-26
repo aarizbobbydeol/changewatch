@@ -35,6 +35,11 @@ CHANGES_DATA = {
     ("POST", "/v1/events"), ("POST", "/v1/deploys"),
     ("POST", "/api/runbooks"), ("PUT", "/api/runbooks/{id}"), ("DELETE", "/api/runbooks/{id}"),
 }
+# Changing a project's settings needs its manage key (or the read key with the admin key)
+MANAGE_ONLY = {
+    ("PUT", "/api/settings"), ("PUT", "/v1/budget"), ("POST", "/api/mutes"), ("DELETE", "/api/mutes/{id}"),
+    ("POST", "/api/runbooks"), ("PUT", "/api/runbooks/{id}"), ("DELETE", "/api/runbooks/{id}"),
+}
 SAMPLES = {"sha": "deadbeefcafe", "metric": "overview", "meter": "ai_investigation", "token": "not-a-real-token"}
 NOT_FOUND_OK = {("GET", "/v1/verdict")}  # the sample sha has no deploy
 # Admin endpoints that act on one project: the read key says which project
@@ -185,6 +190,10 @@ def main() -> int:
             wrong, right = (read, ingest) if (method, path) in INGEST_ONLY else (ingest, read)
             status, _ = req(wrong)
             r.expect(status == 403, f"{name}: wrong key type -> expected 403, got {status}")
+
+            if (method, path) in MANAGE_ONLY:
+                status, _ = req(read)
+                r.expect(status == 403, f"{name}: read key cannot change settings -> expected 403, got {status}")
 
             if has_body:
                 status, data = req(right, body=b"{not json")
