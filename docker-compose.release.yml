@@ -1,7 +1,7 @@
 # Use the published images instead of building locally:
 #   docker compose -f docker-compose.yml -f docker-compose.release.yml pull
 #   docker compose -f docker-compose.yml -f docker-compose.release.yml up -d --no-build
-# Pin a version with CHANGEWATCH_VERSION=0.1.0 in .env (default: latest).
+# Pin a version with CHANGEWATCH_VERSION=1.0.0 in .env (default: latest).
 x-server-image: &server-image ghcr.io/aarizbobbydeol/changewatch-server:${CHANGEWATCH_VERSION:-latest}
 
 services:

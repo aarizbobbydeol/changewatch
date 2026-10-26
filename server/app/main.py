@@ -2552,12 +2552,12 @@ async def get_owner_stats(_admin: bool = Depends(require_admin_key)):
         logger.debug("Collector unreachable at %s: %s", collector_url, e)
 
     # Standalone fallback stats if collector service is not running
-    from app.telemetry import detect_os_family, detect_run_mode
+    from app.telemetry import APP_VERSION, detect_os_family, detect_run_mode
     return {
         "opted_in_installs": 1 if settings.TELEMETRY_ENABLED else 0,
         "active_this_week": 1 if settings.TELEMETRY_ENABLED else 0,
         "new_this_week": 1 if settings.TELEMETRY_ENABLED else 0,
-        "version_mix": {"0.1.0": 1},
+        "version_mix": {APP_VERSION: 1},
         "run_mode_mix": {detect_run_mode(): 1},
         "os_family_mix": {detect_os_family(): 1},
         "ai_provider_mix": {getattr(settings, "DECISION_PROVIDER", "rules"): 1},
