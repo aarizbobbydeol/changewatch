@@ -1,6 +1,6 @@
 name: Release
 
-# Push a version tag (git tag v1.0.0 && git push origin v1.0.0) to publish images and a release.
+# Push a version tag (git tag v1.0.1 && git push origin v1.0.1) to publish images and a release.
 # Before tagging, set the new version in sdk/pyproject.toml and scripts/install.sh (CI checks they match).
 on:
   push:
@@ -69,19 +69,55 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
+  installer:
+    name: Install the published release the way users do
+    needs: images
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: One-command install from the images just published (no build)
+        run: ./scripts/install.sh --yes --project smoke | tee "$RUNNER_TEMP/install.log"
+
+      - name: It answers, with the version that was tagged
+        run: |
+          set -e
+          curl -fsS --retry 15 --retry-delay 2 --retry-all-errors http://localhost:8000/healthz
+          curl -fsS --retry 15 --retry-delay 2 --retry-all-errors -o /dev/null http://localhost:3000/
+          grep -E "^Ingest Key: +cw_ingest_" "$RUNNER_TEMP/install.log"
+          grep -x "CHANGEWATCH_VERSION=${GITHUB_REF_NAME#v}" .env
+          docker compose images | grep -E "changewatch-(server|dashboard) +${GITHUB_REF_NAME#v} "
+
+      - name: Service logs (on failure)
+        if: failure()
+        run: docker compose logs --no-color --tail=200
+
+      - name: Stop
+        if: always()
+        run: docker compose down -v
+
   release:
     name: GitHub Release
-    needs: images
+    needs: [images, installer]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Create the release with generated notes
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Create the release with its CHANGELOG.md section as the notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --repo "${{ github.repository }}" \
-            --title "ChangeWatch ${{ github.ref_name }}" \
-            --generate-notes \
-            --notes "Images: ghcr.io/${{ github.repository_owner }}/changewatch-server:${GITHUB_REF_NAME#v} and ghcr.io/${{ github.repository_owner }}/changewatch-dashboard:${GITHUB_REF_NAME#v}. Use them with docker-compose.release.yml (see docs/SELF_HOSTING.md)."
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '/^## / { p = ($2 == v); next } p' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          printf '\n**Images:** `ghcr.io/%s/changewatch-server:%s` and `ghcr.io/%s/changewatch-dashboard:%s`. **SDK:** `pip install changewatcher==%s`.\n' \
+            "${{ github.repository_owner }}" "$version" "${{ github.repository_owner }}" "$version" "$version" >> "$RUNNER_TEMP/notes.md"
+          if [ "$(wc -l < "$RUNNER_TEMP/notes.md")" -lt 3 ]; then
+            gh release create "$GITHUB_REF_NAME" --repo "${{ github.repository }}" --title "ChangeWatch $GITHUB_REF_NAME" --generate-notes
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "${{ github.repository }}" --title "ChangeWatch $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
+          fi

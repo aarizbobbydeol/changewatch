@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 # Installed as changewatcher ("changewatch" on PyPI is another project); imported as changewatch
 name = "changewatcher"
-version = "1.0.0"
+version = "1.0.1"
 description = "ChangeWatch Python SDK for error and performance monitoring"
 readme = "README.md"
 # SPDX license expression (PEP 639); the license text ships in the package as required

@@ -11,7 +11,7 @@ from typing import Dict, List, Literal
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict
 
-app = FastAPI(title="ChangeWatch Telemetry Collector", version="1.0.0")
+app = FastAPI(title="ChangeWatch Telemetry Collector", version="1.0.1")
 
 
 class TelemetryPayload(BaseModel):

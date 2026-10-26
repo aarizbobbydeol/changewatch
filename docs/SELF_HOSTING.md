@@ -106,7 +106,7 @@ docker compose --profile tls up -d
 This builds the images on the server. To use the published images instead (faster, and the same bits everyone runs), pin a version and pull:
 
 ```bash
-echo "CHANGEWATCH_VERSION=1.0.0" >> .env
+echo "CHANGEWATCH_VERSION=1.0.1" >> .env
 docker compose -f docker-compose.yml -f docker-compose.release.yml --profile tls pull
 docker compose -f docker-compose.yml -f docker-compose.release.yml --profile tls up -d --no-build
 ```

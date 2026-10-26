@@ -657,7 +657,7 @@ class Client:
         headers = {
             "Content-Type": "application/json",
             "X-API-Key": self.api_key,
-            "User-Agent": "changewatch-python/1.0.0",
+            "User-Agent": "changewatch-python/1.0.1",
         }
         req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
 

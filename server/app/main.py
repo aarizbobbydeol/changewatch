@@ -140,7 +140,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(
     title="ChangeWatch API",
-    version="1.0.0",
+    version="1.0.1",
     description="ChangeWatch developer release and error monitoring service",
     lifespan=lifespan,
 )

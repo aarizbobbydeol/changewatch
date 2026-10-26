@@ -20,7 +20,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
-SERVER_INFO = {"name": "changewatch", "version": "1.0.0"}
+SERVER_INFO = {"name": "changewatch", "version": "1.0.1"}
 # Newest first; an older client gets the version it asked for if it is one of these
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 MAX_TEXT = 20000  # characters returned per tool call
@@ -131,7 +131,7 @@ def _get(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
     query = urllib.parse.urlencode({k: v for k, v in (params or {}).items() if v is not None})
     req = urllib.request.Request(f"{url}{path}" + (f"?{query}" if query else ""), method="GET",
                                  headers={"X-API-Key": key, "Accept": "application/json",
-                                          "User-Agent": "changewatch-mcp/1.0.0"})
+                                          "User-Agent": "changewatch-mcp/1.0.1"})
     try:
         with _OPENER.open(req, timeout=TIMEOUT_SEC) as resp:
             return json.loads(resp.read() or b"null")

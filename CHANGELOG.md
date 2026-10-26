@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.0.1 (2026-10-27)
+
+**Setup is one command.** `scripts/install.sh` takes an empty Ubuntu server (or a machine with Docker) to a running ChangeWatch with HTTPS, fresh secrets, a first project and its keys, and optionally the demo shop. It installs Docker if missing and is safe to run again:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aarizbobbydeol/changewatch/main/scripts/install.sh | sudo bash -s -- --domain changewatch.example.com
+```
+
+**Security:** on a server, the API (8000) and dashboard (3000) ports were published on every network interface, and Docker's published ports bypass `ufw`, so they were reachable over plain HTTP next to the HTTPS site. They now listen on `CHANGEWATCH_BIND`; the installer sets `127.0.0.1` when you give it a domain, so only HTTPS (80/443) faces the internet. **Upgrading a 1.0.0 server that has a domain:** add `CHANGEWATCH_BIND=127.0.0.1` to `.env`, then `docker compose pull && docker compose up -d`.
+
+**Also:**
+- The Python SDK is on PyPI: `pip install changewatcher` (still `import changewatch`), published from GitHub with trusted publishing.
+- Security and conduct reports go through GitHub's private vulnerability reporting.
+- The SDK and dashboard packages state their Apache-2.0 license, and the SDK ships the license text.
+
 ## 1.0.0 (2026-10-26)
 
 The first release. ChangeWatch tells a team, within seconds of a deploy, whether that deploy broke something, where, and what to do about it. It runs on your own server with Docker Compose.
