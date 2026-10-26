@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,9 @@ name = "changewatch"
 version = "1.0.0"
 description = "ChangeWatch Python SDK for error and performance monitoring"
 readme = "README.md"
+# SPDX license expression (PEP 639); the license text ships in the package as required
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.9"
 dependencies = []
 
