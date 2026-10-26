@@ -273,3 +273,20 @@ async def test_live_alert_with_no_channel_is_not_called_delivered(incident):
     text = " | ".join(t["detail"] for t in timeline)
     assert "Resolved message not delivered: no channel configured" in text
     assert "Resolved message delivered" not in draft["markdown"]
+
+
+@pytest.mark.asyncio
+async def test_live_postmortem_commit_line_names_no_one(incident):
+    """The commit's first line can name people (a merged pull request's branch, a mention, an
+    email): the postmortem leaves them out and keeps teams; the incident page shows the line as is."""
+    pid, _, inc = incident
+    first_line = "Merge pull request #12 from alice/fix-discount, thanks @carol (bob@corp.example) and @acme/payments"
+    async with project_transaction(pid) as conn:
+        await conn.execute("UPDATE deploys SET message = $2 WHERE id = (SELECT deploy_id FROM incidents WHERE id = $1)",
+                           inc, first_line + "\n\nbody")
+        md = (await build_postmortem(conn, pid, inc))["markdown"]
+        page = await build_incident_timeline(conn, pid, inc)
+    for person in ("alice", "carol", "bob@", "corp.example"):
+        assert person not in md, person
+    assert "Deploy abcdef12 to prod: Merge pull request #12, thanks a teammate (someone) and @acme/payments" in md
+    assert any("from alice/fix-discount" in t["detail"] for t in page if t["event"] == "deployed")

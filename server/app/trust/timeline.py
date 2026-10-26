@@ -17,6 +17,19 @@ import asyncpg
 _CHANNEL_SUFFIX = re.compile(r":(?:channel:\d+|default)$")
 # The auto-resolve note names who deployed the fix: "likely fixed by deploy 1a2b3c4d by alice"
 _FIX_AUTHOR = re.compile(r"^(likely fixed by deploy \S+) by .*$", re.DOTALL)
+# A commit's first line can name people: "Merge pull request #12 from alice/fix", "Merge branch
+# 'alice/fix'", "@carol", an email. Teams (@org/team) are not people.
+_MERGE_FROM = re.compile(r"^(Merge pull request #\d+) from [^\s,;:)]+")
+_MERGE_BRANCH = re.compile(r"^Merge (?:remote-tracking )?branch '[^']*'")
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_PERSON = re.compile(r"(?<![\w/])@[A-Za-z0-9-]+(?![\w/-])")
+
+
+def _without_people(text: str) -> str:
+    text = _MERGE_FROM.sub(r"\1", text)
+    text = _MERGE_BRANCH.sub("Merge a branch", text)
+    text = _EMAIL.sub("someone", text)
+    return _PERSON.sub("a teammate", text)
 
 # Same moment: show the cause before the effect (deployed, then first error, then opened ...)
 _ORDER = {
@@ -97,7 +110,8 @@ async def build_incident_timeline(
             items.append({"at": at, "event": event, "detail": detail, **({} if blameless else {"actor": actor})})
 
     sha = (inc["commit_sha"] or "")[:8]
-    message = _first_line(inc["message"])
+    # Blameless: people are taken out of the whole line before it is shortened (half an email would stay)
+    message = _first_line(_without_people(_first_line(inc["message"], limit=10_000)) if blameless else inc["message"])
     add(inc["deployed_at"], "deployed", f"Deploy {sha} to {inc['environment'] or 'prod'}" + (f": {message}" if message else ""))
 
     first_error = inc["first_event_at"] or await conn.fetchval(
