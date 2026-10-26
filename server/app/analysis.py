@@ -105,7 +105,6 @@ async def generate_likely_cause(
             # Room for the model's thinking as well as the short answer
             max_tokens=4000,
         )
-        return answer.strip() if answer else None
     except Exception as exc:
         logger.warning(
             "LLM analysis failed for deploy %d (AI explanation will be omitted): %s",
@@ -113,6 +112,36 @@ async def generate_likely_cause(
             exc,
         )
         return None
+    text = answer.strip() if answer else None
+    if text:
+        await _record_likely_cause_usage(project_id, deploy_id, llm)
+    return text
+
+
+async def _record_likely_cause_usage(project_id: int, deploy_id: int, llm: Any) -> None:
+    """The likely cause is an AI call, so it counts toward the project's AI budget like an
+    investigation (the user's decision); a fake or dry-run provider costs nothing and is not recorded.
+
+    Recorded on a connection of its own: the caller's connection carries the verdict, and a timeout
+    here must never leave it unusable (or hold the verdict back)."""
+    from app.config import settings
+    from app.db import project_transaction
+    from app.metering import Meter, calculate_llm_cost_micros, record_usage
+
+    if (settings.LLM_PROVIDER or "").lower() == "fake" or settings.DRY_RUN_LLM:
+        return
+    usage = getattr(llm, "last_usage", None)
+    tokens_in, tokens_out = usage if isinstance(usage, tuple) and len(usage) == 2 else (0, 0)
+    try:
+        async with project_transaction(project_id) as conn:
+            await record_usage(
+                conn, project_id, Meter.AI_INVESTIGATION, 1, ref_type="deploy", ref_id=deploy_id,
+                our_cost_micros=calculate_llm_cost_micros(getattr(llm, "model", None) or settings.LLM_MODEL,
+                                                          tokens_in, tokens_out, provider=settings.LLM_PROVIDER),
+                idempotency_key=f"likely_cause:{deploy_id}",
+            )
+    except Exception as exc:
+        logger.warning("Deploy %d: AI explanation usage not recorded: %s", deploy_id, exc)
 
 
 def format_slack_blocks(

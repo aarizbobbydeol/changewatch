@@ -52,7 +52,7 @@ server/app/
   retention.py         retention cleanup and partition drops
   github_client.py     GET-only GitHub client
   cli.py               admin CLI
-server/sql/            schema.sql + numbered migrations
+server/sql/            numbered migrations (the schema; applied on startup)
 server/tests/          server test suite
 sdk/changewatch/       zero-dependency SDK + ASGIMiddleware
 sdk/tests/             SDK tests
