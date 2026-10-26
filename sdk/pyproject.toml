@@ -3,7 +3,8 @@ requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "changewatch"
+# Installed as changewatch-sdk ("changewatch" on PyPI is another project); imported as changewatch
+name = "changewatch-sdk"
 version = "1.0.0"
 description = "ChangeWatch Python SDK for error and performance monitoring"
 readme = "README.md"
@@ -12,6 +13,12 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.9"
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/aarizbobbydeol/changewatch"
+Source = "https://github.com/aarizbobbydeol/changewatch/tree/main/sdk"
+Issues = "https://github.com/aarizbobbydeol/changewatch/issues"
+Changelog = "https://github.com/aarizbobbydeol/changewatch/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
 # Only the SDK itself: without this, setuptools also finds bench/ and refuses to build

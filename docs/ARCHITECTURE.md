@@ -247,7 +247,8 @@ only see that project's rows, even if a query forgets its `WHERE project_id`.
 CI (`.github/workflows/ci.yml`) runs all of these on every push and pull request: the test
 job, Python and dashboard lint, the dashboard build, and the end-to-end job. A version tag
 (`v*`) runs CI again and then publishes the server and dashboard images
-(`.github/workflows/release.yml`).
+(`.github/workflows/release.yml`) and the Python SDK to PyPI as `changewatch-sdk`
+(`.github/workflows/pypi.yml`, trusted publishing; it can also be run by hand).
 
 To run the end-to-end check yourself:
 

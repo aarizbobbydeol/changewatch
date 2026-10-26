@@ -5,8 +5,10 @@ Reports errors, slow requests and a request count per minute to a self-hosted
 minutes whether a deploy broke something. No dependencies, Python 3.9 or newer.
 
 ```bash
-pip install "git+https://github.com/aarizbobbydeol/changewatch.git#subdirectory=sdk"
+pip install changewatch-sdk
 ```
+
+Imported as `changewatch`. Straight from GitHub instead: `pip install "git+https://github.com/aarizbobbydeol/changewatch.git#subdirectory=sdk"`.
 
 ```python
 import os

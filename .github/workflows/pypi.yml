@@ -1,0 +1,83 @@
+name: Publish SDK to PyPI
+
+# The Python SDK as `changewatch-sdk` on PyPI (imported as `changewatch`).
+# Runs for every version tag (git tag v1.2.3 && git push origin v1.2.3), next to release.yml, and
+# can be run by hand (Actions -> Publish SDK to PyPI -> Run workflow) to publish the version in
+# sdk/pyproject.toml. Trusted publishing: PyPI trusts this workflow, so no token is stored anywhere.
+# PyPI side, once: project changewatch-sdk, owner aarizbobbydeol, repository changewatch,
+# workflow pypi.yml, environment pypi.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Full CI must pass first
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build and check the SDK package
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: A version tag must match the package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(python -c "import tomllib; print(tomllib.load(open('sdk/pyproject.toml', 'rb'))['project']['version'])")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match sdk/pyproject.toml version $version" >&2
+            exit 1
+          fi
+
+      - name: Build the wheel and source package
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build sdk --outdir dist
+          twine check --strict dist/*
+
+      - name: Install the built wheel and import it
+        run: |
+          python -m pip install dist/*.whl
+          cd "$RUNNER_TEMP" && python -I -c "import changewatch, importlib.metadata as m; print(m.version('changewatch-sdk'), m.metadata('changewatch-sdk')['License-Expression'])"
+
+      - name: Keep the package for the publish job
+        uses: actions/upload-artifact@v7
+        with:
+          name: sdk-dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/changewatch-sdk
+    permissions:
+      id-token: write  # trusted publishing: PyPI checks this workflow's identity, no stored token
+    steps:
+      - name: Get the built package
+        uses: actions/download-artifact@v8
+        with:
+          name: sdk-dist
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          # The same version is never uploaded twice (a re-run of a published tag succeeds quietly)
+          skip-existing: true
