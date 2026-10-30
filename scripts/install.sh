@@ -13,7 +13,7 @@ set -euo pipefail
 VERSION="1.0.1"   # the release whose published images it runs
 REPO_URL="https://github.com/aarizbobbydeol/changewatch.git"
 
-DIR="" DOMAIN="" PROJECT="" SLACK="" ANTHROPIC="" DEMO=0 BUILD=0 YES=0
+DIR="" DOMAIN="" PROJECT="" SLACK="" ANTHROPIC="" DASHBOARD="" DEMO=0 BUILD=0 YES=0
 
 usage() {
   cat <<'EOF'
@@ -21,6 +21,8 @@ Usage: install.sh [options]
 
   --domain NAME        Your domain for HTTPS (its DNS must point at this server).
                        Without it, ChangeWatch runs on this machine only (http://localhost).
+  --dashboard-url URL  Where your dashboard lives when it is not on this server, e.g. on
+                       Vercel (https://your-project.vercel.app). Alert links open it.
   --project NAME       Create a project with this name (first install: my-app).
   --slack-webhook URL  Slack incoming webhook for that project's alerts.
   --anthropic-key KEY  Anthropic API key for AI explanations (without it: rules-based ones).
@@ -35,6 +37,7 @@ EOF
 while [ $# -gt 0 ]; do
   case "$1" in
     --domain) DOMAIN=${2:?--domain needs a value}; shift 2 ;;
+    --dashboard-url) DASHBOARD=${2:?--dashboard-url needs a value}; shift 2 ;;
     --project) PROJECT=${2:?--project needs a value}; shift 2 ;;
     --slack-webhook) SLACK=${2:?--slack-webhook needs a value}; shift 2 ;;
     --anthropic-key) ANTHROPIC=${2:?--anthropic-key needs a value}; shift 2 ;;
@@ -49,6 +52,14 @@ done
 
 say() { printf '\n==> %s\n' "$*"; }
 fail() { printf '\nError: %s\n' "$*" >&2; exit 1; }
+apt_get() {  # a new server updates itself in its first minutes: wait for that instead of failing
+  local try
+  for try in 1 2 3; do
+    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 -y -qq "$@" >/dev/null && return 0
+    [ "$try" = 3 ] || sleep 20
+  done
+  return 1
+}
 interactive() { [ "$YES" = 0 ] && { true </dev/tty; } 2>/dev/null; }
 # ask VAR "question" [default] [secret]: reads the terminal even when this script arrives on stdin
 ask() {
@@ -79,8 +90,8 @@ if [ ! -f "$DIR/docker-compose.yml" ]; then
     if ! command -v apt-get >/dev/null 2>&1 || [ "$(id -u)" != 0 ]; then
       fail "git is needed. Install it, or run again with sudo."
     fi
-    apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git >/dev/null
+    apt_get update
+    apt_get install git
   fi
   say "Downloading ChangeWatch $VERSION to $DIR"
   git clone --quiet --depth 1 --branch "v$VERSION" "$REPO_URL" "$DIR"
@@ -89,15 +100,51 @@ cd "$DIR"
 
 # ---------------------------------------------------------------------------------------------
 # 2. Docker with Compose v2
-if ! docker compose version >/dev/null 2>&1; then
-  command -v apt-get >/dev/null 2>&1 || fail "Install Docker with Compose v2 first: https://docs.docker.com/engine/install/"
-  [ "$(id -u)" = 0 ] || fail "Docker is not installed. Run again with sudo and the installer adds it."
-  say "Installing Docker"
-  apt-get update -qq
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io docker-compose-v2 >/dev/null
+# Docker's own packages, the way docs.docker.com/engine/install does it: one method for Ubuntu,
+# Debian and systems built on them, on Intel/AMD and ARM. Elsewhere, install Docker first.
+install_docker() {
+  local os family="" codename
+  # Read in subshells: /etc/os-release also sets VERSION, which would replace ours
+  # shellcheck disable=SC1091
+  os=$(. /etc/os-release 2>/dev/null; echo "${ID:-} ${ID_LIKE:-}")
+  case " $os " in
+    *" ubuntu "*) family=ubuntu ;;
+    *" debian "*) family=debian ;;
+  esac
+  # shellcheck disable=SC1091
+  codename=$(. /etc/os-release 2>/dev/null
+    if [ "$family" = ubuntu ]; then echo "${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}"; else echo "${VERSION_CODENAME:-}"; fi)
+  if [ -z "$family" ] || [ -z "$codename" ]; then
+    fail "The installer adds Docker on Ubuntu and Debian. Here, install Docker with Compose v2 first (https://docs.docker.com/engine/install/), then run this again."
+  fi
+  say "Installing Docker (from docker.com, for $family $codename)"
+  apt_get update
+  apt_get install ca-certificates curl
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL --retry 3 "https://download.docker.com/linux/$family/gpg" -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
+  if ! grep -rqs download.docker.com /etc/apt/sources.list /etc/apt/sources.list.d; then
+    printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/%s %s stable\n' \
+      "$(dpkg --print-architecture)" "$family" "$codename" >/etc/apt/sources.list.d/docker.list
+  fi
+  apt_get update
+  apt_get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
   systemctl enable --now docker >/dev/null 2>&1 || true
+}
+
+if ! docker compose version >/dev/null 2>&1; then
+  if command -v docker >/dev/null 2>&1; then
+    fail "Docker is here but without Compose v2. Add the Compose plugin (https://docs.docker.com/compose/install/linux/), then run this again."
+  fi
+  command -v apt-get >/dev/null 2>&1 \
+    || fail "Install Docker first (on a Mac or Windows: Docker Desktop, https://docs.docker.com/get-docker/), then run this again."
+  [ "$(id -u)" = 0 ] || fail "Docker is not installed. Run again with sudo and the installer adds it."
+  install_docker
 fi
-docker info >/dev/null 2>&1 || fail "Docker is installed but this user cannot use it. Run again with sudo."
+if ! docker info >/dev/null 2>&1; then
+  [ "$(id -u)" = 0 ] || fail "Docker is not running, or this user cannot use it. Start Docker (Docker Desktop on a Mac or Windows), or run again with sudo."
+  fail "Docker is installed but not running. Start it (systemctl start docker), then run this again."
+fi
 
 # ---------------------------------------------------------------------------------------------
 # 3. Settings (.env): created once with fresh secrets; later runs keep what is there
@@ -138,6 +185,10 @@ if [ -n "$DOMAIN" ]; then
     printf '\nNote: %s does not resolve yet. HTTPS starts working once its DNS points at this server.\n' "$DOMAIN"
   fi
 fi
+DASHBOARD=${DASHBOARD%/}
+if [ -n "$DASHBOARD" ] && ! [[ "$DASHBOARD" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]]*)?$ ]]; then
+  fail "That does not look like a web address: $DASHBOARD (e.g. https://your-project.vercel.app)"
+fi
 
 say "Writing settings to $DIR/.env (keep a copy of it: MASTER_KEY unlocks your stored data)"
 [ -n "$(get_env MASTER_KEY)" ] || set_env MASTER_KEY "$(secret)"
@@ -155,6 +206,7 @@ if [ -n "$DOMAIN" ]; then
   set_env CHANGEWATCH_BIND 127.0.0.1
   add_profile tls
 fi
+[ -z "$DASHBOARD" ] || set_env DASHBOARD_URL "$DASHBOARD"
 if [ -n "$ANTHROPIC" ]; then
   set_env LLM_PROVIDER anthropic
   set_env ANTHROPIC_API_KEY "$ANTHROPIC"
@@ -239,12 +291,13 @@ if [ -n "$(get_env PUBLIC_HOSTNAME)" ] && [ "$(get_env PUBLIC_HOSTNAME)" != loca
 else
   site="http://localhost:3000" api="http://localhost:8000"
 fi
+dashboard=$(get_env DASHBOARD_URL)
 cat <<EOF
 
 ChangeWatch is running.
 
-  Dashboard:   $site   (Settings: paste the project's read key)
-  API address: $api   (for the SDK and the GitHub Action)
+  Dashboard:   ${dashboard:-$site}   (Settings: paste the project's read key)
+  API address: $api   (for the SDK and the GitHub Action${dashboard:+, and API_URL on Vercel})
 
 Next, in your app:
   1. pip install changewatcher, then changewatch.init(...) with the ingest key

@@ -129,17 +129,55 @@ jobs:
         run: npm ci --no-audit --no-fund
 
       - name: Unit tests (no framework, node's own runner)
-        run: node --test app/lib/*.test.mjs
+        run: node --test app/lib/*.test.mjs api-target.test.mjs
 
       - name: Lint
         env:
           NEXT_TELEMETRY_DISABLED: "1"
         run: npm run lint
 
-      - name: Build
+      - name: Build (for Docker, the standalone server)
         env:
           NEXT_TELEMETRY_DISABLED: "1"
-        run: npm run build
+        run: |
+          npm run build
+          test -f .next/standalone/server.js
+
+      - name: Build the Vercel way; its proxy reaches the API over https with keys intact
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+          VERCEL: "1"
+        run: |
+          # Without an https API address the build stops: keys would cross the internet in plain text
+          if API_URL=http://cw.example.com npm run build > "$RUNNER_TEMP/http.log" 2>&1; then
+            echo "a Vercel build with an http API_URL should stop" >&2; exit 1
+          fi
+          grep -q "must start with https://" "$RUNNER_TEMP/http.log"
+          # A stand-in API on https that answers with what it received
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=localhost" \
+            -addext "subjectAltName=DNS:localhost" -keyout "$RUNNER_TEMP/key.pem" -out "$RUNNER_TEMP/cert.pem" 2>/dev/null
+          python3 ../scripts/https_echo.py 58443 "$RUNNER_TEMP/cert.pem" "$RUNNER_TEMP/key.pem" &
+          API_URL=https://localhost:58443/ npm run build
+          test ! -e .next/standalone
+          NODE_EXTRA_CA_CERTS="$RUNNER_TEMP/cert.pem" API_URL=https://localhost:58443 npx next start -p 3011 -H 127.0.0.1 &
+          curl -fsS --retry 30 --retry-delay 1 --retry-all-errors -o /dev/null http://127.0.0.1:3011/
+          curl -fsS "http://127.0.0.1:3011/api/incidents?limit=20" -H "X-API-Key: cw_read_ci" > "$RUNNER_TEMP/get.json"
+          curl -fsS -X PUT http://127.0.0.1:3011/api/runbooks/7 -H "Content-Type: application/json" \
+            -H "X-API-Key: cw_manage_ci" -d '{"title": "t"}' > "$RUNNER_TEMP/put.json"
+          curl -fsS http://127.0.0.1:3011/v1/trust/summary > "$RUNNER_TEMP/v1.json"
+          python3 - "$RUNNER_TEMP" <<'EOF'
+          import json, pathlib, sys
+          d = pathlib.Path(sys.argv[1])
+          get, put, v1 = (json.loads((d / f).read_text()) for f in ("get.json", "put.json", "v1.json"))
+          h = {k.lower(): v for k, v in get["headers"].items()}
+          assert (get["method"], get["path"]) == ("GET", "/api/incidents?limit=20"), get
+          assert h["host"] == "localhost:58443", h  # the API's own name: its HTTPS proxy routes on it
+          assert h["x-api-key"] == "cw_read_ci", h
+          assert (put["method"], put["path"]) == ("PUT", "/api/runbooks/7"), put
+          assert json.loads(put["body"]) == {"title": "t"}, put
+          assert (v1["method"], v1["path"]) == ("GET", "/v1/trust/summary"), v1
+          print("The Vercel-style dashboard passes requests through intact")
+          EOF
 
   e2e:
     name: End-to-end (Docker Compose, as users run it)
@@ -210,52 +248,126 @@ jobs:
         run: docker compose down -v
 
   installer:
-    name: One-command installer (fresh machine, real Docker)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    name: One-command installer (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # A developer machine: Docker is already there, and no sudo
+          - name: Ubuntu 24.04 with Docker
+            os: ubuntu-24.04
+            fresh: false
+          # New servers: no Docker, run with sudo as the docs say, so the installer adds Docker
+          - name: new Ubuntu 24.04 server, Intel/AMD
+            os: ubuntu-24.04
+            fresh: true
+          - name: new Ubuntu 24.04 server, ARM
+            os: ubuntu-24.04-arm
+            fresh: true
+          - name: new Ubuntu 22.04 server, Intel/AMD
+            os: ubuntu-22.04
+            fresh: true
+    env:
+      SUDO: ${{ matrix.fresh && 'sudo' || '' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
       - name: Lint the installer, and its release matches the package version
+        if: ${{ !matrix.fresh }}
         run: |
           shellcheck scripts/install.sh
           installer=$(sed -n 's/^VERSION="\(.*\)".*/\1/p' scripts/install.sh)
           package=$(python3 -c "import tomllib; print(tomllib.load(open('sdk/pyproject.toml', 'rb'))['project']['version'])")
           test "$installer" = "$package" || { echo "scripts/install.sh VERSION $installer != sdk/pyproject.toml $package" >&2; exit 1; }
 
+      - name: Make this a new server (remove the Docker that GitHub preinstalls)
+        if: ${{ matrix.fresh }}
+        run: |
+          sudo systemctl stop docker.socket docker.service containerd.service 2>/dev/null || true
+          pkgs=$(dpkg-query -W -f='${Package}\n' | grep -E '^(docker|containerd|moby|runc)' || true)
+          if [ -n "$pkgs" ]; then sudo apt-get purge -y -qq $pkgs >/dev/null; fi
+          sudo rm -rf /var/lib/docker /var/lib/containerd /etc/docker /usr/local/bin/docker* /usr/libexec/docker /usr/local/lib/docker
+          sudo rm -f /etc/apt/sources.list.d/docker* /etc/apt/keyrings/docker* /usr/share/keyrings/docker*
+          hash -r
+          if command -v docker; then echo "Docker is still installed" >&2; exit 1; fi
+
       - name: Install as a new user would (images built from this commit), with the demo shop
-        run: ./scripts/install.sh --yes --build --project ci-app --demo | tee "$RUNNER_TEMP/install.log"
+        run: $SUDO ./scripts/install.sh --yes --build --project ci-app --demo | tee "$RUNNER_TEMP/install.log"
 
       - name: What the new user gets
         run: |
-          set -e
+          if [ "${{ matrix.fresh }}" = true ]; then
+            grep "Installing Docker (from docker.com" "$RUNNER_TEMP/install.log"
+            $SUDO docker compose version
+          fi
           curl -fsS --retry 15 --retry-delay 2 --retry-all-errors http://localhost:8000/healthz
           curl -fsS --retry 15 --retry-delay 2 --retry-all-errors -o /dev/null http://localhost:3000/
           grep -E "^Ingest Key: +cw_ingest_" "$RUNNER_TEMP/install.log"
           grep -E "^Manage Key: +cw_manage_" "$RUNNER_TEMP/install.log"
           grep "Dashboard:   http://localhost:3000" "$RUNNER_TEMP/install.log"
           test "$(stat -c %a .env)" = 600
-          docker compose ps --services --status running | grep -x demo
+          $SUDO docker compose ps --services --status running | grep -x demo
           # Fresh secrets, never printed
           for k in MASTER_KEY ADMIN_API_KEY POSTGRES_PASSWORD REDIS_PASSWORD; do
-            v=$(grep "^$k=" .env | cut -d= -f2-)
+            v=$($SUDO grep "^$k=" .env | cut -d= -f2-)
             test ${#v} -eq 64
-            ! grep -q "$v" "$RUNNER_TEMP/install.log"
+            if grep -q "$v" "$RUNNER_TEMP/install.log"; then echo "$k was printed" >&2; exit 1; fi
           done
 
       - name: Run it again, nothing changes
         run: |
-          cp .env "$RUNNER_TEMP/env.before"
-          ./scripts/install.sh --yes --build --project ci-app --demo | tee "$RUNNER_TEMP/install2.log"
-          diff "$RUNNER_TEMP/env.before" .env
+          $SUDO cp .env "$RUNNER_TEMP/env.before"
+          $SUDO ./scripts/install.sh --yes --build --project ci-app --demo | tee "$RUNNER_TEMP/install2.log"
+          $SUDO diff "$RUNNER_TEMP/env.before" .env
           grep 'Project "ci-app" already exists' "$RUNNER_TEMP/install2.log"
-          docker compose exec -T api python -m app.cli list-projects | grep -c " | ci-app " | grep -x 1
+          $SUDO docker compose exec -T api python -m app.cli list-projects | grep -c " | ci-app " | grep -x 1
+
+      - name: A dashboard on Vercel gets the alert links
+        if: ${{ !matrix.fresh }}
+        run: |
+          ./scripts/install.sh --yes --build --dashboard-url https://cw-ci.vercel.app/ | tee "$RUNNER_TEMP/install3.log"
+          grep -x "DASHBOARD_URL=https://cw-ci.vercel.app" .env
+          grep "Dashboard:   https://cw-ci.vercel.app " "$RUNNER_TEMP/install3.log"
+          docker compose exec -T api python -c "from app.config import settings; print(settings.dashboard_link('/incidents'))" \
+            | grep -x "https://cw-ci.vercel.app/incidents"
+          if ./scripts/install.sh --yes --dashboard-url "javascript:alert(1)" > "$RUNNER_TEMP/bad.log" 2>&1; then exit 1; fi
+          grep "does not look like a web address" "$RUNNER_TEMP/bad.log"
 
       - name: Service logs (on failure)
         if: failure()
-        run: docker compose logs --no-color --tail=200
+        run: $SUDO docker compose logs --no-color --tail=200
 
       - name: Stop the stack
         if: always()
-        run: docker compose down -v
+        run: $SUDO docker compose down -v || true
+
+  installer-debian:
+    name: Installer adds Docker on a new Debian ${{ matrix.debian }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        debian: ["12", "13"]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: The installer adds Docker with Compose v2 from docker.com
+        # A container has no systemd, so Docker cannot start in it: the installer must stop and say so.
+        # Everything after this step is the same on every system (Ubuntu jobs above).
+        run: |
+          docker run --rm -v "$PWD:/src:ro" debian:${{ matrix.debian }} bash -c '
+            set -e
+            cp -r /src /cw && cd /cw
+            if ./scripts/install.sh --yes > /tmp/install.log 2>&1; then cat /tmp/install.log; echo "expected a stop" >&2; exit 1; fi
+            cat /tmp/install.log
+            grep -q "Installing Docker (from docker.com, for debian" /tmp/install.log
+            grep -q "Docker is installed but not running" /tmp/install.log
+            docker --version
+            docker compose version
+            dpkg --print-architecture
+          '

@@ -4,14 +4,14 @@ Run ChangeWatch on your own domain with automatic HTTPS, then onboard teams as i
 
 ## The short way: one command
 
-1. Rent a small Ubuntu server (see below) and point your domain's DNS `A` record at it.
+1. Rent a small Ubuntu or Debian server, Intel/AMD or ARM (see below), and point your domain's DNS `A` record at it.
 2. On the server:
 
    ```bash
    curl -fsSL https://raw.githubusercontent.com/aarizbobbydeol/changewatch/main/scripts/install.sh | sudo bash -s -- --domain changewatch.yourdomain.com
    ```
 
-It installs Docker if it is missing, downloads this release, writes `/opt/changewatch/.env` with fresh secrets, starts everything behind HTTPS (only ports 80 and 443 face the internet), creates your first project and prints its keys and the dashboard address. Add `--demo` for the demo shop ([DEMO.md](DEMO.md)), `--anthropic-key` for AI explanations, `--help` for the rest. Running it again keeps your secrets and data.
+It installs Docker from docker.com if it is missing, downloads this release, writes `/opt/changewatch/.env` with fresh secrets, starts everything behind HTTPS (only ports 80 and 443 face the internet), creates your first project and prints its keys and the dashboard address. Add `--demo` for the demo shop ([DEMO.md](DEMO.md)), `--anthropic-key` for AI explanations, `--dashboard-url` when the dashboard also lives on Vercel ([VERCEL.md](VERCEL.md)), `--help` for the rest. Running it again keeps your secrets and data.
 
 Afterwards everything is a plain `docker compose` command in `/opt/changewatch` (the installer saved which files and profiles to use): `docker compose pull && docker compose up -d` updates, `docker compose logs -f api` shows the logs. **Back up `/opt/changewatch/.env`:** without its `MASTER_KEY` the stored data cannot be read.
 
@@ -34,9 +34,9 @@ flowchart LR
 
 | | Minimum |
 |---|---|
-| OS | Ubuntu 22.04 / 24.04 LTS |
+| OS | Ubuntu 22.04 / 24.04 LTS (the installer is tested on new servers of both, Intel/AMD and ARM, on every change), Debian 12 / 13, or any Linux with Docker |
 | Size | 2 vCPU · 4 GB RAM · 40 GB SSD (about $5–10/month on Hetzner, DigitalOcean, Linode, EC2 or GCP) |
-| Software | Docker + Compose v2: `sudo apt install docker.io docker-compose-v2` |
+| Software | Docker + Compose v2. The installer adds them; by hand: [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) |
 
 ## 2. Point your domain at the server
 

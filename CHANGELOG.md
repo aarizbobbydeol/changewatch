@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **The dashboard on Vercel:** the engine stays on your server, and the dashboard can also live on Vercel, passing its requests to your server over HTTPS. A Vercel build without an `https://` server address stops and says what to set. `install.sh --dashboard-url` makes alert links open it. See [docs/VERCEL.md](docs/VERCEL.md).
+- **The installer on more servers:** it installs Docker from docker.com, so new Debian servers work as well as Ubuntu, on Intel/AMD and ARM. It waits while a new server finishes updating itself instead of failing. CI now installs ChangeWatch on new Ubuntu 22.04 and 24.04 servers (Intel/AMD and ARM) and adds Docker on Debian 12 and 13 on every change.
+
 ## 1.0.1 (2026-10-27)
 
 **Setup is one command.** `scripts/install.sh` takes an empty Ubuntu server (or a machine with Docker) to a running ChangeWatch with HTTPS, fresh secrets, a first project and its keys, and optionally the demo shop. It installs Docker if missing and is safe to run again:

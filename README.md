@@ -188,13 +188,13 @@ Every threshold can be tuned with environment variables (see [Configuration](#%E
 
 ## 🚀 Quick start
 
-**On a server** (Ubuntu, with your domain's DNS pointing at it), one command installs Docker if needed and gives you HTTPS, a first project and its keys:
+**On a server** (Ubuntu or Debian, Intel/AMD or ARM, with your domain's DNS pointing at it), one command installs Docker if needed and gives you HTTPS, a first project and its keys:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aarizbobbydeol/changewatch/main/scripts/install.sh | sudo bash -s -- --domain changewatch.yourdomain.com
 ```
 
-**On your own machine** (with Docker):
+**On your own machine** (with Docker; on a Mac or Windows, [Docker Desktop](https://docs.docker.com/get-docker/)):
 
 ```bash
 git clone https://github.com/aarizbobbydeol/changewatch.git && cd changewatch && ./scripts/install.sh
@@ -234,6 +234,8 @@ PYTHONPATH=server uvicorn app.main:app --reload --port 8000
 </details>
 
 > 🌍 **Running it 24/7 on your own domain?** The one command above does it. **[docs/SELF_HOSTING.md](docs/SELF_HOSTING.md)** explains the server ($5–10 a month), HTTPS, backups and onboarding teams as isolated projects.
+>
+> ▲ **Want the dashboard on Vercel?** ChangeWatch itself needs a server, but its dashboard can also live on Vercel: **[docs/VERCEL.md](docs/VERCEL.md)**.
 
 ---
 
@@ -379,6 +381,7 @@ See [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md) and run the audit script 
 | `GITHUB_READ_TOKEN` | `""` | Optional read-only token to fetch a file the deploy did not send (ephemeral mode). Each project reads only repositories you allow for it: `python -m app.cli allow-repo <project_id> owner/name` |
 | `GITHUB_API_URL` | `https://api.github.com` | GitHub API for the opt-in draft revert pull requests (GitHub Enterprise: `https://HOST/api/v3`) |
 | `PUBLIC_HOSTNAME` | `localhost` | Domain Caddy provisions HTTPS for (`--profile tls`) |
+| `DASHBOARD_URL` | `https://PUBLIC_HOSTNAME` | Where alert links open the dashboard; set it when the dashboard is on Vercel ([docs/VERCEL.md](docs/VERCEL.md)) |
 | `RETENTION_DAYS` | `30` | Days to keep events before cleanup |
 | `SCRUB_PII` | `1` | Scrub emails, IPs, JWTs and card numbers |
 | `TELEMETRY_ENABLED` | `0` | Opt-in anonymous fleet telemetry |

@@ -1,9 +1,14 @@
+const { apiTarget } = require('./api-target');
+
+// Checked when the config loads, so a Vercel build without a usable API_URL stops right away
+const apiUrl = apiTarget(process.env);
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  output: 'standalone',
+  // Docker runs the small standalone server; Vercel packages the app its own way
+  ...(process.env.VERCEL ? {} : { output: 'standalone' }),
   async rewrites() {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || process.env.API_URL || 'http://localhost:8000';
     return [
       {
         source: '/api/:path*',
