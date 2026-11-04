@@ -1,4 +1,6 @@
-# Oldest framework versions the SDK supports (Python 3.9 and newer), for the SDK tests in CI
+# Oldest framework versions the SDK supports (Python 3.9 and newer), and test tools that still run on 3.9
 django==4.2.30
 flask==2.3.3
 werkzeug==2.3.8
+pytest==8.4.2
+pytest-asyncio==1.2.0

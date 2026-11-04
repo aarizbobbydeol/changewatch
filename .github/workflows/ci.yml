@@ -294,12 +294,11 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Install the SDK the way users do, plus real Django and Flask to test against
+      - name: Install the SDK the way users do, plus real Django and Flask and the test tools
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          pip install ./sdk "$(grep '^pytest==' requirements-dev.txt)" "$(grep '^pytest-asyncio==' requirements-dev.txt)" \
-            -r "sdk/tests/frameworks-${{ matrix.frameworks }}.txt"
+          pip install ./sdk -r "sdk/tests/frameworks-${{ matrix.frameworks }}.txt"
 
       - name: The installed package imports, and the SDK tests pass
         shell: bash
