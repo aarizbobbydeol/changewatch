@@ -10,7 +10,7 @@
 # Safe to run again: it keeps your secrets, settings and data, and only creates what is missing.
 set -euo pipefail
 
-VERSION="1.0.1"   # the release whose published images it runs
+VERSION="1.0.2"   # the release whose published images it runs
 REPO_URL="https://github.com/aarizbobbydeol/changewatch.git"
 
 DIR="" DOMAIN="" PROJECT="" SLACK="" ANTHROPIC="" DASHBOARD="" DEMO=0 BUILD=0 YES=0

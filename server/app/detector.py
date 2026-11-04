@@ -203,7 +203,7 @@ async def evaluate_deploy(
     # (a) New issues with >= VERDICT_ROLLBACK_NEW_ISSUE_EVENTS (default 20)
     if new_issue_events >= settings.VERDICT_ROLLBACK_NEW_ISSUE_EVENTS:
         reasons.append(
-            f"{new_issues_count} new error types appeared, {new_issue_events} events combined"
+            f"{new_issues_count} new error {'type' if new_issues_count == 1 else 'types'} appeared, {new_issue_events} events combined"
         )
         return "rollback", reasons, is_final, True
 
@@ -228,7 +228,7 @@ async def evaluate_deploy(
     #     (i) >= 1 new issue with >= 5 events total
     if new_issues_count >= 1 and new_issue_events >= 5:
         reasons.append(
-            f"{new_issues_count} new error issues appeared ({new_issue_events} events)"
+            f"{new_issues_count} new error {'type' if new_issues_count == 1 else 'types'} appeared ({new_issue_events} events)"
         )
         return "watch", reasons, is_final, True
 
@@ -274,7 +274,11 @@ async def process_active_deploys_once() -> int:
                     WHERE n.project_id = d.project_id AND n.environment = d.environment
                       AND n.deployed_at > d.deployed_at) AS next_deployed_at
             FROM deploys d
+            LEFT JOIN deploy_analysis a ON a.deploy_id = d.id
             WHERE d.deployed_at >= $1
+              -- A verdict is final once given at the final checkpoint. Evaluating it again would
+              -- rewrite history: a ROLLBACK became no_data as soon as the app went quiet later
+              AND a.final_verdict IS NULL
             ORDER BY d.deployed_at DESC
             """,
             two_hours_ago,

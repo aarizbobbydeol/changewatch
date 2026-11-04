@@ -1,0 +1,3 @@
+# Newest framework versions, for the SDK tests in CI (Django 6.1 needs Python 3.12 or newer)
+django==6.1.2
+flask==3.1.3

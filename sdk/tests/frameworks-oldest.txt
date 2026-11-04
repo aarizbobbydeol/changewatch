@@ -1,0 +1,4 @@
+# Oldest framework versions the SDK supports (Python 3.9 and newer), for the SDK tests in CI
+django==4.2.30
+flask==2.3.3
+werkzeug==2.3.8

@@ -140,7 +140,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(
     title="ChangeWatch API",
-    version="1.0.1",
+    version="1.0.2",
     description="ChangeWatch developer release and error monitoring service",
     lifespan=lifespan,
 )
@@ -585,6 +585,7 @@ async def get_verdict(
             """
             SELECT d.id AS deploy_id, d.commit_sha, d.environment, d.author, d.message, d.deployed_at,
                    a.verdict, a.verdict_reasons, a.verdict_final, a.verdict_updated_at,
+                   a.first_verdict IS NOT NULL AS verdict_checked,
                    a.likely_cause, a.new_issues, a.errors_before, a.errors_after, a.flagged
             FROM deploys d
             LEFT JOIN deploy_analysis a ON a.deploy_id = d.id
@@ -629,6 +630,7 @@ async def get_verdict(
         verdict_reasons=reasons,
         verdict_final=bool(row["verdict_final"]) if row["verdict_final"] is not None else False,
         verdict_updated_at=row["verdict_updated_at"].isoformat() if row["verdict_updated_at"] else None,
+        verdict_checked=bool(row.get("verdict_checked")),
         likely_cause=row["likely_cause"],
         new_issues=int(row["new_issues"] or 0),
         errors_before=int(row["errors_before"] or 0),
@@ -652,6 +654,7 @@ async def list_deploys(
             """
             SELECT d.id, d.commit_sha, d.author, d.message, d.diff, d.diff_enc, d.environment, d.deployed_at,
                    a.verdict, a.verdict_reasons, a.verdict_final, a.verdict_updated_at,
+                   a.first_verdict IS NOT NULL AS verdict_checked,
                    a.likely_cause, a.new_issues, a.errors_before, a.errors_after, a.flagged
             FROM deploys d
             LEFT JOIN deploy_analysis a ON a.deploy_id = d.id
@@ -700,6 +703,7 @@ async def list_deploys(
                 verdict_reasons=reasons,
                 verdict_final=bool(r["verdict_final"]) if r["verdict_final"] is not None else False,
                 verdict_updated_at=r["verdict_updated_at"].isoformat() if r["verdict_updated_at"] else None,
+                verdict_checked=bool(r.get("verdict_checked")),
                 likely_cause=r["likely_cause"],
                 new_issues=int(r["new_issues"] or 0),
                 errors_before=int(r["errors_before"] or 0),

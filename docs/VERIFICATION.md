@@ -579,6 +579,7 @@ Response:
   "verdict_reasons": ["traffic observed, error rates within normal thresholds"],
   "verdict_final": true,
   "verdict_updated_at": "2026-10-19T10:30:00+00:00",
+  "verdict_checked": true,
   "likely_cause": null,
   "new_issues": 0,
   "errors_before": 0,
@@ -586,6 +587,8 @@ Response:
   "flagged": false
 }
 ```
+
+`verdict_checked` is `false` until the first checkpoint (`VERDICT_FIRST_MIN`, 10 minutes): until then `verdict` is only a running estimate, and `no_data` there means the app has not reported yet. A pipeline that waits for the verdict should wait for `verdict_checked` (or `verdict_final`).
 
 #### Query 5-Minute Timeline
 ```bash

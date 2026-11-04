@@ -4,17 +4,19 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
-  <img src="https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
+  <img src="https://img.shields.io/badge/your%20app-Python%203.9%E2%80%933.14-3776AB?logo=python&logoColor=white" alt="Your app: Python 3.9 to 3.14">
   <img src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI">
+  <img src="https://img.shields.io/badge/Django-092E20?logo=django&logoColor=white" alt="Django">
+  <img src="https://img.shields.io/badge/Flask-000000?logo=flask&logoColor=white" alt="Flask">
   <img src="https://img.shields.io/badge/Next.js-000000?logo=nextdotjs&logoColor=white" alt="Next.js">
   <img src="https://img.shields.io/badge/Postgres-16-4169E1?logo=postgresql&logoColor=white" alt="Postgres 16">
   <img src="https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white" alt="Redis 7">
   <img src="https://img.shields.io/badge/self--hosted-docker%20compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
   <img src="https://img.shields.io/badge/telemetry-off%20by%20default-success" alt="Telemetry off by default">
   <br>
-  <img src="https://img.shields.io/badge/tests-358%20passed-brightgreen" alt="358 tests passed">
+  <img src="https://img.shields.io/badge/tests-604%20passing-brightgreen" alt="604 tests passing">
   <img src="https://img.shields.io/badge/AI%20SRE%20evals-12%2F12-brightgreen" alt="12/12 evals">
-  <img src="https://img.shields.io/badge/security%20audit-12%2F12-brightgreen" alt="12/12 security checks">
+  <img src="https://img.shields.io/badge/security%20audit-13%2F13-brightgreen" alt="13/13 security checks">
 </p>
 
 <p align="center">
@@ -38,6 +40,11 @@
 
 It answers one question, fast: **was it the deploy?**
 
+<p align="center">
+  <img src="docs/assets/demo.gif" alt="30-second walk through one bad deploy: the deploy, the alert naming app/billing.py line 42 as changed in this release with its owner, the incident page with the changed line and undo commands, and the ROLLBACK verdict" width="100%">
+  <br><sub>One bad deploy, start to finish, recorded from a real run of the <a href="docs/DEMO.md">demo shop</a>.</sub>
+</p>
+
 <table>
 <tr>
 <td width="33%" valign="top">
@@ -55,7 +62,7 @@ Correlates new errors with the changed lines in the diff and CODEOWNERS. Runs on
 <td width="33%" valign="top">
 
 ### 🪶 Zero-dependency SDK
-Pure stdlib Python. It never raises into your app, never blocks, is fork-safe, has a circuit breaker and a one-env-var kill switch.
+FastAPI, Django and Flask. Pure stdlib Python. It never raises into your app, never blocks, is fork-safe, has a circuit breaker and a one-env-var kill switch.
 
 </td>
 </tr>
@@ -134,6 +141,14 @@ The full walk-through of one bad deploy, process by process, with what happens w
 </p>
 
 One message per incident: what broke, the exact file and line, whether that line changed in this release, who owns it, and a link to the incident. The AI explanation follows in the same thread. Discord, Teams, email and signed webhooks get the same content.
+
+### The dashboard
+
+| Every deploy, with its verdict | The incident, down to the changed line |
+|---|---|
+| <img src="docs/assets/screenshot-verdict.png" alt="Release list with SAFE and ROLLBACK verdicts; the rollback deploy shows its verdict reason, the risk review and the diff"> | <img src="docs/assets/screenshot-incident.png" alt="Incident page: owner, alert latency, and the code frame with the changed line 42 highlighted"> |
+| **Traffic and errors over time** | **Analytics with honest sample sizes** |
+| <img src="docs/assets/screenshot-releases.png" alt="Home page: active incident banner, release KPIs and the 5-minute request and error timeline"> | <img src="docs/assets/screenshot-analytics.png" alt="Analytics: verdicts per week, time to fix, where problems come from, with 'not enough data yet' where samples are small"> |
 
 ### The deploy lifecycle
 
@@ -265,6 +280,25 @@ cw = changewatch.init(
 app = FastAPI()
 app.add_middleware(ASGIMiddleware, client=cw)   # errors, latency, heartbeats
 ```
+
+**Django** (WSGI or ASGI, sync and async views): call `changewatch.init(...)` in `settings.py` as above, then put the middleware first:
+
+```python
+MIDDLEWARE = [
+    "changewatch.DjangoMiddleware",   # first, so it sees every request
+    # ... your other middleware
+]
+```
+
+**Flask** (and its errors that Flask answers with a 500 itself):
+
+```python
+from flask import Flask
+app = Flask(__name__)
+changewatch.instrument_flask(app)
+```
+
+**Any other WSGI app** (Bottle, Falcon, Pyramid on gunicorn or uWSGI): `app = changewatch.WSGIMiddleware(app)`. A request that raises or answers 5xx counts as failed.
 
 Uncaught exceptions on any thread are captured automatically. You can also call `changewatch.capture_exception(exc)` manually.
 
@@ -413,12 +447,12 @@ changewatch/
 
 | Suite | Command | Result |
 |---|---|:---:|
-| Unit + integration | `.venv/bin/pytest server/tests sdk/tests` | ✅ 288 passed · 2 skipped |
+| Unit + integration | `.venv/bin/pytest server/tests sdk/tests` | ✅ 601 passed · 3 skipped |
 | AI SRE evals (12 scenarios, 5× determinism check) | `.venv/bin/python -m evals.run --provider fake` | ✅ 12 / 12 |
-| Security & read-only compliance audit | `.venv/bin/python scripts/security_check.py` | ✅ 12 / 12 |
+| Security & read-only compliance audit | `.venv/bin/python scripts/security_check.py` | ✅ 13 / 13 |
 | Chaos (network blips, stuck workers, outbox retries, detector lag) | `.venv/bin/python scripts/chaos.py` | zero lost events, zero duplicate alerts |
 
-The 2 skipped tests need live Postgres and Redis. Start them with `docker compose -f docker-compose.dev.yml up -d`.
+The suite needs live Postgres and Redis: start them with `docker compose -f docker-compose.dev.yml up -d`. The 3 skipped tests need Django and Flask (`pip install -r sdk/tests/frameworks-newest.txt`); CI runs them on Python 3.9 to 3.14, on Linux, macOS and Windows.
 
 Every milestone has a step-by-step manual check with expected output in **[docs/VERIFICATION.md](docs/VERIFICATION.md)**.
 

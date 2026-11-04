@@ -25,7 +25,7 @@ from app.config import settings
 
 logger = logging.getLogger("changewatch.telemetry")
 
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 
 # Set of strictly forbidden keywords in telemetry payloads
 FORBIDDEN_KEYWORDS = {

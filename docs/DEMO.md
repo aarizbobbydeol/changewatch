@@ -4,6 +4,12 @@ The demo is a pretend online shop. It sends deploys and traffic to ChangeWatch t
 
 Use it to try ChangeWatch locally, or to run a hosted demo for friends and testers.
 
+## See it without installing
+
+The recording below is one story of the demo shop, captured from a real run: a healthy deploy, a bad one, the alert within seconds, the incident, the ROLLBACK verdict, the fix and the automatic resolve. The screenshots in the [README](../README.md#the-dashboard) come from the same run.
+
+<p align="center"><img src="assets/demo.gif" alt="ChangeWatch demo: one bad deploy from deploy to verdict" width="100%"></p>
+
 ## What people will see
 
 | When | What the demo does | What ChangeWatch shows |

@@ -19,6 +19,12 @@ async def generate_likely_cause(
     Scrubs all secrets from diff and traces before calling the LLM.
     Returns short explanation under 80 words, or None if LLM is unavailable.
     """
+    # No AI configured (the installer's default without an Anthropic key): the fake provider's canned
+    # answer names an unrelated file, so it must never reach an alert or the dashboard as the cause
+    from app.config import settings
+    if (settings.LLM_PROVIDER or "").lower() == "fake" or settings.DRY_RUN_LLM:
+        return None
+
     # Check budget before running optional AI investigation (Usage Metering Addendum Section E)
     from app.metering import Meter, can_spend
     allowed, reason = await can_spend(conn, project_id, Meter.AI_INVESTIGATION)

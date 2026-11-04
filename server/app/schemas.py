@@ -122,6 +122,9 @@ class VerdictResponse(BaseModel):
     verdict_reasons: List[str] = Field(default_factory=list)
     verdict_final: bool = False
     verdict_updated_at: Optional[str] = None
+    # False until the first checkpoint (VERDICT_FIRST_MIN after the deploy): until then `verdict`
+    # is only the detector's running estimate, and no_data there means no report from the app yet
+    verdict_checked: bool = False
     likely_cause: Optional[str] = None
     new_issues: int = 0
     errors_before: int = 0
@@ -141,6 +144,9 @@ class DeployItem(BaseModel):
     verdict_reasons: List[str] = Field(default_factory=list)
     verdict_final: bool = False
     verdict_updated_at: Optional[str] = None
+    # False until the first checkpoint (VERDICT_FIRST_MIN after the deploy): until then `verdict`
+    # is only the detector's running estimate, and no_data there means no report from the app yet
+    verdict_checked: bool = False
     likely_cause: Optional[str] = None
     new_issues: int = 0
     errors_before: int = 0

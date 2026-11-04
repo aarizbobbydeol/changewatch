@@ -173,4 +173,75 @@ async def test_live_slow_ai_explanation_does_not_hold_up_the_verdict_alert(live_
 
     mine = [c.kwargs for c in dispatch.call_args_list if c.kwargs["deploy_id"] == dep]
     assert mine and mine[0]["verdict"] == "rollback" and mine[0]["likely_cause"] is None
+    assert any(r.startswith("1 new error type appeared,") for r in mine[0]["reasons"]), mine[0]["reasons"]
     assert elapsed < 15  # every flagged deploy waited at most the 0.3 s timeout, not 60 s
+
+
+@pytest.mark.asyncio
+async def test_live_a_deploy_is_marked_checked_only_from_its_first_checkpoint(live_db):
+    """Before the first checkpoint the verdict is the detector's running estimate (no_data until the
+    app's first heartbeat), and the dashboard must not show that as "the app went silent"."""
+    from app.detector import process_active_deploys_once
+    from app.main import get_verdict, list_deploys
+
+    env = f"lc-{uuid.uuid4().hex[:8]}"
+    now = datetime.now(timezone.utc)
+    async with project_transaction(1) as conn:
+        old = await conn.fetchval(
+            "INSERT INTO deploys (project_id, commit_sha, environment, deployed_at) VALUES (1, $1, $2, $3) RETURNING id",
+            f"old{uuid.uuid4().hex[:8]}", env, now - timedelta(minutes=settings.VERDICT_FIRST_MIN + 5))
+        new = await conn.fetchval(
+            "INSERT INTO deploys (project_id, commit_sha, environment, deployed_at) VALUES (1, $1, $2, $3) RETURNING id",
+            f"new{uuid.uuid4().hex[:8]}", env, now - timedelta(minutes=1))
+    try:
+        with patch("app.detector.dispatch_verdict_alert", new=AsyncMock()):
+            await process_active_deploys_once()
+        deploys = {d.id: d for d in await list_deploys(limit=10, environment=env, project_id=1)}
+        assert deploys[new].verdict_updated_at is not None  # the estimate was written...
+        assert deploys[new].verdict_checked is False  # ...but it is not a checked verdict yet
+        assert deploys[old].verdict_checked is True
+        new_sha = deploys[new].commit_sha
+        assert (await get_verdict(sha=new_sha, environment=env, project_id=1)).verdict_checked is False
+    finally:
+        async with project_transaction(1) as conn:
+            await conn.execute("DELETE FROM deploy_analysis WHERE deploy_id = ANY($1::int[])", [old, new])
+            await _cleanup(conn, env)
+
+
+@pytest.mark.asyncio
+async def test_live_a_final_verdict_is_not_rewritten_when_the_app_goes_quiet_later(live_db):
+    """A deploy judged ROLLBACK at its final checkpoint stayed in the detector's loop for two hours,
+    and its first rule (the app is silent now, so no_data) turned it into no_data once the app
+    went quiet: at night, or after the bad release was rolled back elsewhere."""
+    from app.detector import process_active_deploys_once
+    from app.main import list_deploys
+
+    env = f"lc-{uuid.uuid4().hex[:8]}"
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    t0 = now - timedelta(minutes=settings.VERDICT_FINAL_MIN + 5)  # past the final checkpoint
+    async with project_transaction(1) as conn:
+        dep, issue = await _deploy_issue(conn, env, t0, t0 + timedelta(minutes=1))
+        for m in range(-30, 15):
+            await conn.execute(
+                "INSERT INTO traffic (project_id, environment, bucket, requests, errors, deploy_id) "
+                "VALUES (1, $1, $2, 100, $3, $4)", env, t0 + timedelta(minutes=m), 3 if m >= 1 else 0,
+                dep if m >= 0 else None)
+        await _events(conn, issue, dep, env, [t0 + timedelta(minutes=1, seconds=i) for i in range(40)])
+    try:
+        with patch("app.detector.dispatch_verdict_alert", new=AsyncMock()), \
+             patch("app.notifiers.incident_alert.dispatch_incident_alert", new=AsyncMock()):
+            await process_active_deploys_once()  # the final checkpoint: ROLLBACK
+            [first] = [d for d in await list_deploys(limit=10, environment=env, project_id=1) if d.id == dep]
+            assert first.verdict == "rollback" and first.verdict_final
+
+            with patch("app.sources.is_source_silent", new=AsyncMock(return_value=True)):
+                await process_active_deploys_once()  # later, the app has gone quiet
+        [later] = [d for d in await list_deploys(limit=10, environment=env, project_id=1) if d.id == dep]
+        assert later.verdict == "rollback", later.verdict_reasons
+        assert later.verdict_reasons == first.verdict_reasons
+    finally:
+        async with project_transaction(1) as conn:
+            await conn.execute("DELETE FROM deploy_analysis WHERE deploy_id = $1", dep)
+            await conn.execute("DELETE FROM alerts WHERE deploy_id = $1", dep)
+            await _cleanup(conn, env)
+            await conn.execute("DELETE FROM issues WHERE id = $1", issue)

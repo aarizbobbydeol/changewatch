@@ -136,7 +136,10 @@ async def test_verdict_rule_safe():
 
 
 @pytest.mark.asyncio
-async def test_generate_likely_cause_scrubs_and_returns():
+async def test_generate_likely_cause_scrubs_and_returns(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "anthropic")  # a real provider (mocked below)
+    monkeypatch.setattr(settings, "DRY_RUN_LLM", False)
     mock_conn = AsyncMock()
     mock_conn.fetchrow.return_value = {
         "commit_sha": "a1b2c3d4e5f6",
@@ -198,3 +201,16 @@ async def test_dispatch_verdict_alert_idempotent():
             mock_conn, 1, 10, "rollback", ["reasons"], "verdict_first"
         )
         assert res2 is False
+
+
+@pytest.mark.asyncio
+async def test_without_an_ai_provider_there_is_no_likely_cause(monkeypatch):
+    """The installer sets LLM_PROVIDER=fake when no Anthropic key is given. The fake provider's
+    canned answer (a KeyError in user_service.py) must not be shown as the cause of a real deploy."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "fake")
+    mock_conn = AsyncMock()
+    with patch("app.analysis.get_llm_client") as llm:
+        assert await generate_likely_cause(mock_conn, project_id=1, deploy_id=10) is None
+    llm.assert_not_called()
+    mock_conn.fetchrow.assert_not_called()

@@ -28,6 +28,7 @@ interface Deploy {
   verdict_reasons: string[];
   verdict_final: boolean;
   verdict_updated_at: string | null;
+  verdict_checked?: boolean; // false until the first checkpoint; missing from servers before 1.0.2
   likely_cause: string | null;
   new_issues: number;
   errors_before: number;
@@ -304,7 +305,12 @@ export default function DashboardPage() {
     };
   }, [timeline, deploys]);
 
-  const getVerdictBadge = (verdict: string) => {
+  // Until a deploy's first check (VERDICT_FIRST_MIN after it, 10 by default) its verdict is only
+  // a running estimate, and no_data there means the app has not reported yet, not that it is silent.
+  const getVerdictBadge = (verdict: string, checked = true) => {
+    if (!checked) {
+      return <span title="The first check runs 10 minutes after the deploy (VERDICT_FIRST_MIN)" className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">CHECKING</span>;
+    }
     switch (verdict) {
       case "safe":
         return <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">SAFE</span>;
@@ -474,7 +480,7 @@ export default function DashboardPage() {
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-sm">
             <span className="text-xs text-slate-400 font-medium">Latest Release Verdict</span>
             <div className="mt-1 flex items-center gap-2">
-              {getVerdictBadge(deploys.length > 0 ? deploys[0].verdict : "no_data")}
+              {getVerdictBadge(deploys.length > 0 ? deploys[0].verdict : "no_data", deploys.length === 0 || deploys[0].verdict_checked !== false)}
               {deploys.length > 0 && (
                 <span className="text-xs font-mono text-slate-400">{deploys[0].commit_sha.slice(0, 7)}</span>
               )}
@@ -604,7 +610,7 @@ export default function DashboardPage() {
                       >
                         <div className="flex items-center justify-between">
                           <span className="font-mono text-xs font-semibold text-slate-200">{dep.commit_sha.slice(0, 8)}</span>
-                          {getVerdictBadge(dep.verdict)}
+                          {getVerdictBadge(dep.verdict, dep.verdict_checked !== false)}
                         </div>
                         <p className="text-xs text-slate-300 mt-1 line-clamp-1">{dep.message || "No commit message"}</p>
                         <div className="flex items-center justify-between text-[11px] text-slate-500 mt-2">
@@ -627,7 +633,7 @@ export default function DashboardPage() {
                     <div>
                       <div className="flex items-center gap-3">
                         <span className="font-mono text-base font-bold text-slate-100">{selectedDeploy.commit_sha}</span>
-                        {getVerdictBadge(selectedDeploy.verdict)}
+                        {getVerdictBadge(selectedDeploy.verdict, selectedDeploy.verdict_checked !== false)}
                       </div>
                       <p className="text-xs text-slate-400 mt-1">
                         By {selectedDeploy.author || "Unknown"} in <span className="text-indigo-400">{selectedDeploy.environment}</span> on {formatDateTime(selectedDeploy.deployed_at)}
@@ -639,6 +645,11 @@ export default function DashboardPage() {
                   <div>
                     <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Release Verdict Analysis</h4>
                     <div className="p-3 bg-slate-950/60 border border-slate-800 rounded-lg space-y-1">
+                      {selectedDeploy.verdict_checked === false && (
+                        <div className="text-xs text-indigo-300">
+                          Not checked yet: the first check runs 10 minutes after the deploy and the final one at 30 (by default). So far:
+                        </div>
+                      )}
                       {selectedDeploy.verdict_reasons && selectedDeploy.verdict_reasons.length > 0 ? (
                         selectedDeploy.verdict_reasons.map((reason, idx) => (
                           <div key={idx} className="text-xs text-slate-300 flex items-start gap-2">

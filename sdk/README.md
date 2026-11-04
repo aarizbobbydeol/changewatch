@@ -2,7 +2,8 @@
 
 Reports errors, slow requests and a request count per minute to a self-hosted
 [ChangeWatch](https://github.com/aarizbobbydeol/changewatch) server, so it can tell you within
-minutes whether a deploy broke something. No dependencies, Python 3.9 or newer.
+minutes whether a deploy broke something. Works with FastAPI, Django and Flask. No dependencies,
+Python 3.9 or newer.
 
 ```bash
 pip install changewatcher
@@ -25,6 +26,25 @@ cw = changewatch.init(
 app = FastAPI()
 app.add_middleware(ASGIMiddleware, client=cw)   # errors, latency, heartbeats
 ```
+
+**Django** (WSGI or ASGI, sync and async views): call `changewatch.init(...)` in `settings.py` as above, then put the middleware first:
+
+```python
+MIDDLEWARE = [
+    "changewatch.DjangoMiddleware",   # first, so it sees every request
+    # ... your other middleware
+]
+```
+
+**Flask** (and its errors that Flask answers with a 500 itself):
+
+```python
+from flask import Flask
+app = Flask(__name__)
+changewatch.instrument_flask(app)
+```
+
+**Any other WSGI app** (Bottle, Falcon, Pyramid on gunicorn or uWSGI): `app = changewatch.WSGIMiddleware(app)`. A request that raises or answers 5xx counts as failed.
 
 Optional: `capture_logs=True` attaches the app's last 50 log lines (WARNING and above, or
 `log_level=`) to each error; `capture_logged_errors=True` (on its own or with `capture_logs`) also

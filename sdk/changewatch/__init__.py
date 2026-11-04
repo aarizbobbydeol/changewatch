@@ -657,7 +657,7 @@ class Client:
         headers = {
             "Content-Type": "application/json",
             "X-API-Key": self.api_key,
-            "User-Agent": "changewatch-python/1.0.1",
+            "User-Agent": "changewatch-python/1.0.2",
         }
         req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
 
@@ -946,3 +946,166 @@ class ASGIMiddleware:
 
             if not has_error and duration_ms >= active_client.slow_ms:
                 active_client.capture_slow_request(request_path=path, duration_ms=duration_ms, method=method)
+
+
+def _finish_request(client: Client, request: _Request, start_time: float, failed: bool) -> None:
+    """End of a request seen by WSGIMiddleware or DjangoMiddleware: count it, and report it if slow."""
+    try:
+        request.done = True
+        duration_ms = (time.monotonic() - start_time) * 1000.0
+        client.record_request(has_error=failed)
+        if not failed and duration_ms >= client.slow_ms:
+            client.capture_slow_request(request_path=request.path, duration_ms=duration_ms, method=request.method)
+    except Exception:
+        client._internal_errors += 1
+
+
+class WSGIMiddleware:
+    """WSGI middleware for Flask and other WSGI apps (gunicorn, uWSGI, waitress, mod_wsgi).
+
+    Same guarantees as ASGIMiddleware. A request counts as failed when it raises or answers with a
+    5xx status. Flask answers most errors itself, so use instrument_flask(app) there: it adds this
+    middleware and also reports the exception behind each 500. Django: use DjangoMiddleware.
+    """
+
+    def __init__(self, app: Any, client: Optional[Client] = None):
+        self.app = app
+        self.client = client
+
+    def __call__(self, environ: Dict[str, Any], start_response: Callable):
+        active_client = self.client or _client
+        if active_client is None or active_client.disabled:
+            return self.app(environ, start_response)
+
+        start_time = time.monotonic()
+        path = (environ.get("SCRIPT_NAME") or "") + (environ.get("PATH_INFO") or "")
+        method = environ.get("REQUEST_METHOD") or "GET"
+        request = _Request(path, method)
+        _current_request.set(request)  # not reset at the end: see _current_request
+        status = [0]
+
+        def _start_response(status_line: str, headers: Any, *exc_info: Any):
+            try:
+                status[0] = int(str(status_line)[:3])
+            except Exception:
+                pass
+            return start_response(status_line, headers, *exc_info)
+
+        has_error = False
+        try:
+            return self.app(environ, _start_response)
+        except BaseException as exc:
+            has_error = True
+            active_client._capture(exc, None, path, method, "hook")
+            raise  # unchanged
+        finally:
+            _finish_request(active_client, request, start_time, has_error or status[0] >= 500)
+
+
+def instrument_flask(app: Any, client: Optional[Client] = None) -> Any:
+    """Report a Flask app's errors, latency and traffic: changewatch.instrument_flask(app).
+
+    Adds WSGIMiddleware and reports the exception behind every 500 Flask answers itself (its
+    got_request_exception signal, Flask 2.3 or newer). Never raises; returns the app.
+    """
+    try:
+        app.wsgi_app = WSGIMiddleware(app.wsgi_app, client)
+    except Exception:
+        if (client or _client) is not None:
+            (client or _client)._internal_errors += 1
+        return app
+
+    def _report(sender: Any, exception: BaseException, **_: Any) -> None:
+        active_client = client or _client
+        if active_client is not None and not active_client.disabled:
+            active_client._capture(exception, None, None, None, "hook")
+
+    try:
+        from flask import got_request_exception
+        got_request_exception.connect(_report, app, weak=False)
+    except Exception:  # an old Flask without signals: requests and 5xx are still counted
+        if (client or _client) is not None:
+            (client or _client)._internal_errors += 1
+    return app
+
+
+class DjangoMiddleware:
+    """Django middleware: add "changewatch.DjangoMiddleware" first in MIDDLEWARE, and call
+    changewatch.init(...) in settings.py. Works under WSGI and ASGI (sync and async views).
+
+    Django turns a view's exception into a 500 response itself, so this reports the exception
+    from process_exception and counts every 5xx as a failed request. Same guarantees as
+    ASGIMiddleware: it never reads bodies and never changes a response.
+    """
+
+    sync_capable = True
+    async_capable = True
+
+    def __init__(self, get_response: Callable):
+        self.get_response = get_response
+        self._async = False
+        try:
+            import asyncio
+            if asyncio.iscoroutinefunction(get_response):
+                from asgiref.sync import markcoroutinefunction  # ships with Django
+                markcoroutinefunction(self)
+                self._async = True
+        except Exception:
+            pass  # Django then runs this as sync middleware, which also works
+
+    def _start(self, request: Any) -> Optional[Tuple[Client, _Request, float]]:
+        active_client = _client
+        if active_client is None or active_client.disabled:
+            return None
+        try:
+            tracked = _Request(str(request.path), str(request.method or "GET"))
+            _current_request.set(tracked)  # not reset at the end: see _current_request
+            return active_client, tracked, time.monotonic()
+        except Exception:
+            active_client._internal_errors += 1
+            return None
+
+    @staticmethod
+    def _end(state: Optional[Tuple[Client, _Request, float]], response: Any) -> None:
+        if state is None:
+            return
+        active_client, tracked, start_time = state
+        try:
+            status = int(getattr(response, "status_code", 0) or 0) if response is not None else 500
+        except Exception:
+            status = 0
+        _finish_request(active_client, tracked, start_time, status >= 500)
+
+    def __call__(self, request: Any) -> Any:
+        if self._async:
+            return self._acall(request)
+        state = self._start(request)
+        response = None
+        try:
+            response = self.get_response(request)
+            return response
+        except BaseException as exc:
+            if state is not None:
+                state[0]._capture(exc, None, None, None, "hook")
+            raise  # unchanged
+        finally:
+            self._end(state, response)
+
+    async def _acall(self, request: Any) -> Any:
+        state = self._start(request)
+        response = None
+        try:
+            response = await self.get_response(request)
+            return response
+        except BaseException as exc:
+            if state is not None:
+                state[0]._capture(exc, None, None, None, "hook")
+            raise  # unchanged
+        finally:
+            self._end(state, response)
+
+    def process_exception(self, request: Any, exception: BaseException) -> None:
+        active_client = _client
+        if active_client is not None and not active_client.disabled:
+            active_client._capture(exception, None, None, None, "hook")
+        return None  # Django goes on to answer as it always does

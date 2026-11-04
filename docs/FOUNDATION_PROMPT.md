@@ -93,7 +93,7 @@ import changewatch
 from changewatch import ASGIMiddleware
 
 cw = changewatch.init(api_key="cw_ingest_...", endpoint="https://...", release=GIT_SHA, environment="prod", slow_ms=1500)
-app.add_middleware(ASGIMiddleware, client=cw)   # ASGI apps (FastAPI/Starlette). No Flask/WSGI middleware.
+app.add_middleware(ASGIMiddleware, client=cw)   # ASGI apps (FastAPI/Starlette). Django: DjangoMiddleware; Flask: instrument_flask(app).
 changewatch.capture_exception(exc)              # manual capture
 ```
 
