@@ -452,7 +452,7 @@ changewatch/
 | Security & read-only compliance audit | `.venv/bin/python scripts/security_check.py` | ✅ 13 / 13 |
 | Chaos (network blips, stuck workers, outbox retries, detector lag) | `.venv/bin/python scripts/chaos.py` | zero lost events, zero duplicate alerts |
 
-The suite needs live Postgres and Redis: start them with `docker compose -f docker-compose.dev.yml up -d`. The 3 skipped tests need Django and Flask (`pip install -r sdk/tests/frameworks-newest.txt`); CI runs them on Python 3.9 to 3.14, on Linux, macOS and Windows.
+The suite needs live Postgres and Redis: start them with `docker compose -f docker-compose.dev.yml up -d`. The 3 skipped tests need Django and Flask (`pip install -r sdk/tests/frameworks-newest.txt`); CI runs them on Python 3.9 to 3.14, on Linux and Windows.
 
 Every milestone has a step-by-step manual check with expected output in **[docs/VERIFICATION.md](docs/VERIFICATION.md)**.
 

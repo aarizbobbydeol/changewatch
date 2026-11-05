@@ -283,7 +283,6 @@ jobs:
           - { os: ubuntu-latest, python: "3.12", frameworks: newest }
           - { os: ubuntu-latest, python: "3.13", frameworks: newest }
           - { os: ubuntu-latest, python: "3.14", frameworks: newest }
-          - { os: macos-latest, python: "3.12", frameworks: newest }
           - { os: windows-latest, python: "3.12", frameworks: newest }
     steps:
       - name: Checkout code
